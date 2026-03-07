@@ -569,8 +569,8 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     const root = document.getElementById("app");
     const savedState = vscode.getState() || {};
     const PERSONAS = [
-      { id: "architect",     icon: "Arch", title: "The Architect",        tagline: "Systems thinking, SOLID, long-term maintainability" },
-      { id: "pattern_expert",icon: "Pat",  title: "Design Pattern Expert", tagline: "GoF patterns, anti-patterns, refactoring recipes" },
+      { id: "architect",     icon: "Arch", title: "The Architect",        tagline: "Requirements, feasibility, risks, trade-offs, technical direction" },
+      { id: "pattern_expert",icon: "Pat",  title: "Design Pattern Expert", tagline: "Framework fit, patterns, anti-patterns, structural policy" },
       { id: "debug_detective",icon: "Det", title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
       { id: "yolo",          icon: "YOLO", title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
       { id: "socratic",      icon: "Soc",  title: "Socratic Coach",        tagline: "Guides with questions instead of answers" },

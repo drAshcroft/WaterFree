@@ -1,24 +1,28 @@
 # WaterFree
 
-> You architect. AI executes. Structured pair programming where you lead — free from the bottlenecks of waterfall.
+> Waterfall clarity. Instant feedback. Do it right the first time.
 
-WaterFree is a VS Code extension that structures the human-AI collaboration around a clean division of roles: **you own the plan, the AI owns the implementation**. You think like a waterfall architect — defining goals, approving intent, redirecting when needed. The AI works like a tireless engineer — annotating its approach before touching a line of code, then executing only what you've approved.
+WaterFree is a VS Code extension built around a simple conviction: **the fastest path to working software is a tight human-AI feedback loop, not an army of agents burning tokens on retries.**
 
-The name is a play on *waterfall*: you get the clarity of top-down design, minus the bureaucracy that makes waterfall slow.
+It takes the best idea from waterfall — structured, top-down intent — and replaces the slow hand-offs with instant, continuous collaboration. You define the goal. The AI proposes the plan. You give feedback immediately, at every step, before a single line of code is written. When you finally say *go*, the implementation is already aligned with your intent.
+
+The result: fewer iterations, fewer tokens, less rework. Not because the AI is smarter — because the system is set up correctly on the first try.
 
 ---
 
-## How It Works
+## The Core Idea
+
+Traditional AI coding tools hand you a diff and ask you to react. You review output, spot what's wrong, re-prompt, wait again. Every misalignment costs a full round-trip.
+
+WaterFree inverts this. **The collaboration happens before execution**, not after.
 
 ```
 You describe a goal
         ↓
-  AI generates a task plan
-        ↓
-  You review & adjust the plan
+  AI generates a task plan         ← you give feedback here
         ↓
   For each task:
-    AI writes an intent annotation (no code yet)
+    AI writes an intent annotation  ← and here, before any code
     You Approve / Alter / Redirect
     AI executes exactly what was approved
     AI scans for side effects
@@ -26,30 +30,44 @@ You describe a goal
   Repeat → goal complete
 ```
 
-Every code change is preceded by a human-readable annotation — a plain-English description of *what* will change, *where*, and *why*. No surprises. No silent rewrites.
+Every code change is preceded by a plain-English annotation — *what* will change, *where*, and *why*. You read it, refine it, and approve it. The AI never writes code you haven't seen first. By the time execution runs, it's already right.
+
+---
+
+## Why This Works
+
+Most AI coding friction comes from misalignment — the AI didn't know your conventions, misread the scope, or made an assumption you'd have corrected in five seconds if asked. You end up in a loop: review, re-prompt, re-review.
+
+WaterFree eliminates that loop by giving the AI everything it needs upfront:
+
+- **A live codebase index** — AST + call graph so the AI knows your actual structure, not a guess
+- **A knowledge store** — your team's extracted patterns, so the AI reaches for *your* solutions first
+- **Intent annotations** — a checkpoint where you correct misalignment before it becomes code
+
+Set the system up correctly, and the AI gets it right the first time. That's not a claim about AI capability — it's a claim about information. Give the AI the right context and a feedback loop before execution, and retries become rare.
 
 ---
 
 ## Features
 
-### Architect Mode (You)
-- Describe a goal in plain language
-- Review the AI's generated task breakdown
-- Approve, alter, or redirect each annotation before a single line changes
-- Take over any task yourself — the AI reads your changes and picks up seamlessly
-- Inline `// TODO: [wf] <instruction>` comments are automatically queued as tasks
+### You Lead
+- Describe a goal in plain language; the AI generates a structured task breakdown
+- Review and adjust the plan before any work starts
+- Approve, alter, or redirect each intent annotation before a line changes
+- Take over any task yourself — the AI reads your changes and continues seamlessly
+- Drop `// TODO: [wf]` comments anywhere; they're auto-queued when you save
 
-### Engineer Mode (AI)
-- Indexes your codebase (AST + call graph) for accurate, context-aware suggestions
-- Annotates intent before execution — what files, what lines, what effects
-- Executes only approved annotations, nothing more
-- Scans side effects after each edit using the dependency graph
-- Live debug integration — push a breakpoint snapshot to the agent for diagnosis
+### AI Executes with Full Context
+- Indexes your codebase (AST + call graph) for accurate, dependency-aware suggestions
+- Searches your knowledge store for existing patterns before writing anything new
+- Writes an intent annotation per task — plain English, no code yet
+- Executes only what you approved; scans for side effects after each edit
+- Live debug integration — push a breakpoint snapshot for AI diagnosis
 
 ### Knowledge Store
 - Snippetize your workspace or any git repo into a searchable pattern library
-- AI draws on your team's existing patterns before reaching for generic solutions
-- Extract individual functions as reusable procedures
+- AI draws on your team's existing conventions before reaching for generic solutions
+- Extract individual functions as reusable, searchable procedures
 
 ---
 
@@ -153,6 +171,13 @@ WaterFree detects these on save and adds them to the active session's backlog au
 
 ---
 
+## Design Docs
+
+- [docs/11_DEEP_AGENTS_RUNTIME.md](docs/11_DEEP_AGENTS_RUNTIME.md) — proposed multi-provider runtime with Deep Agents, first-class skills, subagents, checkpointing, and an Ollama lane for local knowledge work
+- [docs/12_PYTHON_BRIDGE_MCP_SKILLS.md](docs/12_PYTHON_BRIDGE_MCP_SKILLS.md) — proposed bridge contract for MCP discovery, skill loading, subagent delegation, filesystem harnessing, and optional web-search/retrieval MCPs
+
+---
+
 ## MCP Tools
 
 WaterFree exposes its internal tooling as MCP servers, making them available to Claude Code and other AI agents in your workspace:
@@ -168,8 +193,10 @@ WaterFree exposes its internal tooling as MCP servers, making them available to 
 
 ## Philosophy
 
-Traditional waterfall puts the human in charge of requirements and the team in charge of implementation — but the hand-off is lossy and slow.
+Waterfall's insight was sound: top-down structure, clear intent, defined roles. Its flaw was the hand-off — requirements thrown over a wall, feedback arriving months late.
 
-WaterFree keeps the human in the architect seat while eliminating the friction. You define intent at a high level. The AI translates intent into precise, reviewable annotations. You approve. The AI executes. Every edit is a conversation, not a surprise.
+WaterFree keeps the structure and collapses the feedback loop to zero. Every decision point — the plan, each annotation, each execution — is a live conversation between you and the AI. You stay in the architect seat. The AI stays in the engineer seat. And because the collaboration happens *before* the code, not after it, the output is right the first time.
 
-**The AI never writes code you haven't read first.**
+This isn't about using fewer agents or tokens as an end goal. It's a consequence of working well: when the system has the right context and you validate intent before execution, you don't need to burn cycles on retries.
+
+**The fastest way to ship is to get it right before you start.**
