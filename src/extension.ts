@@ -1,0 +1,1021 @@
+/**
+ * WaterFree VS Code Extension — entry point.
+ *
+ * Responsibilities:
+ *  - Spawn and manage the Python backend process (PythonBridge)
+ *  - Register all VS Code commands
+ *  - Wire UI components: PlanSidebar, StatusBarManager, DecorationRenderer
+ *  - Handle file watching (FileWatcher) and TODO detection (TodoWatcher)
+ *  - Route user actions to the Python backend
+ */
+
+import * as path from "path";
+import * as vscode from "vscode";
+
+import { PythonBridge } from "./bridge/PythonBridge.js";
+import { LiveDebugCapture } from "./debug/LiveDebugCapture.js";
+import { PairLogger } from "./logging/PairLogger.js";
+import { StatusBarManager } from "./ui/StatusBarManager.js";
+import {
+  PlanSidebarProvider,
+  getAnnotationTargetLine,
+  getTaskTargetLine,
+  getTaskTargetPath,
+  type PlanData,
+  type SidebarAction,
+  type TaskData,
+} from "./ui/PlanSidebar.js";
+import { QuickActionsProvider } from "./ui/QuickActionsProvider.js";
+import { DecorationRenderer } from "./ui/DecorationRenderer.js";
+import { FileWatcher } from "./watchers/FileWatcher.js";
+import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
+
+// ------------------------------------------------------------------
+// Extension state (singleton per extension host)
+// ------------------------------------------------------------------
+
+let controller: WaterFreeController | null = null;
+
+type IndexWorkspaceResult = {
+  indexed?: boolean;
+  status?: string;
+  reason?: string;
+  changedCount?: number;
+  changedPaths?: string[];
+  dbPath?: string;
+  scannedFiles?: number;
+};
+
+export function activate(context: vscode.ExtensionContext): void {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    return; // No workspace open — nothing to do
+  }
+
+  controller = new WaterFreeController(workspaceRoot, context);
+  context.subscriptions.push(controller);
+}
+
+export function deactivate(): void {
+  controller?.dispose();
+  controller = null;
+}
+
+// ------------------------------------------------------------------
+// Controller — owns all subsystems and routes commands
+// ------------------------------------------------------------------
+
+class WaterFreeController implements vscode.Disposable {
+  private readonly _logger: PairLogger;
+  private readonly _bridge: PythonBridge;
+  private readonly _statusBar: StatusBarManager;
+  private readonly _sidebarProvider: PlanSidebarProvider;
+  private readonly _quickActions: QuickActionsProvider;
+  private readonly _decorations: DecorationRenderer;
+  private readonly _fileWatcher: FileWatcher;
+  private readonly _todoWatcher: TodoWatcher;
+  private readonly _liveDebug: LiveDebugCapture;
+  private readonly _disposables: vscode.Disposable[] = [];
+
+  private _sessionId: string | null = null;
+  private _plan: PlanData | null = null;
+
+  constructor(
+    private readonly _workspacePath: string,
+    context: vscode.ExtensionContext,
+  ) {
+    const logFilePath = path.join(_workspacePath, ".waterfree", "logs", "extension.log");
+    this._logger = new PairLogger(logFilePath);
+    this._disposables.push(this._logger);
+
+    // Core subsystems
+    this._bridge = new PythonBridge(_workspacePath, context.extensionUri.fsPath, this._logger);
+    this._statusBar = new StatusBarManager();
+    this._sidebarProvider = new PlanSidebarProvider();
+    this._quickActions = new QuickActionsProvider();
+    this._decorations = new DecorationRenderer();
+    this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
+    this._todoWatcher = new TodoWatcher();
+    this._liveDebug = new LiveDebugCapture();
+    this._disposables.push(
+      this._bridge,
+      this._statusBar,
+      this._sidebarProvider,
+      this._quickActions,
+      this._decorations,
+      this._fileWatcher,
+      this._todoWatcher,
+      this._liveDebug,
+    );
+
+    // Sidebar views
+    const planView = vscode.window.registerWebviewViewProvider(
+      "waterfree.planSidebar",
+      this._sidebarProvider,
+      {
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      },
+    );
+    const quickActionsView = vscode.window.createTreeView("waterfree.quickActions", {
+      treeDataProvider: this._quickActions,
+    });
+    this._disposables.push(planView, quickActionsView);
+
+    // Bridge notifications
+    this._disposables.push(
+      this._bridge.onNotification("indexProgress", (params) => {
+        const p = params as { done: number; total: number };
+        this._statusBar.setState("idle");
+        this._log("index", `${p.done}/${p.total} files`);
+      }),
+      this._bridge.onNotification("sessionUpdate", (params) => {
+        this._onSessionUpdate(params as PlanData);
+      }),
+      this._sidebarProvider.onDidTriggerAction((action) => {
+        void this._onSidebarAction(action);
+      }),
+    );
+
+    // TODO watcher
+    this._todoWatcher.onTodosFound((todos) => this._onTodosFound(todos));
+
+    // Debug session state — update sidebar when debug starts/stops
+    this._disposables.push(
+      vscode.debug.onDidStartDebugSession(() => this._updateDebugState()),
+      vscode.debug.onDidTerminateDebugSession(() => this._updateDebugState()),
+    );
+
+    // Commands
+    this._registerCommands(context);
+
+    // Start the backend and auto-index
+    this._log("startup", `workspace=${this._workspacePath}`);
+    this._log("startup", `extension log file=${this._logger.logFilePath}`);
+    this._bridge.start();
+    void this._autoIndex();
+
+    // Try to resume an existing session
+    this._sidebarProvider.setCheckingForSession(true);
+    void this._tryResumeSession();
+  }
+
+  // ------------------------------------------------------------------
+  // Commands
+  // ------------------------------------------------------------------
+
+  private _registerCommands(context: vscode.ExtensionContext): void {
+    const register = (id: string, fn: (...args: unknown[]) => unknown) =>
+      context.subscriptions.push(vscode.commands.registerCommand(id, fn));
+
+    register("waterfree.start", () => this._cmdStart());
+    register("waterfree.indexWorkspace", () => this._cmdIndex());
+    register("waterfree.generateAnnotation", (taskId: unknown) =>
+      this._cmdGenerateAnnotation(String(taskId)),
+    );
+    register("waterfree.approveAnnotation", (annotationId: unknown) =>
+      this._cmdApprove(String(annotationId)),
+    );
+    register("waterfree.alterAnnotation", (taskId: unknown, annotationId: unknown) =>
+      this._cmdAlter(String(taskId), String(annotationId)),
+    );
+    register("waterfree.redirectTask", (taskId: unknown) =>
+      this._cmdRedirect(String(taskId)),
+    );
+    register("waterfree.skipTask", (taskId: unknown) =>
+      this._cmdSkipTask(String(taskId)),
+    );
+    register("waterfree.showAnnotation", (taskId: unknown, annotationId?: unknown) =>
+      this._cmdShowAnnotation(String(taskId), annotationId ? String(annotationId) : undefined),
+    );
+    register("waterfree.openSidebar", () => {
+      void vscode.commands.executeCommand("waterfree.planSidebar.focus");
+    });
+    register("waterfree.livePairDebug", () => this._cmdLivePairDebug());
+    register("waterfree.pushDebugToAgent", () => this._cmdPushDebugToAgent());
+    register("waterfree.quickAction", (actionId: unknown) =>
+      this._quickActions.runAction(String(actionId)),
+    );
+    register("waterfree.buildKnowledge", () => this._cmdBuildKnowledge());
+    register("waterfree.addKnowledgeRepo", () => this._cmdAddKnowledgeRepo());
+    register("waterfree.extractProcedure", () => this._cmdExtractProcedure());
+  }
+
+  // ------------------------------------------------------------------
+  // Command implementations
+  // ------------------------------------------------------------------
+
+  private async _cmdStart(goalOverride?: string, personaOverride?: string): Promise<void> {
+    const goal = goalOverride ?? await vscode.window.showInputBox({
+      prompt: "What do you want to build or fix?",
+      placeHolder: "e.g. Add user authentication using JWT tokens",
+      validateInput: (v) => (v.trim() ? null : "Please describe the goal."),
+    });
+    if (!goal) {
+      return;
+    }
+
+    const trimmedGoal = goal.trim();
+    this._statusBar.setState("planning");
+    this._sidebarProvider.setBusyMessage("Planning session...");
+    try {
+      const session = await this._bridge.request<PlanData>("createSession", {
+        goal: trimmedGoal,
+        workspacePath: this._workspacePath,
+        persona: personaOverride ?? "default",
+      });
+      this._sessionId = session.id;
+
+      // Index if not done, then generate plan
+      await this._cmdIndex(false);
+
+      const result = await this._bridge.request<{
+        sessionId: string;
+        tasks: PlanData["tasks"];
+        questions: string[];
+      }>("generatePlan", {
+        goal: trimmedGoal,
+        sessionId: this._sessionId,
+        workspacePath: this._workspacePath,
+      });
+
+      this._sessionId = result.sessionId;
+
+      if (result.questions.length > 0) {
+        const answer = await vscode.window.showInformationMessage(
+          `Before planning, the AI has a question:\n${result.questions[0]}`,
+          "Continue anyway",
+          "Cancel",
+        );
+        if (answer !== "Continue anyway") {
+          this._statusBar.setState("idle");
+          return;
+        }
+      }
+
+      this._onPlanReceived({ ...session, tasks: result.tasks });
+      this._sidebarProvider.clearComposer();
+    } catch (err) {
+      this._handleError("Start session failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdIndex(showResult = true): Promise<void> {
+    this._statusBar.setState("scanning");
+    try {
+      const result = await this._bridge.request<IndexWorkspaceResult>("indexWorkspace", {
+        path: this._workspacePath,
+      });
+      this._statusBar.setState("idle");
+
+      if (!showResult) {
+        return;
+      }
+
+      if (result.indexed) {
+        const changed = result.changedCount ?? 0;
+        const scanCount = result.scannedFiles ?? 0;
+        void vscode.window.showInformationMessage(
+          `WaterFree: Index refreshed (${changed} changed file(s), ${scanCount} scanned).`,
+        );
+      } else {
+        const scanCount = result.scannedFiles ?? 0;
+        void vscode.window.showInformationMessage(
+          `WaterFree: Index is up to date (${scanCount} file(s) checked).`,
+        );
+      }
+    } catch (err) {
+      this._handleError("Indexing failed", err);
+    }
+  }
+
+  private async _cmdGenerateAnnotation(taskId: string): Promise<void> {
+    if (!this._sessionId) {
+      void vscode.window.showWarningMessage("No active session.");
+      return;
+    }
+    this._statusBar.setState("annotating");
+    this._sidebarProvider.setBusyMessage("Generating intent...");
+    try {
+      const annotation = await this._bridge.request("generateAnnotation", {
+        taskId,
+        sessionId: this._sessionId,
+      });
+      this._log("annotation", `generated: ${JSON.stringify(annotation)}`);
+      // Reload session to pick up the new annotation
+      await this._reloadSession();
+      this._statusBar.setState("awaiting_review");
+    } catch (err) {
+      this._handleError("Annotation failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdApprove(annotationId: string): Promise<void> {
+    if (!this._sessionId) {
+      return;
+    }
+
+    // Find the task that owns this annotation — needed for executeTask
+    const task = this._plan?.tasks.find((t) =>
+      t.annotations.some((a) => a.id === annotationId),
+    );
+    if (!task) {
+      this._handleError("Approve failed", new Error("Could not resolve task for annotation"));
+      return;
+    }
+
+    this._statusBar.setState("executing");
+    this._sidebarProvider.setBusyMessage("Executing task...");
+    try {
+      // Step 1 — mark annotation approved in the session
+      await this._bridge.request("approveAnnotation", {
+        annotationId,
+        sessionId: this._sessionId,
+      });
+
+      // Step 2 — ask Claude to generate the code edits and apply them
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `WaterFree: Executing "${task.title}"…`,
+          cancellable: false,
+        },
+        async () => {
+          const result = await this._bridge.request<{
+            edits: Array<{ targetFile: string; newContent: string; explanation?: string }>;
+            taskId: string;
+          }>("executeTask", {
+            taskId: task.id,
+            sessionId: this._sessionId!,
+          });
+
+          await this._applyEdits(result.edits);
+        },
+      );
+
+      await this._reloadSession();
+      this._statusBar.setState("idle");
+      void vscode.window.showInformationMessage(
+        `WaterFree: "${task.title}" executed successfully.`,
+      );
+    } catch (err) {
+      this._statusBar.setState("idle");
+      this._handleError("Execution failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _applyEdits(
+    edits: Array<{ targetFile: string; newContent: string }>,
+  ): Promise<void> {
+    if (edits.length === 0) {
+      return;
+    }
+
+    const wsEdit = new vscode.WorkspaceEdit();
+
+    for (const edit of edits) {
+      const uri = vscode.Uri.file(edit.targetFile);
+
+      let doc: vscode.TextDocument | undefined;
+      try {
+        doc = await vscode.workspace.openTextDocument(uri);
+      } catch {
+        // File does not exist yet — create it
+        wsEdit.createFile(uri, { ignoreIfExists: false });
+        wsEdit.insert(uri, new vscode.Position(0, 0), edit.newContent);
+        continue;
+      }
+
+      const fullRange = new vscode.Range(
+        doc.positionAt(0),
+        doc.positionAt(doc.getText().length),
+      );
+      wsEdit.replace(uri, fullRange, edit.newContent);
+    }
+
+    const ok = await vscode.workspace.applyEdit(wsEdit);
+    if (!ok) {
+      throw new Error("WorkspaceEdit failed — one or more edits could not be applied.");
+    }
+
+    // Save all modified documents so the file watcher picks them up
+    for (const edit of edits) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(edit.targetFile));
+        await doc.save();
+      } catch {
+        // Non-fatal — file may have been created but not yet tracked
+      }
+    }
+  }
+
+  private async _cmdAlter(taskId: string, annotationId: string, feedbackOverride?: string): Promise<void> {
+    if (!this._sessionId) {
+      return;
+    }
+    const feedback = feedbackOverride ?? await vscode.window.showInputBox({
+      prompt: "What should be different?",
+      placeHolder: "e.g. Don't touch the authentication middleware",
+    });
+    if (!feedback) {
+      return;
+    }
+    this._statusBar.setState("annotating");
+    this._sidebarProvider.setBusyMessage("Updating intent...");
+    try {
+      await this._bridge.request("alterAnnotation", {
+        taskId,
+        annotationId,
+        feedback: feedback.trim(),
+        sessionId: this._sessionId,
+      });
+      await this._reloadSession();
+      this._statusBar.setState("awaiting_review");
+    } catch (err) {
+      this._handleError("Alter failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdRedirect(taskId: string, instructionOverride?: string): Promise<void> {
+    if (!this._sessionId) {
+      return;
+    }
+    const instruction = instructionOverride ?? await vscode.window.showInputBox({
+      prompt: "Give a new direction for this task:",
+      placeHolder: "e.g. Instead of modifying X, create a new Y",
+    });
+    if (!instruction) {
+      return;
+    }
+    this._statusBar.setState("awaiting_redirect");
+    this._sidebarProvider.setBusyMessage("Redirecting task...");
+    try {
+      await this._bridge.request("redirectTask", {
+        taskId,
+        instruction: instruction.trim(),
+        sessionId: this._sessionId,
+      });
+      await this._reloadSession();
+      this._statusBar.setState("idle");
+    } catch (err) {
+      this._handleError("Redirect failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdSkipTask(taskId: string): Promise<void> {
+    if (!this._sessionId) {
+      return;
+    }
+    this._sidebarProvider.setBusyMessage("Skipping task...");
+    try {
+      await this._bridge.request("skipTask", { taskId, sessionId: this._sessionId });
+      await this._reloadSession();
+    } catch (err) {
+      this._handleError("Skip failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdBuildKnowledge(): Promise<void> {
+    const focus = await vscode.window.showInputBox({
+      prompt: "What do you want to extract? (optional — leave blank for general patterns)",
+      placeHolder: "e.g. authentication patterns, error handling, Django ORM usage",
+    });
+    if (focus === undefined) {
+      return; // User pressed Escape
+    }
+
+    const busyMsg = focus.trim()
+      ? `Snippetizing: "${focus.trim()}"...`
+      : "Snippetizing workspace...";
+    this._sidebarProvider.setBusyMessage(busyMsg);
+    try {
+      const result = await this._bridge.request<{
+        added: number;
+        symbolsScanned: number;
+        repo: string;
+        message: string;
+      }>("buildKnowledge", { workspacePath: this._workspacePath, focus: focus.trim() });
+      void vscode.window.showInformationMessage(
+        `WaterFree Snippetize: ${result.message ?? `Added ${result.added} snippets from workspace.`}`,
+      );
+    } catch (err) {
+      this._handleError("Pair Snippetize failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdAddKnowledgeRepo(): Promise<void> {
+    const source = await vscode.window.showInputBox({
+      prompt: "WaterFree Snippetize: Git repo URL or local path to snippetize",
+      placeHolder: "https://github.com/org/repo.git  or  /path/to/local/repo",
+      validateInput: (v) => (v.trim() ? null : "Enter a URL or local path."),
+    });
+    if (!source) {
+      return;
+    }
+
+    const focus = await vscode.window.showInputBox({
+      prompt: "What do you want to extract from this repo? (optional)",
+      placeHolder: "e.g. React hooks patterns, authentication, data validation",
+    });
+    if (focus === undefined) {
+      return; // User pressed Escape
+    }
+
+    this._sidebarProvider.setBusyMessage("Snippetizing repo...");
+    try {
+      const result = await this._bridge.request<{
+        added: number;
+        symbolsScanned: number;
+        name: string;
+        error?: string;
+      }>("addKnowledgeRepo", { source: source.trim(), focus: focus.trim() });
+
+      if (result.error) {
+        void vscode.window.showErrorMessage(`WaterFree Snippetize: Failed — ${result.error}`);
+      } else {
+        void vscode.window.showInformationMessage(
+          `WaterFree Snippetize: '${result.name}' — ${result.added} snippets added (${result.symbolsScanned ?? 0} symbols scanned).`,
+        );
+      }
+    } catch (err) {
+      this._handleError("Pair Snippetize repo failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private _cmdExtractProcedure(): void {
+    const editor = vscode.window.activeTextEditor;
+    let symbol = "";
+    if (editor) {
+      if (!editor.selection.isEmpty) {
+        symbol = editor.document.getText(editor.selection).trim();
+      } else {
+        const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active);
+        if (wordRange) {
+          symbol = editor.document.getText(wordRange);
+        }
+      }
+    }
+    this._sidebarProvider.prefillSnippetize(symbol);
+    void vscode.commands.executeCommand("waterfree.planSidebar.focus");
+  }
+
+  private async _runSnippetizeProcedure(name: string, focus: string): Promise<void> {
+    this._sidebarProvider.setBusyMessage(`Snippetizing '${name}'...`);
+    try {
+      const result = await this._bridge.request<{
+        entry: object | null;
+        warnings: string[];
+        tokenBudgetUsed: number;
+        nodesIncluded: number;
+        nodesSkipped: number;
+        depthReached: number;
+        kept: boolean;
+        stored?: boolean;
+      }>("extractProcedure", {
+        name,
+        workspacePath: this._workspacePath,
+        focus,
+        maxDepth: 3,
+      });
+
+      const warnings = result.warnings ?? [];
+
+      if (!result.kept) {
+        const reason = warnings.find((w) => w.startsWith("Symbol")) ?? "LLM judged it not worth storing.";
+        void vscode.window.showWarningMessage(`WaterFree Snippetize: '${name}' not stored — ${reason}`);
+        return;
+      }
+
+      let summary = `WaterFree Snippetize: '${name}' snippetized — `
+        + `${result.nodesIncluded} call chain node(s) included`
+        + (result.nodesSkipped > 0 ? `, ${result.nodesSkipped} skipped` : "")
+        + ` (~${result.tokenBudgetUsed} tokens used).`;
+
+      if (!result.stored) {
+        summary += " (already in snippet store)";
+      }
+
+      const actions = warnings.length > 0 ? ["Show Warnings"] : [];
+      const choice = await vscode.window.showInformationMessage(summary, ...actions);
+      if (choice === "Show Warnings") {
+        void vscode.window.showInformationMessage(warnings.join("\n"), { modal: true });
+      }
+    } catch (err) {
+      this._handleError("Pair Snippetize failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private _cmdShowAnnotation(taskId: string, annotationId?: string): void {
+    const task = this._plan?.tasks.find((t) => t.id === taskId);
+    if (!task) {
+      return;
+    }
+
+    const annotation = annotationId
+      ? task.annotations.find((a) => a.id === annotationId)
+      : task.annotations[task.annotations.length - 1];
+
+    if (!annotation) {
+      return;
+    }
+
+    // Show annotation detail in a quick-pick style panel
+    const detail = annotation.detail ?? annotation.summary;
+    void vscode.window.showInformationMessage(
+      `[WF] ${annotation.summary}`,
+      { detail, modal: true },
+      "✓ Approve",
+      "✎ Alter",
+      "⟳ Redirect",
+    ).then((choice) => {
+      if (choice === "✓ Approve") {
+        void this._cmdApprove(annotation.id);
+      } else if (choice === "✎ Alter") {
+        void this._cmdAlter(taskId, annotation.id);
+      } else if (choice === "⟳ Redirect") {
+        void this._cmdRedirect(taskId);
+      }
+    });
+
+    // Navigate to the target file + line
+    const targetFile = getTaskTargetPath(task, this._workspacePath);
+    if (targetFile) {
+      const targetLine = getAnnotationTargetLine(annotation, task);
+      void vscode.window.showTextDocument(
+        vscode.Uri.file(targetFile),
+        { selection: new vscode.Range(targetLine, 0, targetLine, 0) },
+      );
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Session management
+  // ------------------------------------------------------------------
+
+  private async _autoIndex(): Promise<void> {
+    // Retry with backoff — backend process may still be starting up when this fires.
+    const delays = [500, 1500, 3000, 5000, 10000];
+    for (const [attempt, delay] of delays.entries()) {
+      try {
+        await this._bridge.request("indexWorkspace", { path: this._workspacePath });
+        this._log("index", `auto-index complete (attempt ${attempt + 1})`);
+        return;
+      } catch (err) {
+        const isLastAttempt = attempt === delays.length - 1;
+        if (isLastAttempt) {
+          this._log("index", `auto-index failed after ${delays.length} attempts: ${err}`);
+        } else {
+          this._log("index", `auto-index attempt ${attempt + 1} failed, retrying in ${delay}ms`);
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+  }
+
+  private async _tryResumeSession(): Promise<void> {
+    try {
+      const session = await this._bridge.request<PlanData | null>("getSession", {
+        workspacePath: this._workspacePath,
+      });
+      if (session) {
+        this._sessionId = session.id;
+        this._onPlanReceived(session);
+        void vscode.window.showInformationMessage(
+          `WaterFree: Resumed session — "${session.goalStatement}"`,
+        );
+      }
+    } catch {
+      // No prior session
+    } finally {
+      this._sidebarProvider.setCheckingForSession(false);
+    }
+  }
+
+  private async _reloadSession(): Promise<void> {
+    if (!this._sessionId) {
+      return;
+    }
+    const session = await this._bridge.request<PlanData | null>("getSession", {
+      sessionId: this._sessionId,
+      workspacePath: this._workspacePath,
+    });
+    if (session) {
+      this._onPlanReceived(session);
+    }
+  }
+
+  private _onPlanReceived(plan: PlanData): void {
+    this._plan = plan;
+    this._sidebarProvider.setCheckingForSession(false);
+    this._sidebarProvider.update(plan);
+    this._refreshDecorations(plan);
+
+    // Navigate to the first pending task's file
+    const firstPending = plan.tasks.find(
+      (t) => t.status === "pending" || t.status === "annotating" || t.status === "negotiating",
+    );
+    const targetFile = firstPending ? getTaskTargetPath(firstPending, this._workspacePath) : null;
+    if (targetFile) {
+      void vscode.window.showTextDocument(vscode.Uri.file(targetFile), {
+        preview: true,
+        preserveFocus: true,
+      });
+    }
+  }
+
+  private _onSessionUpdate(plan: PlanData): void {
+    this._plan = plan;
+    this._sidebarProvider.setCheckingForSession(false);
+    this._sidebarProvider.update(plan);
+    this._refreshDecorations(plan);
+    if (plan.tasks.some((t) => t.status === "negotiating")) {
+      this._statusBar.setState("awaiting_review");
+    }
+  }
+
+  private _refreshDecorations(plan: PlanData): void {
+    const pairs = plan.tasks.flatMap((task: TaskData) =>
+      task.annotations.map((annotation) => ({ annotation, task })),
+    );
+    this._decorations.updateAnnotations(pairs, this._workspacePath);
+  }
+
+  private async _onSidebarAction(action: SidebarAction): Promise<void> {
+    switch (action.type) {
+      case "startSession":
+        await this._cmdStart(action.goal, action.persona);
+        return;
+      case "openTask":
+        this._openTaskTarget(action.taskId);
+        return;
+      case "generateAnnotation":
+        await this._cmdGenerateAnnotation(action.taskId);
+        return;
+      case "showAnnotation":
+        this._cmdShowAnnotation(action.taskId, action.annotationId);
+        return;
+      case "approveAnnotation":
+        await this._cmdApprove(action.annotationId);
+        return;
+      case "alterAnnotation":
+        await this._cmdAlter(action.taskId, action.annotationId, action.feedback);
+        return;
+      case "redirectTask":
+        await this._cmdRedirect(action.taskId, action.instruction);
+        return;
+      case "skipTask":
+        await this._cmdSkipTask(action.taskId);
+        return;
+      case "buildKnowledge":
+        await this._cmdBuildKnowledge();
+        return;
+      case "addKnowledgeRepo":
+        await this._cmdAddKnowledgeRepo();
+        return;
+      case "snippetizeSymbol":
+        await this._runSnippetizeProcedure(action.symbol, action.context);
+        return;
+      case "pushDebugToAgent":
+        await this._cmdPushDebugToAgent(action.intent, action.stopReason);
+        return;
+    }
+  }
+
+  private _openTaskTarget(taskId: string): void {
+    const task = this._plan?.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) {
+      return;
+    }
+    const targetFile = getTaskTargetPath(task, this._workspacePath);
+    if (!targetFile) {
+      return;
+    }
+    const targetLine = getTaskTargetLine(task);
+    void vscode.window.showTextDocument(vscode.Uri.file(targetFile), {
+      selection: new vscode.Range(targetLine, 0, targetLine, 0),
+      preview: true,
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Debug Investigation — snapshot + MCP access
+  // ------------------------------------------------------------------
+
+  private _updateDebugState(): void {
+    const session = vscode.debug.activeDebugSession;
+    const active = Boolean(session);
+    const location = session?.name ?? "";
+    this._sidebarProvider.setDebugState(active, active ? `Session: ${location}` : "");
+  }
+
+  private async _cmdPushDebugToAgent(intentOverride?: string, stopReasonOverride?: string): Promise<void> {
+    if (!vscode.debug.activeDebugSession) {
+      void vscode.window.showInformationMessage(
+        "WaterFree: No active debug session. Start debugging and pause at a breakpoint first.",
+      );
+      return;
+    }
+
+    const intent = intentOverride ?? await vscode.window.showInputBox({
+      prompt: "What do you want to investigate?",
+      placeHolder: "e.g. Why is user.balance going negative?",
+    });
+    if (intent === undefined) {
+      return;
+    }
+
+    const stopReason = stopReasonOverride ?? "other";
+
+    this._sidebarProvider.setBusyMessage("Capturing debug state…");
+    try {
+      const snapshotPath = await this._liveDebug.writeSnapshot(intent, stopReason, this._workspacePath);
+      void vscode.window.showInformationMessage(
+        `WaterFree: Debug snapshot saved — agent can query it via mcp_debug tools. (${snapshotPath})`,
+      );
+    } catch (err) {
+      this._handleError("Push debug to agent failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Live Pair Debug
+  // ------------------------------------------------------------------
+
+  private async _cmdLivePairDebug(): Promise<void> {
+    if (!vscode.debug.activeDebugSession) {
+      void vscode.window.showInformationMessage(
+        "WaterFree: No active debug session. Start debugging first, then pause at a breakpoint.",
+      );
+      return;
+    }
+
+    this._statusBar.setState("answering");
+
+    const ctx = await this._liveDebug.capture();
+    if (!ctx) {
+      void vscode.window.showWarningMessage(
+        "WaterFree: Could not capture debug state. Try pausing at a breakpoint first.",
+      );
+      this._statusBar.setState("idle");
+      return;
+    }
+
+    void vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "WaterFree: Analysing debug state…",
+        cancellable: false,
+      },
+      async () => {
+        try {
+          const analysis = await this._bridge.request<{
+            diagnosis: string;
+            likelyCause: string;
+            suggestedFix: {
+              summary: string;
+              detail: string;
+              targetFile?: string;
+              targetLine?: number;
+              willModify?: string[];
+              willCreate?: string[];
+              sideEffectWarnings?: string[];
+            };
+            questions?: string[];
+          }>("liveDebug", {
+            debugContext: ctx,
+            sessionId: this._sessionId ?? undefined,
+            workspacePath: this._workspacePath,
+          });
+
+          this._statusBar.setState("awaiting_review");
+          await this._showDebugAnalysis(analysis, ctx);
+        } catch (err) {
+          this._handleError("Live Pair Debug failed", err);
+        }
+      },
+    );
+  }
+
+  private async _showDebugAnalysis(
+    analysis: {
+      diagnosis: string;
+      likelyCause: string;
+      suggestedFix: { summary: string; detail: string; targetFile?: string; targetLine?: number };
+      questions?: string[];
+    },
+    _ctx: { file: string; line: number },
+  ): Promise<void> {
+    const qStr =
+      analysis.questions?.length
+        ? `\n\nQuestions before fixing:\n• ${analysis.questions.join("\n• ")}`
+        : "";
+
+    const detail =
+      `Diagnosis: ${analysis.diagnosis}\n\n` +
+      `Likely cause: ${analysis.likelyCause}\n\n` +
+      `Suggested fix: ${analysis.suggestedFix.detail}` +
+      qStr;
+
+    const choice = await vscode.window.showInformationMessage(
+      `[PP Debug] ${analysis.suggestedFix.summary}`,
+      { detail, modal: true },
+      "Add as Task",
+      "Dismiss",
+    );
+
+    if (choice === "Add as Task") {
+      try {
+        const targetFile = analysis.suggestedFix.targetFile ?? _ctx.file;
+        await this._bridge.request("queueTodoInstruction", {
+          sessionId: this._sessionId ?? undefined,
+          workspacePath: this._workspacePath,
+          file: targetFile,
+          line: analysis.suggestedFix.targetLine ?? _ctx.line,
+          instruction: `Fix: ${analysis.suggestedFix.detail || analysis.suggestedFix.summary}`,
+        });
+        if (this._sessionId) {
+          await this._reloadSession();
+        }
+        void vscode.window.showInformationMessage("WaterFree: Debug fix queued into the backlog.");
+      } catch (err) {
+        this._handleError("Could not add debug task", err);
+      }
+    }
+
+    this._statusBar.setState("idle");
+  }
+
+  // ------------------------------------------------------------------
+  // TODO watcher
+  // ------------------------------------------------------------------
+
+  private _onTodosFound(todos: WfTodo[]): void {
+    // Queue each [wf] TODO into the durable backlog and attach it to the
+    // active session when one exists.
+    for (const todo of todos) {
+      void this._bridge
+        .request("queueTodoInstruction", {
+          sessionId: this._sessionId ?? undefined,
+          workspacePath: this._workspacePath,
+          file: todo.file,
+          line: todo.line,
+          instruction: todo.instruction,
+        })
+        .catch(() => {/* backend may not support this yet */});
+
+      this._log(
+        "todo",
+        `queued: "${todo.instruction}" (${path.basename(todo.file)}:${todo.line})`,
+      );
+    }
+
+    void vscode.window.showInformationMessage(
+      `WaterFree: ${todos.length} [wf] TODO(s) queued into the backlog.`,
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Error handling
+  // ------------------------------------------------------------------
+
+  private _handleError(context: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this._statusBar.setError(`${context}: ${message}`);
+    this._log("error", `${context}: ${message}`);
+    this._logger.show(true);
+    void vscode.window.showErrorMessage(`WaterFree — ${context}: ${message}`);
+  }
+
+  private _log(scope: string, message: string): void {
+    this._logger.log(scope, message);
+  }
+
+  // ------------------------------------------------------------------
+  // Disposal
+  // ------------------------------------------------------------------
+
+  dispose(): void {
+    this._disposables.forEach((d) => d.dispose());
+  }
+}

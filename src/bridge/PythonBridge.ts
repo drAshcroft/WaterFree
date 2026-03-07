@@ -1,0 +1,305 @@
+/**
+ * PythonBridge — stdin/stdout JSON-RPC client.
+ *
+ * Spawns the Python backend process and provides a typed async interface
+ * for sending requests and receiving notifications.
+ *
+ * Protocol: newline-delimited JSON on stdin/stdout.
+ *   → {"id":"1","method":"indexWorkspace","params":{...}}
+ *   ← {"id":"1","result":{...}}           (response)
+ *   ← {"method":"indexProgress","params":{...}}  (notification — no id)
+ */
+
+import { ChildProcess, spawn, spawnSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import * as vscode from "vscode";
+
+import { PairLoggerLike } from "../logging/PairLogger.js";
+
+export type NotificationHandler = (params: unknown) => void;
+
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+}
+
+export class PythonBridge implements vscode.Disposable {
+  private _proc: ChildProcess | null = null;
+  private _buffer = "";
+  private _pending = new Map<string, PendingRequest>();
+  private _notificationHandlers = new Map<string, NotificationHandler[]>();
+  private _nextId = 1;
+  private _disposed = false;
+  private readonly _logger: PairLoggerLike;
+  private readonly _backendLogFilePath: string;
+
+  constructor(
+    private readonly _workspacePath: string,
+    private readonly _extensionPath: string,
+    logger: PairLoggerLike,
+  ) {
+    this._logger = logger;
+    this._backendLogFilePath = path.join(
+      this._workspacePath,
+      ".waterfree",
+      "logs",
+      "backend.log",
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Lifecycle
+  // ------------------------------------------------------------------
+
+  start(): void {
+    if (this._proc && !this._proc.killed && this._proc.exitCode === null) {
+      return;
+    }
+    this._proc = null;
+
+    const config = vscode.workspace.getConfiguration("waterfree");
+    const pythonPath: string = config.get("pythonPath") ?? "python";
+    const apiKey: string = config.get<string>("anthropicApiKey") || process.env.ANTHROPIC_API_KEY || "";
+    const graphBinary: string = config.get<string>("graphBinaryPath") || "codebase-memory-mcp";
+
+    if (apiKey) {
+      const masked = `${apiKey.slice(0, 7)}…${apiKey.slice(-4)}`;
+      this._log(`Anthropic API key found (${masked}) — will pass to backend`);
+    } else {
+      this._log("WARNING: No Anthropic API key configured. Set waterfree.anthropicApiKey in settings or the ANTHROPIC_API_KEY environment variable.");
+      vscode.window.showWarningMessage(
+        "WaterFree: No Anthropic API key found. Set waterfree.anthropicApiKey in settings or the ANTHROPIC_API_KEY environment variable.",
+      );
+    }
+
+    const env = {
+      ...process.env,
+      WATERFREE_BACKEND_LOG_FILE: this._backendLogFilePath,
+      WATERFREE_EXTENSION_LOG_FILE: this._logger.logFilePath,
+      WATERFREE_GRAPH_BINARY: graphBinary,
+      ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+    };
+
+    fs.mkdirSync(path.dirname(this._backendLogFilePath), { recursive: true });
+    this._log(
+      `Starting Python backend: ${pythonPath} -m backend.server ` +
+      `(cwd=${this._workspacePath}, backendLog=${this._backendLogFilePath})`,
+    );
+
+    this._proc = spawn(pythonPath, ["-m", "backend.server"], {
+      cwd: this._extensionPath,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this._log(`Python backend spawned${this._proc.pid ? ` (pid=${this._proc.pid})` : ""}`);
+
+    this._proc.stdout?.setEncoding("utf-8");
+    this._proc.stdout?.on("data", (chunk: string) => this._onData(chunk));
+
+    this._proc.stderr?.setEncoding("utf-8");
+    this._proc.stderr?.on("data", (chunk: string) => {
+      // Log Python stderr to the output channel for debugging
+      for (const line of chunk.split("\n").filter(Boolean)) {
+        this._log(line, "py");
+      }
+    });
+
+    this._proc.on("exit", (code, signal) => {
+      this._log(`Python backend exited (code=${code}, signal=${signal})`);
+      this._proc = null;
+      // Reject all pending requests
+      for (const [, req] of this._pending) {
+        req.reject(new Error(`Backend exited unexpectedly (code=${code})`));
+      }
+      this._pending.clear();
+
+      if (!this._disposed) {
+        this._logger.show(true);
+        vscode.window.showWarningMessage(
+          "WaterFree backend stopped. Check WaterFree output or " +
+          `${this._backendLogFilePath}, then restart VS Code or re-run WaterFree: Start Session.`,
+        );
+      }
+    });
+
+    this._proc.on("error", (err) => {
+      this._log(`Failed to start Python backend: ${err.message}`);
+      this._proc = null;
+      this._logger.show(true);
+      vscode.window.showErrorMessage(
+        `WaterFree: Could not start Python backend — ${err.message}. Check waterfree.pythonPath.`,
+      );
+    });
+  }
+
+  dispose(): void {
+    this._disposed = true;
+    const proc = this._proc;
+    this._proc = null;
+    this._rejectPending(new Error("WaterFree backend stopped."));
+    if (proc) {
+      this._terminateBackend(proc);
+    }
+  }
+
+  get isRunning(): boolean {
+    return this._proc !== null && !this._proc.killed;
+  }
+
+  // ------------------------------------------------------------------
+  // Request / notification API
+  // ------------------------------------------------------------------
+
+  request<T = unknown>(method: string, params: object = {}): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      if (!this._proc || !this._proc.stdin || this._proc.killed || this._proc.exitCode !== null) {
+        this._log("Backend is not running; attempting automatic restart.");
+        this.start();
+      }
+
+      if (!this._proc || !this._proc.stdin || this._proc.killed || this._proc.exitCode !== null) {
+        reject(
+          new Error(
+            "WaterFree backend is not running. Check waterfree.pythonPath and backend logs.",
+          ),
+        );
+        return;
+      }
+
+      const id = String(this._nextId++);
+      this._log(`request ${id} -> ${method}`);
+      this._pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+      });
+
+      const msg = JSON.stringify({ id, method, params }) + "\n";
+      this._proc.stdin.write(msg, "utf-8", (err) => {
+        if (err) {
+          this._pending.delete(id);
+          this._log(`request ${id} write failed: ${err.message}`);
+          reject(err);
+        }
+      });
+    });
+  }
+
+  onNotification(method: string, handler: NotificationHandler): vscode.Disposable {
+    const list = this._notificationHandlers.get(method) ?? [];
+    list.push(handler);
+    this._notificationHandlers.set(method, list);
+    return new vscode.Disposable(() => {
+      const updated = (this._notificationHandlers.get(method) ?? []).filter(
+        (h) => h !== handler,
+      );
+      this._notificationHandlers.set(method, updated);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Internal
+  // ------------------------------------------------------------------
+
+  private _onData(chunk: string): void {
+    this._buffer += chunk;
+    const lines = this._buffer.split("\n");
+    // Keep the incomplete tail in the buffer
+    this._buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      this._dispatch(trimmed);
+    }
+  }
+
+  private _dispatch(json: string): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      this._log(`Could not parse backend message: ${json}`);
+      return;
+    }
+
+    // Notification — no id field
+    if (!("id" in msg) && typeof msg.method === "string") {
+      this._log(`notification <- ${msg.method}`);
+      const handlers = this._notificationHandlers.get(msg.method) ?? [];
+      for (const h of handlers) {
+        h(msg.params);
+      }
+      return;
+    }
+
+    // Response — has id field
+    const id = String(msg.id);
+    const pending = this._pending.get(id);
+    if (!pending) {
+      this._log(`Received response for unknown request id=${id}`);
+      return;
+    }
+    this._pending.delete(id);
+
+    if ("error" in msg && msg.error) {
+      const err = msg.error as { message?: string };
+      this._log(`request ${id} failed: ${err.message ?? "Unknown backend error"}`);
+      pending.reject(new Error(err.message ?? "Unknown backend error"));
+    } else {
+      this._log(`request ${id} <- ok`);
+      pending.resolve(msg.result);
+    }
+  }
+
+  private _log(text: string, scope: "bridge" | "py" = "bridge"): void {
+    this._logger.log(scope, text);
+  }
+
+  private _rejectPending(err: Error): void {
+    for (const [, req] of this._pending) {
+      req.reject(err);
+    }
+    this._pending.clear();
+  }
+
+  private _terminateBackend(proc: ChildProcess): void {
+    const pid = proc.pid;
+
+    try {
+      proc.stdin?.end();
+    } catch {
+      // Ignore stream shutdown errors during teardown.
+    }
+
+    try {
+      proc.kill();
+    } catch {
+      // Ignore kill errors and proceed to force-terminate fallbacks.
+    }
+
+    if (!pid) {
+      return;
+    }
+
+    if (process.platform === "win32") {
+      const result = spawnSync(
+        "taskkill",
+        ["/PID", String(pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      if (result.error) {
+        this._log(`taskkill failed for PID ${pid}: ${result.error.message}`);
+      }
+      return;
+    }
+
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process already exited.
+    }
+  }
+}

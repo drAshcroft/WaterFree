@@ -1,0 +1,191 @@
+{
+  "name": "waterfree",
+  "displayName": "WaterFree",
+  "description": "You architect. AI executes. Structured AI pair programming where you lead like a waterfall — free from the bottlenecks.",
+  "version": "0.1.0",
+  "publisher": "waterfree",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "waterfree",
+          "title": "WaterFree",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "waterfree": [
+        {
+          "id": "waterfree.planSidebar",
+          "name": "Plan",
+          "type": "webview",
+          "when": "true"
+        },
+        {
+          "id": "waterfree.quickActions",
+          "name": "Quick Actions",
+          "when": "true"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "waterfree.start",
+        "title": "WaterFree: Start Session"
+      },
+      {
+        "command": "waterfree.indexWorkspace",
+        "title": "WaterFree: Check/Index Workspace",
+        "icon": {
+          "light": "resources/index-light.svg",
+          "dark": "resources/index-dark.svg"
+        }
+      },
+      {
+        "command": "waterfree.generateAnnotation",
+        "title": "WaterFree: Generate Annotation"
+      },
+      {
+        "command": "waterfree.approveAnnotation",
+        "title": "✓ Approve"
+      },
+      {
+        "command": "waterfree.alterAnnotation",
+        "title": "✎ Alter"
+      },
+      {
+        "command": "waterfree.redirectTask",
+        "title": "⟳ Redirect"
+      },
+      {
+        "command": "waterfree.skipTask",
+        "title": "Skip Task"
+      },
+      {
+        "command": "waterfree.livePairDebug",
+        "title": "Live Debug"
+      },
+      {
+        "command": "waterfree.pushDebugToAgent",
+        "title": "WaterFree: Push Debug Snapshot to Agent"
+      },
+      {
+        "command": "waterfree.quickAction",
+        "title": "Run Quick Action"
+      },
+      {
+        "command": "waterfree.buildKnowledge",
+        "title": "WaterFree Snippetize: Snippetize Workspace",
+        "icon": "$(brain)"
+      },
+      {
+        "command": "waterfree.addKnowledgeRepo",
+        "title": "WaterFree Snippetize: Snippetize Repo (Git URL or Path)"
+      },
+      {
+        "command": "waterfree.extractProcedure",
+        "title": "WaterFree Snippetize: Snippetize Procedure",
+        "icon": "$(symbol-method)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "waterfree.livePairDebug",
+          "group": "waterfree@1",
+          "when": "inDebugMode"
+        },
+        {
+          "command": "waterfree.extractProcedure",
+          "group": "waterfree@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "waterfree.indexWorkspace",
+          "when": "view == waterfree.planSidebar",
+          "group": "navigation@2"
+        },
+        {
+          "command": "waterfree.buildKnowledge",
+          "when": "view == waterfree.planSidebar",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "waterfree.approveAnnotation",
+        "key": "ctrl+alt+a",
+        "when": "waterfree.awaitingReview"
+      },
+      {
+        "command": "waterfree.alterAnnotation",
+        "key": "ctrl+alt+e",
+        "when": "waterfree.awaitingReview"
+      },
+      {
+        "command": "waterfree.redirectTask",
+        "key": "ctrl+alt+r",
+        "when": "waterfree.awaitingReview"
+      }
+    ],
+    "configuration": {
+      "title": "WaterFree",
+      "properties": {
+        "waterfree.anthropicApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key. Leave blank to use ANTHROPIC_API_KEY environment variable."
+        },
+        "waterfree.planningModel": {
+          "type": "string",
+          "default": "claude-opus-4-6",
+          "description": "Model used for planning (higher capability)."
+        },
+        "waterfree.executionModel": {
+          "type": "string",
+          "default": "claude-sonnet-4-6",
+          "description": "Model used for annotation and code execution."
+        },
+        "waterfree.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to Python executable. Must be Python 3.10+."
+        },
+        "waterfree.rippleDepth": {
+          "type": "number",
+          "default": 3,
+          "description": "How many dependency hops to scan for side effects after each edit."
+        },
+        "waterfree.graphBinaryPath": {
+          "type": "string",
+          "default": "codebase-memory-mcp",
+          "description": "Path to the codebase-memory-mcp binary. Defaults to 'codebase-memory-mcp' (must be on PATH)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.config.js",
+    "watch": "node esbuild.config.js --watch",
+    "vscode:prepublish": "node esbuild.config.js --minify"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

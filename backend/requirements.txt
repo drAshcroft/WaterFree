@@ -1,0 +1,8 @@
+anthropic>=0.40.0
+mcp>=1.0.0
+tree-sitter>=0.25.0
+tree-sitter-python>=0.25.0
+tree-sitter-typescript>=0.23.0
+tree-sitter-javascript>=0.25.0
+# graph engine (internal codebase indexer — no external binary needed)
+# sqlite3 is stdlib; no extra package required
