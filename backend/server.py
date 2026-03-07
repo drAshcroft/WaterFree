@@ -15,6 +15,7 @@ Methods:
   generateAnnotation   {taskId, sessionId}                  → IntentAnnotation
   approveAnnotation    {annotationId, sessionId}            → {ok}
   alterAnnotation      {taskId, annotationId, feedback, sessionId} → IntentAnnotation
+  finalizeExecution    {sessionId, taskId, diagnostics[]}   → {ok, status, blockingDiagnostics}
   redirectTask         {taskId, instruction, sessionId}     → Task
   skipTask             {taskId, sessionId}                  → PlanDocument
   queueTodoInstruction {file, line, instruction, sessionId} → {queued, taskId}
@@ -327,7 +328,9 @@ class Server:
         vscode.workspace.applyEdit (no files are written by the backend).
 
         Expects the annotation to already be in APPROVED status (set by
-        handle_approve_annotation). Marks the task COMPLETE on success.
+        handle_approve_annotation). The task is only marked COMPLETE after
+        the editor applies the edits and finalizeExecution reports clean
+        diagnostics.
         """
         session_id = params["sessionId"]
         task_id = params["taskId"]
@@ -357,6 +360,12 @@ class Server:
         try:
             ctx = ContextBuilder(self._graph)
             context_str = ctx.build_execution_context(task, doc)
+            from datetime import datetime, timezone
+
+            task.status = TaskStatus.EXECUTING
+            task.blocked_reason = None
+            if not task.started_at:
+                task.started_at = datetime.now(timezone.utc).isoformat()
 
             claude = self._get_claude()
             edits = claude.execute_task(
@@ -366,15 +375,12 @@ class Server:
                 persona=doc.persona,
             )
 
-            # Mark task complete and record a session note
-            task.status = TaskStatus.COMPLETE
-            from datetime import datetime, timezone
             doc.notes.append(SessionNote(
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 author="ai",
                 text=(
                     f"Task executed: '{task.title}' — "
-                    f"{len(edits)} file edit(s) returned to editor."
+                    f"{len(edits)} file edit(s) returned to editor for apply/verification."
                 ),
             ))
 
@@ -395,10 +401,9 @@ class Server:
                     text=f"Ripple scan: {scan_analysis}",
                 ))
 
-            tm.finish()
             sm.save_session(doc)
 
-            log.info("executeTask: task '%s' complete, %d edit(s)", task.title, len(edits))
+            log.info("executeTask: task '%s' generated %d edit(s)", task.title, len(edits))
             return {
                 "edits": edits,
                 "taskId": task_id,
@@ -407,8 +412,66 @@ class Server:
             }
 
         except Exception:
+            task.status = TaskStatus.NEGOTIATING
             tm.force(AIState.IDLE)
             raise
+
+    def handle_finalize_execution(self, params: dict) -> dict:
+        session_id = params["sessionId"]
+        task_id = params["taskId"]
+        diagnostics = list(params.get("diagnostics", []))
+
+        doc = self._require_session(session_id)
+        task = next((t for t in doc.tasks if t.id == task_id), None)
+        if not task:
+            raise ValueError(f"Task not found: {task_id}")
+
+        sm = self._get_session_manager(doc.workspace_path)
+        tm = TurnManager(doc, sm)
+        from datetime import datetime, timezone
+
+        blocking = [
+            diag for diag in diagnostics
+            if str(diag.get("severity", "")).lower() == "error"
+        ]
+
+        if blocking:
+            task.status = TaskStatus.NEGOTIATING
+            task.blocked_reason = _blocking_diagnostic_summary(blocking[0], len(blocking))
+            doc.notes.append(SessionNote(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                author="system",
+                text=(
+                    f"Execution blocked for '{task.title}': "
+                    f"{_blocking_diagnostic_details(blocking)}"
+                ),
+            ))
+            tm.force(AIState.AWAITING_REVIEW)
+            sm.save_session(doc)
+            return {
+                "ok": False,
+                "status": task.status.value,
+                "blockingDiagnostics": blocking,
+            }
+
+        task.status = TaskStatus.COMPLETE
+        task.blocked_reason = None
+        task.completed_at = datetime.now(timezone.utc).isoformat()
+        doc.notes.append(SessionNote(
+            timestamp=task.completed_at,
+            author="system",
+            text=f"Execution finalized cleanly for '{task.title}'.",
+        ))
+        try:
+            tm.finish()
+        except InvalidTransitionError:
+            tm.force(AIState.IDLE)
+        sm.save_session(doc)
+        return {
+            "ok": True,
+            "status": task.status.value,
+            "blockingDiagnostics": [],
+        }
 
     def handle_save_session(self, params: dict) -> dict:
         session_data = params.get("session", {})
@@ -848,6 +911,7 @@ class Server:
         "generateAnnotation":   handle_generate_annotation,
         "approveAnnotation":    handle_approve_annotation,
         "executeTask":          handle_execute_task,
+        "finalizeExecution":    handle_finalize_execution,
         "alterAnnotation":      handle_alter_annotation,
         "redirectTask":         handle_redirect_task,
         "skipTask":             handle_skip_task,
@@ -916,6 +980,41 @@ def _write(obj: dict) -> None:
 
 def _write_notification(method: str, params: dict) -> None:
     _write({"method": method, "params": params})
+
+
+def _blocking_diagnostic_summary(diagnostic: dict, total: int) -> str:
+    location = _diagnostic_location(diagnostic)
+    message = str(diagnostic.get("message", "")).strip()
+    if total <= 1:
+        return f"{location} — {message}" if location else message
+    prefix = f"{location} — " if location else ""
+    return f"{prefix}{message} (+{total - 1} more)"
+
+
+def _blocking_diagnostic_details(diagnostics: list[dict]) -> str:
+    parts = []
+    for diagnostic in diagnostics[:3]:
+        location = _diagnostic_location(diagnostic)
+        message = str(diagnostic.get("message", "")).strip()
+        source = str(diagnostic.get("source", "")).strip()
+        prefix = f"{location}: " if location else ""
+        suffix = f" [{source}]" if source else ""
+        parts.append(f"{prefix}{message}{suffix}")
+    if len(diagnostics) > 3:
+        parts.append(f"... plus {len(diagnostics) - 3} more")
+    return "; ".join(parts)
+
+
+def _diagnostic_location(diagnostic: dict) -> str:
+    file_path = str(diagnostic.get("file", "")).strip()
+    line = diagnostic.get("line")
+    if file_path and line:
+        return f"{file_path}:{line}"
+    if file_path:
+        return file_path
+    if line:
+        return f"line {line}"
+    return ""
 
 
 def _error(req_id: Any, code: int, message: str) -> dict:

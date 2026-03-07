@@ -62,6 +62,23 @@ export interface PlanData {
   tasks: TaskData[];
 }
 
+export interface BacklogTaskData {
+  id: string;
+  title: string;
+  priority: TaskPriority;
+  phase?: string;
+  owner: TaskOwner;
+  targetCoord: CodeCoord;
+  blockedReason?: string;
+  status: "pending" | "annotating" | "negotiating" | "executing" | "complete" | "skipped";
+}
+
+export interface BacklogSummaryData {
+  nextTask: BacklogTaskData | null;
+  readyTasks: BacklogTaskData[];
+  totalReady: number;
+}
+
 export type SidebarAction =
   | { type: "startSession"; goal: string; persona: string }
   | { type: "openTask"; taskId: string }
@@ -78,6 +95,7 @@ export type SidebarAction =
 
 type SidebarViewState = {
   plan: PlanData | null;
+  backlogSummary: BacklogSummaryData;
   busyMessage: string | null;
   checkingForSession: boolean;
   debugActive: boolean;
@@ -111,6 +129,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
   private _view: vscode.WebviewView | null = null;
   private _state: SidebarViewState = {
     plan: null,
+    backlogSummary: {
+      nextTask: null,
+      readyTasks: [],
+      totalReady: 0,
+    },
     busyMessage: null,
     checkingForSession: true,
     debugActive: false,
@@ -141,6 +164,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   update(plan: PlanData | null): void {
     this._state = { ...this._state, plan };
+    this._postState();
+  }
+
+  setBacklogSummary(backlogSummary: BacklogSummaryData): void {
+    this._state = { ...this._state, backlogSummary };
     this._postState();
   }
 
@@ -193,7 +221,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     switch (message.type) {
       case "startSession":
         if (typeof message.goal === "string" && message.goal.trim()) {
-          this._actionEmitter.fire({ type: "startSession", goal: message.goal.trim() });
+          this._actionEmitter.fire({
+            type: "startSession",
+            goal: message.goal.trim(),
+            persona: typeof message.persona === "string" ? message.persona : "architect",
+          });
         }
         return;
       case "openTask":
@@ -542,9 +574,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       { id: "debug_detective",icon: "Det", title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
       { id: "yolo",          icon: "YOLO", title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
       { id: "socratic",      icon: "Soc",  title: "Socratic Coach",        tagline: "Guides with questions instead of answers" },
+      { id: "stub_wireframer", icon: "Stub", title: "Stub/Wireframes",     tagline: "Compilable skeletons, TODO handoff, design gaps" },
     ];
     let state = {
       plan: null,
+      backlogSummary: { nextTask: null, readyTasks: [], totalReady: 0 },
       busyMessage: null,
       checkingForSession: true,
       debugActive: false,
@@ -694,6 +728,58 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       ].join("");
     }
 
+    function renderBacklog(backlogSummary) {
+      if (!state.plan || !backlogSummary || backlogSummary.totalReady <= 0) {
+        return "";
+      }
+
+      const nextTask = backlogSummary.nextTask;
+      const remaining = (backlogSummary.readyTasks || []).filter((task) =>
+        !nextTask || task.id !== nextTask.id,
+      );
+      const nextMarkup = nextTask
+        ? [
+            '<div class="annotation" style="margin-top:0">',
+            '<p class="eyebrow">What Next</p>',
+            '<div class="title-row">',
+            '<div class="annotation-summary">[' + escapeHtml(nextTask.priority) + "] " + escapeHtml(nextTask.title) + "</div>",
+            statusBadge(nextTask.status || "pending"),
+            "</div>",
+            '<p class="location">' + escapeHtml(formatCoord(nextTask.targetCoord || {})) + "</p>",
+            nextTask.blockedReason ? '<p class="busy">Blocked: ' + escapeHtml(nextTask.blockedReason) + "</p>" : "",
+            "</div>",
+          ].join("")
+        : '<p class="empty">No ready backlog task.</p>';
+
+      const restMarkup = remaining.length > 0
+        ? remaining.map((task) => [
+            '<div class="task">',
+            '<div class="title-row">',
+            '<div class="task-title">[' + escapeHtml(task.priority) + "] " + escapeHtml(task.title) + "</div>",
+            statusBadge(task.status || "pending"),
+            "</div>",
+            '<p class="location">' + escapeHtml(formatCoord(task.targetCoord || {})) + "</p>",
+            task.phase ? '<p class="task-description">Phase: ' + escapeHtml(task.phase) + "</p>" : "",
+            "</div>",
+          ].join("")).join("")
+        : '<p class="empty">No additional ready backlog tasks.</p>';
+
+      return [
+        '<section class="card">',
+        '<div class="card-body">',
+        '<div class="title-row">',
+        '<div>',
+        '<p class="eyebrow">Backlog Handoff</p>',
+        '<h3>' + escapeHtml(String(backlogSummary.totalReady)) + " ready task(s)</h3>",
+        "</div>",
+        "</div>",
+        nextMarkup,
+        '<div class="task-list" style="margin-top:10px">' + restMarkup + "</div>",
+        "</div>",
+        "</section>",
+      ].join("");
+    }
+
     function renderDebugPanel() {
       if (!state.debugActive) {
         return "";
@@ -756,6 +842,7 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         "</section>",
         renderDebugPanel(),
         renderPlan(state.plan),
+        renderBacklog(state.backlogSummary),
         "</div>",
       ].join("");
 

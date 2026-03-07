@@ -15,7 +15,13 @@ import anthropic
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
-from backend.session.models import Task, IntentAnnotation, AnnotationStatus, TaskStatus
+from backend.session.models import (
+    AnnotationStatus,
+    CodeCoord,
+    IntentAnnotation,
+    Task,
+    TaskPriority,
+)
 from backend.todo.store import TaskStore
 from backend.llm import prompt_templates
 from backend.llm.prompt_templates import build_system_prompt
@@ -40,7 +46,12 @@ _TASK_SCHEMA = {
                     "description": {"type": "string"},
                     "targetFile": {"type": "string"},
                     "targetFunction": {"type": "string"},
-                    "priority": {"type": "integer"},
+                    "priority": {
+                        "anyOf": [
+                            {"type": "integer"},
+                            {"type": "string", "enum": ["P0", "P1", "P2", "P3", "spike"]},
+                        ]
+                    },
                 },
                 "required": ["title", "description", "targetFile"],
             },
@@ -109,6 +120,22 @@ def _tool(name: str, description: str, schema: dict) -> dict:
     return {"name": name, "description": description, "input_schema": schema}
 
 
+def _coerce_priority(raw_priority: Any) -> TaskPriority:
+    if isinstance(raw_priority, str):
+        try:
+            return TaskPriority(raw_priority)
+        except ValueError:
+            return TaskPriority.P2
+    if isinstance(raw_priority, int):
+        return {
+            0: TaskPriority.P0,
+            1: TaskPriority.P1,
+            2: TaskPriority.P2,
+            3: TaskPriority.P3,
+        }.get(raw_priority, TaskPriority.P2)
+    return TaskPriority.P2
+
+
 class ClaudeClient:
     def __init__(
         self,
@@ -162,9 +189,11 @@ class ClaudeClient:
             task = Task(
                 title=raw.get("title", ""),
                 description=raw.get("description", ""),
-                target_file=raw.get("targetFile", ""),
-                target_function=raw.get("targetFunction"),
-                priority=raw.get("priority", i),
+                target_coord=CodeCoord(
+                    file=raw.get("targetFile", ""),
+                    method=raw.get("targetFunction"),
+                ),
+                priority=_coerce_priority(raw.get("priority", i)),
             )
             tasks.append(task)
 
@@ -197,9 +226,11 @@ class ClaudeClient:
         tool_input = self._extract_tool_input(response, "submit_annotation")
         annotation = IntentAnnotation(
             task_id=task.id,
-            target_file=task.target_file,
-            target_line=task.target_line or 0,
-            target_function=task.target_function or "",
+            target_coord=CodeCoord(
+                file=task.target_file,
+                line=task.target_line,
+                method=task.target_function,
+            ),
             summary=tool_input.get("summary", ""),
             detail=tool_input.get("detail", ""),
             will_create=tool_input.get("willCreate", []),
@@ -307,9 +338,11 @@ class ClaudeClient:
         tool_input = self._extract_tool_input(response, "submit_annotation")
         return IntentAnnotation(
             task_id=task.id,
-            target_file=task.target_file,
-            target_line=old_annotation.target_line,
-            target_function=old_annotation.target_function,
+            target_coord=CodeCoord(
+                file=task.target_file,
+                line=old_annotation.target_line,
+                method=old_annotation.target_function,
+            ),
             summary=tool_input.get("summary", ""),
             detail=tool_input.get("detail", ""),
             will_create=tool_input.get("willCreate", []),

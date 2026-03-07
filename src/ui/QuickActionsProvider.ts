@@ -4,12 +4,12 @@
  * Displays a second TreeView panel ("Quick Actions") in the WaterFree
  * sidebar. The buttons shown adapt to the language of the currently active
  * editor file. Clicking a button either:
- *   a) Immediately inserts a structured [pp] TODO comment at the top of the
+ *   a) Immediately inserts a structured [wf] TODO comment at the top of the
  *      active file, or
  *   b) Opens a guided wizard (multi-step showInputBox) that builds a richer
  *      TODO before inserting it.
  *
- * The TodoWatcher picks up [pp] TODOs on the next file-save and queues them
+ * The TodoWatcher picks up [wf] TODOs on the next file-save and queues them
  * as instructions to the AI — no backend round-trip required for the button
  * press itself.
  */
@@ -367,7 +367,7 @@ const TODOS = {
   cleanup: (lang: string): string[] => {
     const style = lang === "python" ? "snake_case, PEP 8" : lang === "csharp" ? "PascalCase, C# conventions" : "camelCase, standard conventions";
     return [
-      "TODO: [pp] Clean up this file.",
+      "TODO: [wf] Clean up this file.",
       `- Remove dead code, commented-out blocks, and unused imports`,
       `- Fix naming to follow ${style}`,
       `- Reduce duplication without premature abstraction`,
@@ -376,7 +376,7 @@ const TODOS = {
   },
 
   findBugs: (): string[] => [
-    "TODO: [pp] Find bugs and code smells in this file.",
+    "TODO: [wf] Find bugs and code smells in this file.",
     "- Identify logic errors and incorrect assumptions",
     "- Flag anti-patterns and over-engineered sections",
     "- Note any paths that could crash or produce incorrect output",
@@ -384,7 +384,7 @@ const TODOS = {
   ],
 
   wtf: (): string[] => [
-    "TODO: [pp] Audit this file. Be blunt.",
+    "TODO: [wf] Audit this file. Be blunt.",
     "- What does this file actually do? (plain English, 2 sentences)",
     "- What are the worst parts? Name them specifically.",
     "- What should be fixed or rewritten first, and why?",
@@ -392,7 +392,7 @@ const TODOS = {
   ],
 
   explain: (): string[] => [
-    "TODO: [pp] Explain this file.",
+    "TODO: [wf] Explain this file.",
     "- What is the purpose of this file?",
     "- What are the main components (classes, functions, exports)?",
     "- What does a caller need to know to use this correctly?",
@@ -400,7 +400,7 @@ const TODOS = {
   ],
 
   typeSafety: (): string[] => [
-    "TODO: [pp] Review this file for type safety.",
+    "TODO: [wf] Review this file for type safety.",
     "- Find all uses of `any` and suggest specific types",
     "- Identify unsafe type assertions (`as SomeType`)",
     "- Flag missing null/undefined checks at boundaries",
@@ -408,7 +408,7 @@ const TODOS = {
   ],
 
   solid: (): string[] => [
-    "TODO: [pp] Review this file against SOLID principles.",
+    "TODO: [wf] Review this file against SOLID principles.",
     "- SRP: Does each class have a single, clear responsibility?",
     "- OCP: Is it open for extension without modification?",
     "- LSP: Do subclasses honour the contracts of their base types?",
@@ -417,7 +417,7 @@ const TODOS = {
   ],
 
   security: (): string[] => [
-    "TODO: [pp] Security audit this file.",
+    "TODO: [wf] Security audit this file.",
     "- Check for injection vulnerabilities (SQL, command, path traversal, template)",
     "- Review input validation and sanitisation at every entry point",
     "- Look for hardcoded secrets, credentials, or API keys",
@@ -426,14 +426,14 @@ const TODOS = {
   ],
 
   documentPython: (style: string, scope: string): string[] => [
-    `TODO: [pp] Add ${style}-style docstrings to this file.`,
+    `TODO: [wf] Add ${style}-style docstrings to this file.`,
     `Scope: ${scope}`,
     `Include all relevant sections: Parameters, Returns, Raises, Examples`,
     `Do not modify any existing logic — documentation only`,
   ],
 
   documentJs: (scope: string): string[] => [
-    "TODO: [pp] Add JSDoc comments to this file.",
+    "TODO: [wf] Add JSDoc comments to this file.",
     `Scope: ${scope}`,
     "Include @param, @returns, @throws tags with types",
     "Do not modify any existing logic — documentation only",
@@ -451,7 +451,7 @@ const TODOS = {
       : `src/__tests__/${toPascalCase(target)}.test.ts`;
 
     const lines = [
-      `TODO: [pp] Build a BDD-style test suite for ${target}.`,
+      `TODO: [wf] Build a BDD-style test suite for ${target}.`,
       `Happy path: ${happyPath}`,
     ];
 

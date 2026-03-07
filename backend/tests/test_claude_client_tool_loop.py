@@ -1,4 +1,9 @@
+import sys
+import types
 import unittest
+
+if "anthropic" not in sys.modules:
+    sys.modules["anthropic"] = types.SimpleNamespace(Anthropic=object, types=types.SimpleNamespace(Message=object))
 
 from backend.llm.claude_client import ClaudeClient
 

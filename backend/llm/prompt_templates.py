@@ -22,7 +22,7 @@ def build_system_prompt(stage: str, persona_id: str = "default") -> str:
     if stage_prompt is None:
         raise ValueError(f"Unknown prompt stage: {stage!r}")
 
-    fragment = get_persona_fragment(persona_id)
+    fragment = get_persona_fragment(persona_id, stage.upper())
     if not fragment:
         return stage_prompt
     return fragment + "\n" + stage_prompt
@@ -84,6 +84,7 @@ The architecture block includes:
 - Louvain clusters (hidden functional modules discovered across packages)
 - Architecture Decision Record (ADR) with PURPOSE, STACK, ARCHITECTURE, PATTERNS,
   TRADEOFFS, and PHILOSOPHY sections — treat these as binding constraints
+- DESIGN INPUTS drawn from the current session and local design documents
 
 Your job is to create a clear, ordered implementation plan broken into discrete tasks.
 Each task must target a specific file and function where the work will happen.
@@ -123,6 +124,7 @@ The context block includes:
     LOW      = 4+ hops — monitor but unlikely to break
 - IMPACT SUMMARY: counts of callers at each risk level
 - UNCOMMITTED CHANGES: files already modified in the working tree before this annotation
+- DESIGN INPUTS from the session plan, project memory, and matched design documents
 
 Rules:
 - Reference the CALLERS list explicitly. For each CRITICAL caller, state whether your

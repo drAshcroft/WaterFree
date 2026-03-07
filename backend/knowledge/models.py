@@ -24,6 +24,7 @@ class KnowledgeEntry:
     content_hash: str          # SHA-256 of code — used for dedup
     created_at: str            # ISO-8601 timestamp
     source_repo_url: str = ""  # git remote URL (optional)
+    context: str = ""          # caveats, dependencies, related files, when NOT to use
 
     @classmethod
     def create(
@@ -36,6 +37,7 @@ class KnowledgeEntry:
         code: str,
         tags: list[str],
         source_repo_url: str = "",
+        context: str = "",
     ) -> "KnowledgeEntry":
         return cls(
             id=str(uuid.uuid4()),
@@ -49,6 +51,7 @@ class KnowledgeEntry:
             content_hash=hashlib.sha256(code.encode()).hexdigest(),
             created_at=datetime.now(timezone.utc).isoformat(),
             source_repo_url=source_repo_url,
+            context=context,
         )
 
     def to_dict(self) -> dict:
@@ -64,6 +67,7 @@ class KnowledgeEntry:
             "contentHash": self.content_hash,
             "createdAt": self.created_at,
             "sourceRepoUrl": self.source_repo_url,
+            "context": self.context,
         }
 
 

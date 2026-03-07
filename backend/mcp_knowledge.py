@@ -18,6 +18,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
+from backend.knowledge.models import KnowledgeEntry
 from backend.knowledge.store import KnowledgeStore
 
 mcp = FastMCP("pairprogram-knowledge")
@@ -42,6 +43,7 @@ def _entry_to_dict(entry) -> dict:
         "snippet_type": entry.snippet_type,
         "code": entry.code,
         "tags": entry.tags,
+        "context": entry.context,
         "source_repo": entry.source_repo,
         "source_file": entry.source_file,
         "source_repo_url": entry.source_repo_url,
@@ -113,11 +115,97 @@ def _knowledge_stats_impl() -> str:
     )
 
 
+def _add_knowledge_impl(
+    title: str,
+    description: str,
+    code: str,
+    snippet_type: str,
+    source_repo: str,
+    source_file: str = "",
+    tags: list[str] | None = None,
+    context: str = "",
+    source_repo_url: str = "",
+) -> str:
+    """Add a knowledge entry directly to the global store.
+
+    Use this when you discover a reusable pattern, utility, convention, or API usage
+    that would benefit future coding sessions across projects. Always search first to
+    avoid duplicates.
+
+    Args:
+        title: Short descriptive title (e.g. "Exponential backoff retry decorator").
+        description: 2-4 sentence plain-English explanation of what this does and when to use it.
+        code: The actual code content to store.
+        snippet_type: One of: pattern, utility, style, api_usage, convention.
+        source_repo: The project name or path this came from (e.g. "WaterFree", "c:/projects/myapp").
+        source_file: Relative path of the source file within the repo (optional).
+        tags: Relevant tags e.g. ["python", "async", "error-handling"] (optional).
+        context: Extra context — caveats, version requirements, related files, when NOT to use (optional).
+        source_repo_url: Git remote URL of the source repo (optional).
+
+    Returns JSON with the new entry id and a confirmation message.
+    """
+    store = _get_store()
+    entry = KnowledgeEntry.create(
+        source_repo=source_repo,
+        source_file=source_file,
+        snippet_type=snippet_type,
+        title=title,
+        description=description,
+        code=code,
+        tags=tags or [],
+        context=context,
+        source_repo_url=source_repo_url,
+    )
+    added = store.add_entry(entry)
+    store.upsert_repo(source_repo, source_file or source_repo, source_repo_url)
+    return json.dumps(
+        {
+            "id": entry.id,
+            "added": added,
+            "message": (
+                f"Entry '{title}' added to knowledge store."
+                if added
+                else f"Entry '{title}' already exists (duplicate content — skipped)."
+            ),
+        },
+        indent=2,
+    )
+
+
+def _delete_knowledge_impl(entry_id: str) -> str:
+    """Delete a knowledge entry from the global store by its ID.
+
+    Use this to remove entries that are incorrect, outdated, or no longer relevant.
+    The entry ID is returned by add_knowledge and search_knowledge.
+
+    Args:
+        entry_id: The UUID of the entry to delete.
+
+    Returns JSON confirming deletion or noting the entry was not found.
+    """
+    store = _get_store()
+    deleted = store.delete_entry(entry_id)
+    return json.dumps(
+        {
+            "deleted": deleted,
+            "message": (
+                f"Entry {entry_id} deleted."
+                if deleted
+                else f"Entry {entry_id} not found."
+            ),
+        },
+        indent=2,
+    )
+
+
 search_knowledge = mcp.tool()(instrument_tool(log, "search_knowledge", _search_knowledge_impl))
 list_knowledge_sources = mcp.tool()(
     instrument_tool(log, "list_knowledge_sources", _list_knowledge_sources_impl)
 )
 knowledge_stats = mcp.tool()(instrument_tool(log, "knowledge_stats", _knowledge_stats_impl))
+add_knowledge = mcp.tool()(instrument_tool(log, "add_knowledge", _add_knowledge_impl))
+delete_knowledge = mcp.tool()(instrument_tool(log, "delete_knowledge", _delete_knowledge_impl))
 
 
 if __name__ == "__main__":

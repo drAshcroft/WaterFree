@@ -184,6 +184,38 @@ class IntentAnnotation:
     created_at: Optional[str] = None
     reviewed_at: Optional[str] = None
 
+    @property
+    def target_file(self) -> str:
+        return self.target_coord.file
+
+    @target_file.setter
+    def target_file(self, value: str) -> None:
+        self.target_coord.file = value
+
+    @property
+    def target_class(self) -> Optional[str]:
+        return self.target_coord.class_name
+
+    @target_class.setter
+    def target_class(self, value: Optional[str]) -> None:
+        self.target_coord.class_name = value
+
+    @property
+    def target_line(self) -> Optional[int]:
+        return self.target_coord.line
+
+    @target_line.setter
+    def target_line(self, value: Optional[int]) -> None:
+        self.target_coord.line = value
+
+    @property
+    def target_function(self) -> Optional[str]:
+        return self.target_coord.method
+
+    @target_function.setter
+    def target_function(self, value: Optional[str]) -> None:
+        self.target_coord.method = value
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -260,6 +292,38 @@ class Task:
     annotations: list[IntentAnnotation] = field(default_factory=list)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+    @property
+    def target_file(self) -> str:
+        return self.target_coord.file
+
+    @target_file.setter
+    def target_file(self, value: str) -> None:
+        self.target_coord.file = value
+
+    @property
+    def target_class(self) -> Optional[str]:
+        return self.target_coord.class_name
+
+    @target_class.setter
+    def target_class(self, value: Optional[str]) -> None:
+        self.target_coord.class_name = value
+
+    @property
+    def target_line(self) -> Optional[int]:
+        return self.target_coord.line
+
+    @target_line.setter
+    def target_line(self, value: Optional[int]) -> None:
+        self.target_coord.line = value
+
+    @property
+    def target_function(self) -> Optional[str]:
+        return self.target_coord.method
+
+    @target_function.setter
+    def target_function(self, value: Optional[str]) -> None:
+        self.target_coord.method = value
 
     def to_dict(self) -> dict:
         return {

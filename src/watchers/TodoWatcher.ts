@@ -19,7 +19,7 @@ export type TodoHandler = (todos: WfTodo[]) => void;
 // Matches:   // TODO: [wf] <instruction>
 //             # TODO: [wf] <instruction>
 //            /* TODO: [wf] <instruction>
-const PP_TODO_PATTERN = /\/\/\s*TODO:\s*\[pp\]\s*(.+)|#\s*TODO:\s*\[pp\]\s*(.+)/gi;
+const WF_TODO_PATTERN = /\/\/\s*TODO:\s*\[wf\]\s*(.+)|#\s*TODO:\s*\[wf\]\s*(.+)/gi;
 
 export class TodoWatcher implements vscode.Disposable {
   private readonly _disposables: vscode.Disposable[] = [];
@@ -42,8 +42,8 @@ export class TodoWatcher implements vscode.Disposable {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      PP_TODO_PATTERN.lastIndex = 0;
-      const match = PP_TODO_PATTERN.exec(line);
+      WF_TODO_PATTERN.lastIndex = 0;
+      const match = WF_TODO_PATTERN.exec(line);
       if (match) {
         const instruction = (match[1] ?? match[2] ?? "").trim();
         if (instruction) {

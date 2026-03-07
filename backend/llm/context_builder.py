@@ -15,13 +15,14 @@ reading raw files or walking an adjacency map. This gives Claude:
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge import retriever as knowledge_retriever
 from backend.llm.context_lifecycle import ContextLifecycleManager
-from backend.session.models import AnnotationStatus, IntentAnnotation, PlanDocument, Task
+from backend.session.models import AnnotationStatus, PlanDocument, Task
 
 log = logging.getLogger(__name__)
 
@@ -58,16 +59,18 @@ class ContextBuilder:
         completed = plan.completed_tasks()
         completed_str = ", ".join(t.title for t in completed) or "none yet"
 
-        memory_text = _read_pairs_memory(plan.workspace_path)
-        memory_section = f"PROJECT MEMORY:\n{memory_text}\n\n" if memory_text else ""
-
+        design_inputs = self._build_design_inputs(
+            workspace_path=plan.workspace_path,
+            session_goal=goal,
+            query=goal,
+        )
         kb_section = knowledge_retriever.search_for_context(goal)
         kb_text = f"\n\n{kb_section}" if kb_section else ""
 
         raw = (
             f"CODEBASE ARCHITECTURE:\n{arch_text}\n\n"
             f"{adr_text}"
-            f"{memory_section}"
+            f"{design_inputs}"
             f"OPEN ISSUES: {todo_count} TODO/FIXME/HACK markers in codebase\n\n"
             f"SESSION GOAL: {goal}\n"
             f"COMPLETED TASKS: {completed_str}"
@@ -93,6 +96,15 @@ class ContextBuilder:
         completed = plan.completed_tasks()
         completed_str = ", ".join(t.title for t in completed) or "none"
 
+        design_query = " ".join(
+            part for part in [plan.goal_statement, task.title, task.description] if part
+        )
+        design_inputs = self._build_design_inputs(
+            workspace_path=plan.workspace_path,
+            session_goal=plan.goal_statement,
+            current_task=task,
+            query=design_query,
+        )
         kb_section = knowledge_retriever.search_for_context(task.description)
         kb_text = f"\n\n{kb_section}" if kb_section else ""
 
@@ -101,6 +113,7 @@ class ContextBuilder:
             f"TARGET FILE: {task.target_file}\n"
             f"TARGET FUNCTION: {task.target_function or '(not specified)'}\n\n"
             f"CURRENT CODE:\n```\n{target_code}\n```\n\n"
+            f"{design_inputs}"
             f"CALLS (outbound, depth 2):\n{outbound_text}\n\n"
             f"CALLERS (inbound, blast radius):\n{callers_text}\n"
             f"{risk_summary}"
@@ -318,6 +331,48 @@ class ContextBuilder:
         except Exception:
             return "(git unavailable)"
 
+    def _build_design_inputs(
+        self,
+        *,
+        workspace_path: str,
+        session_goal: str,
+        query: str,
+        current_task: Optional[Task] = None,
+    ) -> str:
+        keywords = _extract_keywords(query)
+        sections = ["DESIGN INPUTS:"]
+        sections.append(f"SESSION GOAL:\n{session_goal}")
+
+        if current_task:
+            sections.append(
+                "CURRENT TASK:\n"
+                f"{current_task.title}\n"
+                f"{current_task.description}"
+            )
+
+        plan_text = _read_workspace_note(workspace_path, ".waterfree", "plan.md")
+        if plan_text:
+            sections.append(
+                ".waterfree/plan.md:\n"
+                f"{_excerpt_text(plan_text, keywords, max_chars=900)}"
+            )
+
+        memory_text = _read_pairs_memory(workspace_path)
+        if memory_text:
+            sections.append(
+                ".waterfree/memory.md:\n"
+                f"{_excerpt_text(memory_text, keywords, max_chars=900)}"
+            )
+
+        matched_docs = _select_design_docs(workspace_path, keywords, limit=2)
+        if matched_docs:
+            doc_sections = []
+            for rel_path, excerpt in matched_docs:
+                doc_sections.append(f"{rel_path}:\n{excerpt}")
+            sections.append("MATCHED DOCS:\n" + "\n\n".join(doc_sections))
+
+        return "\n\n".join(sections) + "\n\n"
+
     def _govern_context(
         self,
         raw: str,
@@ -408,6 +463,92 @@ def _read_file(path: str) -> Optional[str]:
         return Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
+
+
+def _read_workspace_note(workspace_path: str, *parts: str) -> Optional[str]:
+    target = Path(workspace_path).joinpath(*parts)
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace").strip()
+        return text if text else None
+    except OSError:
+        return None
+
+
+def _extract_keywords(text: str) -> list[str]:
+    stop_words = {
+        "the", "and", "for", "with", "this", "that", "from", "into", "then", "when",
+        "have", "has", "will", "your", "task", "goal", "plan", "rough", "roughing",
+        "stub", "stubs", "wireframe", "wireframes", "subsystem", "feature",
+    }
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9_]+", text.casefold()):
+        if len(token) < 2 or token in stop_words or token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+    return keywords[:16]
+
+
+def _excerpt_text(text: str, keywords: list[str], max_chars: int = 900) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    selected: list[str] = []
+    if keywords:
+        for line in lines:
+            lower_line = line.casefold()
+            if any(keyword in lower_line for keyword in keywords):
+                selected.append(line)
+            if sum(len(item) + 1 for item in selected) >= max_chars:
+                break
+
+    if not selected:
+        selected = lines
+
+    excerpt_lines: list[str] = []
+    total = 0
+    for line in selected:
+        addition = len(line) + 1
+        if total + addition > max_chars:
+            break
+        excerpt_lines.append(line)
+        total += addition
+
+    if not excerpt_lines:
+        excerpt_lines.append(selected[0][:max_chars])
+
+    excerpt = "\n".join(excerpt_lines)
+    if len(excerpt) < len("\n".join(selected)):
+        excerpt += "\n..."
+    return excerpt
+
+
+def _select_design_docs(
+    workspace_path: str,
+    keywords: list[str],
+    limit: int = 2,
+) -> list[tuple[str, str]]:
+    docs_dir = Path(workspace_path) / "docs"
+    if not docs_dir.exists():
+        return []
+
+    matches: list[tuple[int, str, str]] = []
+    for path in sorted(docs_dir.glob("*.md")):
+        text = _read_file(str(path))
+        if not text:
+            continue
+        search_space = f"{path.name}\n{text[:6000]}".casefold()
+        score = sum(search_space.count(keyword) for keyword in keywords) if keywords else 0
+        if score <= 0:
+            continue
+        rel_path = path.relative_to(Path(workspace_path)).as_posix()
+        excerpt = _excerpt_text(text, keywords, max_chars=900)
+        matches.append((score, rel_path, excerpt))
+
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return [(rel_path, excerpt) for _, rel_path, excerpt in matches[:limit]]
 
 
 def _read_pairs_memory(workspace_path: str) -> Optional[str]:

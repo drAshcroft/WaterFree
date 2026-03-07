@@ -38,6 +38,7 @@ class KnowledgeStore:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
+        self._migrate()
 
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
@@ -61,7 +62,8 @@ class KnowledgeStore:
                 tags         TEXT NOT NULL DEFAULT '[]',
                 content_hash TEXT NOT NULL UNIQUE,
                 created_at   TEXT NOT NULL,
-                source_repo_url TEXT NOT NULL DEFAULT ''
+                source_repo_url TEXT NOT NULL DEFAULT '',
+                context      TEXT NOT NULL DEFAULT ''
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -87,6 +89,15 @@ class KnowledgeStore:
         """)
         self._conn.commit()
 
+    def _migrate(self) -> None:
+        """Add new columns to existing databases that predate schema additions."""
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(knowledge_entries)")}
+        if "context" not in cols:
+            self._conn.execute(
+                "ALTER TABLE knowledge_entries ADD COLUMN context TEXT NOT NULL DEFAULT ''"
+            )
+            self._conn.commit()
+
     # ------------------------------------------------------------------
     # Write
     # ------------------------------------------------------------------
@@ -98,8 +109,8 @@ class KnowledgeStore:
                 """
                 INSERT INTO knowledge_entries
                     (id, source_repo, source_file, snippet_type, title, description,
-                     code, tags, content_hash, created_at, source_repo_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     code, tags, content_hash, created_at, source_repo_url, context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.id,
@@ -113,6 +124,7 @@ class KnowledgeStore:
                     entry.content_hash,
                     entry.created_at,
                     entry.source_repo_url,
+                    entry.context,
                 ),
             )
             self._conn.commit()
@@ -142,6 +154,14 @@ class KnowledgeStore:
             "SELECT COUNT(*) FROM knowledge_entries WHERE source_repo = ?", (name,)
         ).fetchone()
         return row[0] if row else 0
+
+    def delete_entry(self, entry_id: str) -> bool:
+        """Delete a single knowledge entry by ID. Returns True if it existed."""
+        cur = self._conn.execute(
+            "DELETE FROM knowledge_entries WHERE id = ?", (entry_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def delete_repo(self, name: str) -> int:
         """Delete all entries for a repo. Returns number of entries deleted."""
@@ -244,6 +264,7 @@ def _row_to_entry(row: sqlite3.Row) -> KnowledgeEntry:
         content_hash=row["content_hash"],
         created_at=row["created_at"],
         source_repo_url=row["source_repo_url"] or "",
+        context=row["context"] if "context" in row.keys() else "",
     )
 
 

@@ -17,6 +17,7 @@ import { LiveDebugCapture } from "./debug/LiveDebugCapture.js";
 import { PairLogger } from "./logging/PairLogger.js";
 import { StatusBarManager } from "./ui/StatusBarManager.js";
 import {
+  type BacklogSummaryData,
   PlanSidebarProvider,
   getAnnotationTargetLine,
   getTaskTargetLine,
@@ -44,6 +45,20 @@ type IndexWorkspaceResult = {
   changedPaths?: string[];
   dbPath?: string;
   scannedFiles?: number;
+};
+
+type ExecutionDiagnostic = {
+  file: string;
+  line: number;
+  severity: "error" | "warning" | "info" | "hint";
+  source: string;
+  message: string;
+};
+
+type FinalizeExecutionResult = {
+  ok: boolean;
+  status: string;
+  blockingDiagnostics: ExecutionDiagnostic[];
 };
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -354,15 +369,48 @@ class WaterFreeController implements vscode.Disposable {
             sessionId: this._sessionId!,
           });
 
-          await this._applyEdits(result.edits);
+          try {
+            const touchedFiles = await this._applyEdits(result.edits);
+            const diagnostics = await this._collectDiagnostics(touchedFiles);
+            const finalized = await this._bridge.request<FinalizeExecutionResult>("finalizeExecution", {
+              sessionId: this._sessionId!,
+              taskId: task.id,
+              diagnostics,
+            });
+            await this._reloadSession();
+
+            if (finalized.ok) {
+              this._statusBar.setState("idle");
+              void vscode.window.showInformationMessage(
+                `WaterFree: "${task.title}" executed successfully.`,
+              );
+              return;
+            }
+
+            this._statusBar.setState("awaiting_review");
+            const first = finalized.blockingDiagnostics[0];
+            const location = first ? `${path.basename(first.file)}:${first.line}` : "edited files";
+            const message = first?.message ?? "Blocking diagnostics remain.";
+            void vscode.window.showWarningMessage(
+              `WaterFree: "${task.title}" needs review — ${location}: ${message}`,
+            );
+          } catch (err) {
+            await this._bridge.request("finalizeExecution", {
+              sessionId: this._sessionId!,
+              taskId: task.id,
+              diagnostics: [{
+                file: "",
+                line: 0,
+                severity: "error",
+                source: "editor",
+                message: err instanceof Error ? err.message : String(err),
+              }],
+            }).catch(() => undefined);
+            throw err;
+          }
         },
       );
 
-      await this._reloadSession();
-      this._statusBar.setState("idle");
-      void vscode.window.showInformationMessage(
-        `WaterFree: "${task.title}" executed successfully.`,
-      );
     } catch (err) {
       this._statusBar.setState("idle");
       this._handleError("Execution failed", err);
@@ -373,12 +421,13 @@ class WaterFreeController implements vscode.Disposable {
 
   private async _applyEdits(
     edits: Array<{ targetFile: string; newContent: string }>,
-  ): Promise<void> {
+  ): Promise<string[]> {
     if (edits.length === 0) {
-      return;
+      return [];
     }
 
     const wsEdit = new vscode.WorkspaceEdit();
+    const touchedFiles = Array.from(new Set(edits.map((edit) => edit.targetFile)));
 
     for (const edit of edits) {
       const uri = vscode.Uri.file(edit.targetFile);
@@ -413,6 +462,44 @@ class WaterFreeController implements vscode.Disposable {
       } catch {
         // Non-fatal — file may have been created but not yet tracked
       }
+    }
+
+    return touchedFiles;
+  }
+
+  private async _collectDiagnostics(touchedFiles: string[]): Promise<ExecutionDiagnostic[]> {
+    if (touchedFiles.length === 0) {
+      return [];
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const diagnostics: ExecutionDiagnostic[] = [];
+    for (const filePath of touchedFiles) {
+      const uri = vscode.Uri.file(filePath);
+      for (const diagnostic of vscode.languages.getDiagnostics(uri)) {
+        diagnostics.push({
+          file: filePath,
+          line: diagnostic.range.start.line + 1,
+          severity: this._diagnosticSeverity(diagnostic.severity),
+          source: diagnostic.source ?? "",
+          message: diagnostic.message,
+        });
+      }
+    }
+    return diagnostics;
+  }
+
+  private _diagnosticSeverity(severity: vscode.DiagnosticSeverity): ExecutionDiagnostic["severity"] {
+    switch (severity) {
+      case vscode.DiagnosticSeverity.Error:
+        return "error";
+      case vscode.DiagnosticSeverity.Warning:
+        return "warning";
+      case vscode.DiagnosticSeverity.Information:
+        return "info";
+      default:
+        return "hint";
     }
   }
 
@@ -706,6 +793,9 @@ class WaterFreeController implements vscode.Disposable {
     } catch {
       // No prior session
     } finally {
+      if (!this._sessionId) {
+        this._sidebarProvider.setBacklogSummary(this._emptyBacklogSummary());
+      }
       this._sidebarProvider.setCheckingForSession(false);
     }
   }
@@ -723,10 +813,47 @@ class WaterFreeController implements vscode.Disposable {
     }
   }
 
+  private async _refreshBacklogSummary(): Promise<void> {
+    if (!this._sessionId) {
+      this._sidebarProvider.setBacklogSummary(this._emptyBacklogSummary());
+      return;
+    }
+
+    try {
+      const [nextResult, readyResult] = await Promise.all([
+        this._bridge.request<{ task: BacklogSummaryData["nextTask"] }>("whatNext", {
+          workspacePath: this._workspacePath,
+        }),
+        this._bridge.request<{ tasks: BacklogSummaryData["readyTasks"]; total?: number }>("listTasks", {
+          workspacePath: this._workspacePath,
+          readyOnly: true,
+          limit: 5,
+        }),
+      ]);
+
+      this._sidebarProvider.setBacklogSummary({
+        nextTask: nextResult.task ?? null,
+        readyTasks: readyResult.tasks ?? [],
+        totalReady: readyResult.total ?? readyResult.tasks?.length ?? 0,
+      });
+    } catch {
+      this._sidebarProvider.setBacklogSummary(this._emptyBacklogSummary());
+    }
+  }
+
+  private _emptyBacklogSummary(): BacklogSummaryData {
+    return {
+      nextTask: null,
+      readyTasks: [],
+      totalReady: 0,
+    };
+  }
+
   private _onPlanReceived(plan: PlanData): void {
     this._plan = plan;
     this._sidebarProvider.setCheckingForSession(false);
     this._sidebarProvider.update(plan);
+    void this._refreshBacklogSummary();
     this._refreshDecorations(plan);
 
     // Navigate to the first pending task's file
@@ -746,6 +873,7 @@ class WaterFreeController implements vscode.Disposable {
     this._plan = plan;
     this._sidebarProvider.setCheckingForSession(false);
     this._sidebarProvider.update(plan);
+    void this._refreshBacklogSummary();
     this._refreshDecorations(plan);
     if (plan.tasks.some((t) => t.status === "negotiating")) {
       this._statusBar.setState("awaiting_review");
@@ -973,8 +1101,8 @@ class WaterFreeController implements vscode.Disposable {
   private _onTodosFound(todos: WfTodo[]): void {
     // Queue each [wf] TODO into the durable backlog and attach it to the
     // active session when one exists.
-    for (const todo of todos) {
-      void this._bridge
+    const queued = todos.map((todo) =>
+      this._bridge
         .request("queueTodoInstruction", {
           sessionId: this._sessionId ?? undefined,
           workspacePath: this._workspacePath,
@@ -982,13 +1110,17 @@ class WaterFreeController implements vscode.Disposable {
           line: todo.line,
           instruction: todo.instruction,
         })
-        .catch(() => {/* backend may not support this yet */});
+        .catch(() => undefined),
+    );
 
+    for (const todo of todos) {
       this._log(
         "todo",
         `queued: "${todo.instruction}" (${path.basename(todo.file)}:${todo.line})`,
       );
     }
+
+    void Promise.allSettled(queued).then(() => this._refreshBacklogSummary());
 
     void vscode.window.showInformationMessage(
       `WaterFree: ${todos.length} [wf] TODO(s) queued into the backlog.`,

@@ -115,16 +115,16 @@ class NegotiationController:
         return self._doc.to_dict()
 
     # ------------------------------------------------------------------
-    # TODO queue — treat [pp] comments as pending instructions
+    # TODO queue — treat [wf] comments as pending instructions
     # ------------------------------------------------------------------
 
     def queue_todo_instruction(self, file: str, line: int, instruction: str) -> dict:
         """
-        Record a [pp] TODO comment as a session note.
+        Record a [wf] TODO comment as a session note.
         If a current task is active, appends the instruction to its description.
         Returns {queued: True, taskId: str|None}.
         """
-        note_text = f"[pp] TODO at {file}:{line} — {instruction}"
+        note_text = f"[wf] TODO at {file}:{line} — {instruction}"
         self._add_note(note_text)
 
         # Attach to the current active/pending task if one exists
