@@ -292,6 +292,7 @@ class Server:
             runtime=runtime,
             revision_note=str(params.get("revisionNote", "")).strip(),
             chunk_id=str(params.get("chunkId", "")).strip(),
+            extra_context=str(params.get("extraContext", "")).strip(),
         )
 
     def handle_accept_wizard_chunk(self, params: dict) -> dict:

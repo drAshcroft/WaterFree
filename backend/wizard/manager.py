@@ -139,6 +139,13 @@ class WizardManager:
 
         notes_map = self._load_notes_map(stage)
         self._apply_notes_map(stage, notes_map)
+        if stage.id == MARKET_RESEARCH_TEMPLATE.id and extra_context.strip():
+            idea_chunk = stage.get_chunk("initial_goal")
+            normalized = _normalize_goal_text(extra_context)
+            if idea_chunk and normalized:
+                idea_chunk.notes_snapshot = normalized
+            if normalized:
+                run.goal = normalized
         self._sync_run_goal_from_market_stage(run, stage)
         self._require_market_research_goal(run, stage)
 
