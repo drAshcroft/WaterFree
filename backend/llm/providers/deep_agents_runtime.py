@@ -1,29 +1,80 @@
 """
 Deep Agents runtime lane.
 
-This adapter currently uses Anthropic execution as the default engine while
-adding skill selection and subagent metadata hooks so the runtime contract is
-fully available.
+Uses `deepagents` as the orchestration layer and falls back to the inherited
+Anthropic runtime behavior when deepagents is unavailable or returns malformed
+payloads.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import re
+from typing import Any, Callable, Optional
+
+from backend.graph.client import GraphClient
+from backend.knowledge.store import KnowledgeStore
+from backend.llm.prompt_templates import build_system_prompt
 from backend.llm.personas import DEFAULT_PERSONA, PERSONAS
+from backend.llm.checkpoints.store import CheckpointStore
 from backend.llm.skills import SkillAdapter, SkillRegistry
+from backend.llm.tools import build_default_tool_registry
+from backend.session.models import AnnotationStatus, CodeCoord, IntentAnnotation, Task, TaskPriority
+from backend.todo.store import TaskStore
 
-from .anthropic_runtime import AnthropicRuntime
-
-
-class DeepAgentsRuntime(AnthropicRuntime):
-    def __init__(self, *args, workspace_path: str = ".", **kwargs):
-        super().__init__(*args, **kwargs)
+class DeepAgentsRuntime( ):
+    def __init__(
+        self,
+        *,
+        workspace_path: str = ".",
+        provider_lane: str = "deep_agents",
+        graph: Optional[GraphClient] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
+        task_store_factory: Optional[Callable[[str], TaskStore]] = None,
+        checkpoint_store_factory: Optional[Callable[[str], CheckpointStore]] = None,
+        api_key: Optional[str] = None,
+    ):
+        self._anthropic_available = False
+        self._checkpoint_store_factory = checkpoint_store_factory or (lambda workspace: CheckpointStore(workspace))
+        self._checkpoint_stores: dict[str, CheckpointStore] = {}
+        self._task_store_factory = task_store_factory or (lambda workspace_path: TaskStore(workspace_path))
+        self._task_stores: dict[str, TaskStore] = {}
+        self._graph = graph
+        self._knowledge_store = knowledge_store
+        self._client = None
+        try:
+            super().__init__(
+                api_key=api_key,
+                graph=graph,
+                knowledge_store=knowledge_store,
+                task_store_factory=self._task_store_factory,
+                checkpoint_store_factory=self._checkpoint_store_factory,
+            )
+            self._anthropic_available = True
+        except Exception:
+            self._anthropic_available = False
         self._workspace_path = workspace_path
+        self._provider_lane = provider_lane
         self._skill_registry = SkillRegistry(workspace_path)
         self._skill_adapter = SkillAdapter(self._skill_registry)
+        self._tool_registry = build_default_tool_registry(
+            graph=self._graph,
+            task_store_factory=self._task_store_factory,
+            knowledge_store_factory=self._get_knowledge_store,
+            enable_optional_web_tools=bool(os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip()),
+        )
+        self._deepagents_factory: Optional[Callable[..., Any]] = None
+        self._filesystem_backend_factory: Optional[Callable[..., Any]] = None
+        self._structured_tool_cls: Optional[type] = None
+        self._field_cls: Optional[type] = None
+        self._create_model_fn: Optional[Callable[..., Any]] = None
+        self._deepagents_import_error: Optional[str] = None
+        self._load_deepagents()
 
     @property
     def runtime_id(self) -> str:
-        return "deep_agents"
+        return self._provider_lane
 
     def generate_plan(
         self,
@@ -33,12 +84,33 @@ class DeepAgentsRuntime(AnthropicRuntime):
         persona: str = "default",
     ):
         bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="planning")
-        return super().generate_plan(
-            goal,
-            self._skill_adapter.augment_context(context, bundle),
+        prompt = (
+            "Return JSON only with shape: "
+            '{"tasks":[{"title":"","description":"","targetFile":"","targetFunction":"","priority":"P0|P1|P2|P3|spike"}],"questions":[]}\n\n'
+            f"GOAL:\n{goal}\n\nCONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="PLANNING",
+            prompt=prompt,
             workspace_path=workspace_path,
             persona=persona,
         )
+        if payload is None:
+            return self._fallback_generate_plan(goal, context, workspace_path, persona)
+        tasks: list[Task] = []
+        for raw in payload.get("tasks", []):
+            tasks.append(
+                Task(
+                    title=str(raw.get("title", "")),
+                    description=str(raw.get("description", "")),
+                    target_coord=CodeCoord(
+                        file=str(raw.get("targetFile", "")),
+                        method=str(raw.get("targetFunction", "")) or None,
+                    ),
+                    priority=_coerce_priority(raw.get("priority", "P2")),
+                )
+            )
+        return tasks, list(payload.get("questions", []))
 
     def generate_annotation(
         self,
@@ -48,11 +120,32 @@ class DeepAgentsRuntime(AnthropicRuntime):
         persona: str = "default",
     ):
         bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="annotation")
-        return super().generate_annotation(
-            task,
-            self._skill_adapter.augment_context(context, bundle),
+        prompt = (
+            "Return JSON only with shape: "
+            '{"summary":"","detail":"","willCreate":[],"willModify":[],"sideEffectWarnings":[],"assumptionsMade":[],"questionsBeforeProceeding":[]}\n\n'
+            f"TASK TITLE: {task.title}\n"
+            f"TASK DESCRIPTION: {task.description}\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="ANNOTATION",
+            prompt=prompt,
             workspace_path=workspace_path,
             persona=persona,
+        )
+        if payload is None:
+            return self._fallback_generate_annotation(task, context, workspace_path, persona)
+        return IntentAnnotation(
+            task_id=task.id,
+            target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
+            summary=str(payload.get("summary", "")),
+            detail=str(payload.get("detail", "")),
+            will_create=list(payload.get("willCreate", [])),
+            will_modify=list(payload.get("willModify", [])),
+            side_effect_warnings=list(payload.get("sideEffectWarnings", [])),
+            assumptions_made=list(payload.get("assumptionsMade", [])),
+            questions_before_proceeding=list(payload.get("questionsBeforeProceeding", [])),
+            status=AnnotationStatus.PENDING,
         )
 
     def execute_task(
@@ -68,13 +161,22 @@ class DeepAgentsRuntime(AnthropicRuntime):
             stage="execution",
             task_type=getattr(task, "task_type", ""),
         )
-        return super().execute_task(
-            task,
-            self._skill_adapter.augment_context(context, bundle),
+        prompt = (
+            "Return JSON only with shape: "
+            '{"edits":[{"targetFile":"","oldContent":"","newContent":"","explanation":""}]}\n\n'
+            f"TASK TITLE: {task.title}\n"
+            f"TASK DESCRIPTION: {task.description}\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="EXECUTION",
+            prompt=prompt,
             workspace_path=workspace_path,
-            on_chunk=on_chunk,
             persona=persona,
         )
+        if payload is None:
+            return self._fallback_execute_task(task, context, workspace_path, on_chunk, persona)
+        return list(payload.get("edits", []))
 
     def list_subagents(self) -> list[dict]:
         return [
@@ -118,9 +220,303 @@ class DeepAgentsRuntime(AnthropicRuntime):
     def get_skill_detail(self, skill_id: str) -> dict:
         return self._skill_registry.get_skill_detail(skill_id)
 
+    def _load_deepagents(self) -> None:
+        try:
+            from deepagents import create_deep_agent
+            from deepagents.backends import FilesystemBackend
+            from langchain_core.tools import StructuredTool
+            from pydantic import Field, create_model
+
+            self._deepagents_factory = create_deep_agent
+            self._filesystem_backend_factory = FilesystemBackend
+            self._structured_tool_cls = StructuredTool
+            self._field_cls = Field
+            self._create_model_fn = create_model
+            self._deepagents_import_error = None
+        except Exception as exc:
+            self._deepagents_factory = None
+            self._filesystem_backend_factory = None
+            self._structured_tool_cls = None
+            self._field_cls = None
+            self._create_model_fn = None
+            self._deepagents_import_error = str(exc)
+
+    def _run_deepagents_structured(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        workspace_path: str,
+        persona: str,
+    ) -> Optional[dict[str, Any]]:
+        response_text = self._run_deepagents_text(
+            stage=stage,
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+        if response_text:
+            parsed = _extract_json_object(response_text)
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def _run_deepagents_text(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        workspace_path: str,
+        persona: str,
+    ) -> str:
+        if not self._deepagents_factory:
+            return ""
+        agent = self._create_agent(stage=stage, workspace_path=workspace_path, persona=persona)
+        if agent is None:
+            return ""
+        try:
+            result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+            return _extract_response_text(result)
+        except Exception:
+            return ""
+
+    def _create_agent(self, *, stage: str, workspace_path: str, persona: str):
+        if not self._deepagents_factory:
+            return None
+        system_prompt = build_system_prompt(stage.upper(), persona)
+        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage=stage.lower())
+        system_prompt = self._skill_adapter.augment_system_prompt(system_prompt, bundle)
+        tools = self._build_langchain_tools(workspace_path=workspace_path)
+        model_name = _model_name_for_lane(self._provider_lane)
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "tools": tools,
+            "system_prompt": system_prompt,
+            "subagents": self._deepagents_subagents(),
+            "interrupt_on": self._interrupt_config(),
+        }
+        if self._filesystem_backend_factory:
+            kwargs["backend"] = self._filesystem_backend_factory(root_dir=workspace_path or self._workspace_path)
+        return self._deepagents_factory(**kwargs)
+
+    def _build_langchain_tools(self, *, workspace_path: str) -> list[Any]:
+        if not self._structured_tool_cls or not self._create_model_fn or not self._field_cls:
+            return []
+        tools: list[Any] = []
+        for descriptor in self._tool_registry.list_descriptors(include_optional=False):
+            if descriptor.policy.optional:
+                continue
+            args_schema = _schema_to_pydantic_model(
+                name=descriptor.name,
+                schema=descriptor.input_schema,
+                create_model_fn=self._create_model_fn,
+                field_cls=self._field_cls,
+            )
+
+            def make_runner(name: str):
+                def _runner(**kwargs) -> str:
+                    result = self._tool_registry.invoke(name, kwargs, workspace_path)
+                    return json.dumps(result, ensure_ascii=True)
+
+                _runner.__name__ = name
+                return _runner
+
+            tools.append(
+                self._structured_tool_cls.from_function(
+                    func=make_runner(descriptor.name),
+                    name=descriptor.name,
+                    description=descriptor.description,
+                    args_schema=args_schema,
+                )
+            )
+        return tools
+
+    def _fallback_generate_plan(self, goal: str, context: str, workspace_path: str, persona: str):
+        if not self._anthropic_available:
+            return ([], [])
+        return AnthropicRuntime.generate_plan(
+            self,
+            goal,
+            context,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+
+    def _fallback_generate_annotation(self, task: Task, context: str, workspace_path: str, persona: str):
+        if not self._anthropic_available:
+            return IntentAnnotation(
+                task_id=task.id,
+                target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
+                summary="Deep Agents could not produce structured annotation output.",
+                detail="Fallback used because Anthropic runtime was unavailable.",
+                status=AnnotationStatus.PENDING,
+            )
+        return AnthropicRuntime.generate_annotation(
+            self,
+            task,
+            context,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+
+    def _fallback_execute_task(
+        self,
+        task: Task,
+        context: str,
+        workspace_path: str,
+        on_chunk: Optional[Callable[[str], None]],
+        persona: str,
+    ):
+        if not self._anthropic_available:
+            return []
+        return AnthropicRuntime.execute_task(
+            self,
+            task,
+            context,
+            workspace_path=workspace_path,
+            on_chunk=on_chunk,
+            persona=persona,
+        )
+
+    def _interrupt_config(self) -> dict[str, dict[str, list[str]]]:
+        config: dict[str, dict[str, list[str]]] = {}
+        for meta in self._tool_registry.policy_inventory(include_optional=False):
+            if meta.get("requiresApproval"):
+                config[str(meta["name"])] = {
+                    "allowed_decisions": ["approve", "edit", "reject"],
+                }
+        return config
+
+    def _deepagents_subagents(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "architect",
+                "description": "Architecture synthesis and trade-off analysis",
+                "system_prompt": build_system_prompt("PLANNING", "architect"),
+            },
+            {
+                "name": "pattern_expert",
+                "description": "Pattern and framework guidance",
+                "system_prompt": build_system_prompt("PLANNING", "pattern_expert"),
+            },
+            {
+                "name": "debug_detective",
+                "description": "Root-cause focused debug analysis",
+                "system_prompt": build_system_prompt("LIVE_DEBUG", "debug_detective"),
+            },
+            {
+                "name": "stub_wireframer",
+                "description": "Subsystem shell/stub generation",
+                "system_prompt": build_system_prompt("EXECUTION", "stub_wireframer"),
+            },
+        ]
+
 
 def _normalize_persona(persona: str) -> str:
     candidate = (persona or "").strip().lower()
     if candidate in PERSONAS:
         return candidate
     return DEFAULT_PERSONA
+
+
+def _coerce_priority(raw_priority: Any) -> TaskPriority:
+    if isinstance(raw_priority, str):
+        try:
+            return TaskPriority(raw_priority)
+        except ValueError:
+            return TaskPriority.P2
+    if isinstance(raw_priority, int):
+        return {
+            0: TaskPriority.P0,
+            1: TaskPriority.P1,
+            2: TaskPriority.P2,
+            3: TaskPriority.P3,
+        }.get(raw_priority, TaskPriority.P2)
+    return TaskPriority.P2
+
+
+def _model_name_for_lane(provider_lane: str) -> str:
+    lane = provider_lane.strip().lower()
+    if lane == "openai":
+        return os.environ.get("WATERFREE_OPENAI_MODEL", "openai:o3-mini")
+    if lane == "ollama":
+        return os.environ.get("WATERFREE_OLLAMA_MODEL", "ollama:qwen2.5-coder:14b")
+    if lane == "anthropic":
+        return os.environ.get("WATERFREE_ANTHROPIC_MODEL", "anthropic:claude-sonnet-4-20250514")
+    return os.environ.get("WATERFREE_DEEPAGENTS_MODEL", "anthropic:claude-sonnet-4-20250514")
+
+
+def _extract_response_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        messages = result.get("messages", [])
+        for message in reversed(messages):
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                for part in reversed(content):
+                    text = part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
+                    if isinstance(text, str) and text.strip():
+                        return text
+        return json.dumps(result, ensure_ascii=True)
+    return str(result)
+
+
+def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    matches = re.findall(r"\{.*\}", text, flags=re.DOTALL)
+    for candidate in reversed(matches):
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _schema_to_pydantic_model(name: str, schema: dict, create_model_fn, field_cls):
+    props = dict(schema.get("properties", {}))
+    required = set(schema.get("required", []))
+    fields = {}
+    for key, prop in props.items():
+        py_type = _json_schema_type(prop)
+        if key in required:
+            default = ...
+        else:
+            default = None
+        description = str(prop.get("description", ""))
+        fields[key] = (py_type, field_cls(default=default, description=description))
+    if not fields:
+        return create_model_fn(f"{name.title().replace('_', '')}Input")
+    return create_model_fn(f"{name.title().replace('_', '')}Input", **fields)
+
+
+def _json_schema_type(prop: dict) -> Any:
+    prop_type = prop.get("type")
+    if prop_type == "string":
+        return str
+    if prop_type == "integer":
+        return int
+    if prop_type == "number":
+        return float
+    if prop_type == "boolean":
+        return bool
+    if prop_type == "array":
+        inner = prop.get("items", {})
+        return list[_json_schema_type(inner)]  # type: ignore[index]
+    if prop_type == "object":
+        return dict[str, Any]
+    if "enum" in prop:
+        return str
+    return Any

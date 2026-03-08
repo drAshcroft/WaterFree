@@ -81,6 +81,7 @@ export interface BacklogSummaryData {
 
 export type SidebarAction =
   | { type: "startSession"; goal: string; persona: string }
+  | { type: "startWizard"; wizardId: string; goal: string; persona: string }
   | { type: "openTask"; taskId: string }
   | { type: "generateAnnotation"; taskId: string }
   | { type: "showAnnotation"; taskId: string; annotationId?: string }
@@ -228,6 +229,16 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           });
         }
         return;
+      case "startWizard":
+        if (typeof message.wizardId === "string") {
+          this._actionEmitter.fire({
+            type: "startWizard",
+            wizardId: message.wizardId,
+            goal: typeof message.goal === "string" ? message.goal.trim() : "",
+            persona: typeof message.persona === "string" ? message.persona : "architect",
+          });
+        }
+        return;
       case "openTask":
         if (typeof message.taskId === "string") {
           this._actionEmitter.fire({ type: "openTask", taskId: message.taskId });
@@ -332,7 +343,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       --panel: color-mix(in srgb, var(--vscode-sideBar-background) 92%, var(--vscode-textLink-foreground) 8%);
       --panel-strong: color-mix(in srgb, var(--vscode-sideBar-background) 82%, var(--vscode-editorWidget-border) 18%);
       --accent: var(--vscode-textLink-foreground);
-      --accent-strong: color-mix(in srgb, var(--vscode-textLink-foreground) 70%, black 30%);
       --muted: var(--vscode-descriptionForeground);
       --border: color-mix(in srgb, var(--vscode-editorWidget-border) 80%, transparent 20%);
       --warning: var(--vscode-inputValidation-warningForeground);
@@ -353,15 +363,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         linear-gradient(180deg, color-mix(in srgb, var(--vscode-sideBar-background) 94%, black 6%), var(--vscode-sideBar-background));
     }
 
-    button, textarea {
-      font: inherit;
-    }
+    button, textarea, select { font: inherit; }
 
-    .stack {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
+    .stack { display: flex; flex-direction: column; gap: 12px; }
 
     .card {
       border: 1px solid var(--border);
@@ -371,13 +375,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       overflow: hidden;
     }
 
-    .card-body {
-      padding: 12px;
-    }
+    .card-body { padding: 12px; }
 
-    .composer {
-      border-top: 3px solid var(--accent);
-    }
+    .composer { border-top: 3px solid var(--accent); }
 
     .eyebrow {
       margin: 0 0 6px;
@@ -387,31 +387,22 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       color: var(--muted);
     }
 
-    h1, h2, h3, p {
-      margin: 0;
-    }
+    h1, h2, h3, p { margin: 0; }
 
-    .title-row, .meta-row, .button-row {
+    .title-row, .button-row {
       display: flex;
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
     }
 
-    .title-row {
-      justify-content: space-between;
-      margin-bottom: 8px;
-    }
+    .title-row { justify-content: space-between; margin-bottom: 8px; }
 
-    .goal {
-      font-size: 14px;
-      font-weight: 700;
-    }
+    .goal { font-size: 14px; font-weight: 700; }
 
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
       padding: 3px 8px;
       border-radius: 999px;
       background: var(--panel-strong);
@@ -428,33 +419,40 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
     textarea {
       width: 100%;
-      min-height: 92px;
+      min-height: 72px;
       resize: vertical;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 10px 12px;
+      border-radius: 10px;
+      padding: 8px 10px;
       color: inherit;
       background: color-mix(in srgb, var(--vscode-input-background) 88%, transparent 12%);
     }
 
-    textarea:focus {
+    textarea:focus, select:focus {
       outline: 1px solid var(--accent);
       outline-offset: 1px;
     }
 
-    .hint {
+    .field-label {
+      display: block;
+      margin: 8px 0 4px;
       color: var(--muted);
-      margin-top: 8px;
+      font-size: 11px;
     }
 
-    .busy {
-      color: var(--warning);
-      margin-top: 8px;
+    select {
+      width: 100%;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-strong);
+      color: inherit;
     }
 
-    .button-row {
-      margin-top: 10px;
-    }
+    .hint { color: var(--muted); margin-top: 8px; }
+    .busy { color: var(--warning); margin-top: 8px; }
+
+    .button-row { margin-top: 10px; }
 
     button {
       border: 1px solid var(--border);
@@ -470,45 +468,94 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 28%, transparent), color-mix(in srgb, var(--accent) 14%, transparent));
     }
 
-    button:hover:enabled {
-      border-color: var(--accent);
-    }
+    button:hover:enabled { border-color: var(--accent); }
+    button:disabled { opacity: 0.6; cursor: default; }
 
-    button:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
+    /* Wizard section */
+    .wizards-card { border-top: 3px solid color-mix(in srgb, var(--accent) 45%, var(--vscode-editorWidget-border) 55%); }
 
-    .task-list {
+    .wizard-list { display: flex; flex-direction: column; }
+
+    .wizard-item { border-top: 1px solid var(--border); }
+    .wizard-item:first-child { border-top: 0; }
+
+    .wizard-header {
       display: flex;
-      flex-direction: column;
-      gap: 10px;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 2px;
+      cursor: pointer;
+      user-select: none;
+      border-radius: 6px;
+      transition: background 0.1s;
     }
 
-    .task {
-      border-top: 1px solid var(--border);
-      padding-top: 10px;
-    }
+    .wizard-header:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .wizard-item.expanded .wizard-header { color: var(--accent); }
 
-    .task:first-child {
-      border-top: 0;
-      padding-top: 0;
-    }
-
-    .task-title {
+    .wizard-icon {
+      flex-shrink: 0;
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      background: var(--panel-strong);
+      border: 1px solid var(--border);
+      font-size: 9px;
       font-weight: 700;
-      font-size: 13px;
+      color: var(--muted);
+      letter-spacing: -0.03em;
     }
 
-    .task-description {
-      margin-top: 6px;
-      color: var(--muted);
+    .wizard-item.expanded .wizard-icon {
+      background: color-mix(in srgb, var(--accent) 15%, transparent);
+      border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+      color: var(--accent);
     }
 
-    .location {
-      color: var(--muted);
-      font-size: 11px;
+    .wizard-info { flex: 1; min-width: 0; }
+    .wizard-name { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wizard-tagline { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .wizard-chevron { flex-shrink: 0; font-size: 9px; color: var(--muted); padding-right: 2px; }
+
+    .wizard-body {
+      padding: 8px 2px 12px;
+      border-top: 1px solid var(--border);
     }
+
+    .wizard-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 10px;
+    }
+
+    .step-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+      color: var(--accent);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .wizard-goal { min-height: 52px; }
+
+    /* Task/session styles */
+    .task-list { display: flex; flex-direction: column; gap: 10px; }
+
+    .task { border-top: 1px solid var(--border); padding-top: 10px; }
+    .task:first-child { border-top: 0; padding-top: 0; }
+
+    .task-title { font-weight: 700; font-size: 13px; }
+    .task-description { margin-top: 6px; color: var(--muted); }
+    .location { color: var(--muted); font-size: 11px; }
 
     .annotation {
       margin-top: 10px;
@@ -518,48 +565,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       border: 1px solid var(--border);
     }
 
-    .annotation-summary {
-      font-weight: 600;
-    }
-
-    .annotation-detail {
-      margin-top: 6px;
-      color: var(--muted);
-    }
-
-    .empty {
-      color: var(--muted);
-    }
-
-    .persona-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 8px;
-    }
-
-    .persona-chip {
-      padding: 4px 9px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: var(--panel-strong);
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 11px;
-      letter-spacing: 0.02em;
-      transition: border-color 0.1s, color 0.1s, background 0.1s;
-    }
-
-    .persona-chip:hover:not(:disabled) {
-      border-color: var(--accent);
-      color: var(--vscode-foreground);
-    }
-
-    .persona-chip.selected {
-      border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 20%, transparent);
-      color: var(--accent);
-    }
+    .annotation-summary { font-weight: 600; }
+    .annotation-detail { margin-top: 6px; color: var(--muted); }
+    .empty { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -568,14 +576,29 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     const vscode = acquireVsCodeApi();
     const root = document.getElementById("app");
     const savedState = vscode.getState() || {};
+
     const PERSONAS = [
-      { id: "architect",     icon: "Arch", title: "The Architect",        tagline: "Requirements, feasibility, risks, trade-offs, technical direction" },
-      { id: "pattern_expert",icon: "Pat",  title: "Design Pattern Expert", tagline: "Framework fit, patterns, anti-patterns, structural policy" },
-      { id: "debug_detective",icon: "Det", title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
-      { id: "yolo",          icon: "YOLO", title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
-      { id: "socratic",      icon: "Soc",  title: "Socratic Coach",        tagline: "Guides with questions instead of answers" },
-      { id: "stub_wireframer", icon: "Stub", title: "Stub/Wireframes",     tagline: "Compilable skeletons, TODO handoff, design gaps" },
+      { id: "architect",        title: "The Architect",         tagline: "Requirements, feasibility, risks, trade-offs" },
+      { id: "pattern_expert",   title: "Design Pattern Expert", tagline: "Framework fit, patterns, anti-patterns" },
+      { id: "debug_detective",  title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
+      { id: "yolo",             title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
+      { id: "socratic",         title: "Socratic Coach",        tagline: "Guides with questions instead of answers" },
+      { id: "stub_wireframer",  title: "Stub / Wireframer",     tagline: "Compilable skeletons, TODO handoff" },
     ];
+
+    const WIZARDS = [
+      { id: "bring_idea_to_life",   icon: "Idea", title: "Bring Idea to Life",      tagline: "From raw idea to working code",               steps: ["Market Research", "Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
+      { id: "create_application",   icon: "App",  title: "Create Application",       tagline: "Build a full application from scratch",       steps: ["Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
+      { id: "feature",              icon: "Feat", title: "Feature",                  tagline: "Add a feature to an existing codebase",       steps: ["Architect Review", "BDD Tests", "Coding Agents", "Review"] },
+      { id: "refactor",             icon: "Rfct", title: "Refactor",                 tagline: "Improve structure without changing behavior",  steps: ["Architect Review", "Design Patterns", "BDD Tests", "Coding Agents", "Review"] },
+      { id: "bug_hunt",             icon: "Bug",  title: "Bug Hunt",                 tagline: "Systematically find and eliminate bugs",      steps: [] },
+      { id: "debugging",            icon: "Dbg",  title: "Debugging",                tagline: "Deep dive into a specific issue",             steps: [] },
+      { id: "improvement_search",   icon: "Impr", title: "Improvement Search",       tagline: "Find and prioritize improvements",            steps: [] },
+      { id: "deploy_package",       icon: "Pkg",  title: "Deploy / Package Helper",  tagline: "Prepare and ship your application",           steps: [] },
+      { id: "documentation_genius", icon: "Doc",  title: "Documentation Genius",     tagline: "Generate comprehensive documentation",       steps: [] },
+      { id: "clean_code_review",    icon: "Lint", title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
+    ];
+
     let state = {
       plan: null,
       backlogSummary: { nextTask: null, readyTasks: [], totalReady: 0 },
@@ -584,9 +607,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       debugActive: false,
       debugLocation: "",
       draftGoal: typeof savedState.draftGoal === "string" ? savedState.draftGoal : "",
+      draftWizardGoal: typeof savedState.draftWizardGoal === "string" ? savedState.draftWizardGoal : "",
       draftDebugIntent: typeof savedState.draftDebugIntent === "string" ? savedState.draftDebugIntent : "",
       draftDebugReason: typeof savedState.draftDebugReason === "string" ? savedState.draftDebugReason : "bug investigation",
       selectedPersona: typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect",
+      expandedWizard: typeof savedState.expandedWizard === "string" ? savedState.expandedWizard : null,
     };
 
     function escapeHtml(value) {
@@ -599,7 +624,14 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     }
 
     function persistState() {
-      vscode.setState({ draftGoal: state.draftGoal, draftDebugIntent: state.draftDebugIntent, draftDebugReason: state.draftDebugReason, selectedPersona: state.selectedPersona });
+      vscode.setState({
+        draftGoal: state.draftGoal,
+        draftWizardGoal: state.draftWizardGoal,
+        draftDebugIntent: state.draftDebugIntent,
+        draftDebugReason: state.draftDebugReason,
+        selectedPersona: state.selectedPersona,
+        expandedWizard: state.expandedWizard,
+      });
     }
 
     function formatCoord(coord) {
@@ -623,55 +655,123 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       return '<span class="badge ' + escapeHtml(status) + '">' + escapeHtml(status) + "</span>";
     }
 
-    function renderAnnotation(task, annotation, disabled) {
-      const detail = annotation.detail
-        ? '<p class="annotation-detail">' + escapeHtml(annotation.detail) + "</p>"
-        : "";
-      const pendingActions = annotation.status === "pending"
-        ? [
-            button("Approve", "approveAnnotation", {
-              annotationId: annotation.id,
-            }, true, disabled),
-            button("Alter", "alterAnnotation", {
-              taskId: task.id,
-              annotationId: annotation.id,
-            }, false, disabled),
-            button("Redirect", "redirectTask", {
-              taskId: task.id,
-            }, false, disabled),
-          ].join("")
-        : "";
+    function mkButton(label, action, data, primary, disabled) {
+      const attrs = Object.entries(data || {})
+        .map(function(e) { return "data-" + e[0].replace(/[A-Z]/g, function(m) { return "-" + m.toLowerCase(); }) + '="' + escapeHtml(e[1]) + '"'; })
+        .join(" ");
+      return '<button type="button" class="' + (primary ? "primary" : "") + '" data-action="' + action + '" ' + attrs + (disabled ? " disabled" : "") + ">" + escapeHtml(label) + "</button>";
+    }
 
+    function renderQuickJobs() {
+      const disabled = Boolean(state.busyMessage);
+      const personaOptions = PERSONAS.map(function(p) {
+        return '<option value="' + escapeHtml(p.id) + '"' + (state.selectedPersona === p.id ? " selected" : "") + ">" + escapeHtml(p.title) + "</option>";
+      }).join("");
       return [
-        '<div class="annotation">',
+        '<section class="card composer">',
+        '<div class="card-body">',
         '<div class="title-row">',
-        '<div class="annotation-summary">' + escapeHtml(annotation.summary) + "</div>",
-        statusBadge(annotation.status),
+        '<p class="eyebrow" style="margin-bottom:0">Quick Jobs</p>',
+        disabled && state.busyMessage ? '<span class="badge pending">' + escapeHtml(state.busyMessage) + "</span>" : "",
         "</div>",
-        detail,
+        '<textarea id="goal-input" placeholder="Describe what to build or fix..." style="margin-top:8px"' + (disabled ? " disabled" : "") + ">" + escapeHtml(state.draftGoal) + "</textarea>",
+        '<label class="field-label">Agent Personality</label>',
+        '<select id="persona-select"' + (disabled ? " disabled" : "") + ">",
+        personaOptions,
+        "</select>",
         '<div class="button-row">',
-        button("Review", "showAnnotation", {
-          taskId: task.id,
-          annotationId: annotation.id,
-        }, false, disabled),
-        pendingActions,
+        '<button type="button" class="primary" data-action="startSession"' + (disabled ? " disabled" : "") + ">Start</button>",
+        '<button type="button" data-action="buildKnowledge" title="Extract reusable patterns from this workspace"' + (disabled ? " disabled" : "") + ">Snippetize</button>",
+        '<button type="button" data-action="addKnowledgeRepo" title="Snippetize an external git repo or local path"' + (disabled ? " disabled" : "") + ">+ Repo</button>",
         "</div>",
+        state.busyMessage ? '<p class="busy">' + escapeHtml(state.busyMessage) + "</p>" : "",
         "</div>",
+        "</section>",
       ].join("");
     }
 
-    function button(label, action, data, primary, disabled) {
-      const attrs = Object.entries(data || {})
-        .map(([key, value]) => 'data-' + key.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase()) + '="' + escapeHtml(value) + '"')
-        .join(" ");
-      return '<button type="button" class="' + (primary ? "primary" : "") + '" data-action="' + action + '" ' + attrs + (disabled ? " disabled" : "") + ">" + escapeHtml(label) + "</button>";
+    function renderWizards() {
+      const disabled = Boolean(state.busyMessage);
+      const items = WIZARDS.map(function(w) {
+        const isExpanded = state.expandedWizard === w.id;
+        let bodyHtml = "";
+        if (isExpanded) {
+          const stepsHtml = w.steps.length > 0
+            ? '<div class="wizard-steps">' + w.steps.map(function(s, i) {
+                return '<span class="step-pill">' + (i + 1) + ". " + escapeHtml(s) + "</span>";
+              }).join("") + "</div>"
+            : "";
+          bodyHtml = [
+            '<div class="wizard-body">',
+            stepsHtml,
+            '<textarea id="wizard-goal-input" class="wizard-goal" placeholder="Briefly describe your context or idea..."' + (disabled ? " disabled" : "") + ">" + escapeHtml(state.draftWizardGoal) + "</textarea>",
+            '<div class="button-row">',
+            '<button type="button" class="primary" data-action="startWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
+            "</div>",
+            "</div>",
+          ].join("");
+        }
+        return [
+          '<div class="wizard-item' + (isExpanded ? " expanded" : "") + '">',
+          '<div class="wizard-header" data-action="toggleWizard" data-wizard-id="' + escapeHtml(w.id) + '">',
+          '<span class="wizard-icon">' + escapeHtml(w.icon) + "</span>",
+          '<div class="wizard-info">',
+          '<div class="wizard-name">' + escapeHtml(w.title) + "</div>",
+          '<div class="wizard-tagline">' + escapeHtml(w.tagline) + "</div>",
+          "</div>",
+          '<span class="wizard-chevron">' + (isExpanded ? "&#x25B2;" : "&#x25BC;") + "</span>",
+          "</div>",
+          bodyHtml,
+          "</div>",
+        ].join("");
+      }).join("");
+
+      return [
+        '<section class="card wizards-card">',
+        '<div class="card-body">',
+        '<p class="eyebrow">Wizards</p>',
+        '<div class="wizard-list">',
+        items,
+        "</div>",
+        "</div>",
+        "</section>",
+      ].join("");
+    }
+
+    function renderDebugPanel() {
+      if (!state.debugActive) { return ""; }
+      const loc = state.debugLocation
+        ? '<p class="location" style="margin-bottom:8px">' + escapeHtml(state.debugLocation) + "</p>"
+        : "";
+      const stopReasons = ["bug investigation", "exception", "understanding flow", "data inspection", "other"];
+      const options = stopReasons.map(function(r) {
+        return '<option value="' + escapeHtml(r) + '"' + (state.draftDebugReason === r ? " selected" : "") + ">" + escapeHtml(r) + "</option>";
+      }).join("");
+      return [
+        '<section class="card" style="border-top:3px solid var(--warning)">',
+        '<div class="card-body">',
+        '<p class="eyebrow">Debug Investigation</p>',
+        loc,
+        '<label class="field-label">What do you want to investigate?</label>',
+        '<textarea id="debug-intent-input" placeholder="e.g. Why is user.balance going negative?" style="min-height:60px">' + escapeHtml(state.draftDebugIntent) + "</textarea>",
+        '<label class="field-label">Why did you stop here?</label>',
+        '<select id="debug-reason-select">',
+        options,
+        "</select>",
+        '<div class="button-row">',
+        '<button type="button" class="primary" data-action="pushDebugToAgent">Push to Agent</button>',
+        "</div>",
+        '<p class="hint">Snapshot written to <code>.waterfree/debug/snapshot.json</code></p>',
+        "</div>",
+        "</section>",
+      ].join("");
     }
 
     function renderPlan(plan) {
       if (!plan) {
         const status = state.checkingForSession
           ? '<p class="hint">Checking for an existing session...</p>'
-          : '<p class="empty">No active session yet. Describe the next change above and start a session.</p>';
+          : '<p class="empty">No active session yet. Use Quick Jobs or a Wizard above to start.</p>';
         return [
           '<section class="card">',
           '<div class="card-body">',
@@ -682,15 +782,14 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         ].join("");
       }
 
-      const tasks = (plan.tasks || []).map((task) => {
-        const annotations = (task.annotations || []).map((annotation) =>
-          renderAnnotation(task, annotation, Boolean(state.busyMessage)),
-        ).join("");
-
+      const tasks = (plan.tasks || []).map(function(task) {
+        const annotations = (task.annotations || []).map(function(annotation) {
+          return renderAnnotation(task, annotation, Boolean(state.busyMessage));
+        }).join("");
         return [
           '<div class="task">',
           '<div class="title-row">',
-          '<div>',
+          "<div>",
           '<div class="task-title">[' + escapeHtml(task.priority) + "] " + escapeHtml(task.title) + "</div>",
           '<div class="location">' + escapeHtml(formatCoord(task.targetCoord || {})) + "</div>",
           "</div>",
@@ -699,12 +798,12 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           '<p class="task-description">' + escapeHtml(task.description || task.title) + "</p>",
           task.blockedReason ? '<p class="busy">Blocked: ' + escapeHtml(task.blockedReason) + "</p>" : "",
           '<div class="button-row">',
-          button("Open", "openTask", { taskId: task.id }, false, Boolean(state.busyMessage)),
+          mkButton("Open", "openTask", { taskId: task.id }, false, Boolean(state.busyMessage)),
           task.annotations && task.annotations.length === 0
-            ? button("Generate Intent", "generateAnnotation", { taskId: task.id }, false, Boolean(state.busyMessage))
+            ? mkButton("Generate Intent", "generateAnnotation", { taskId: task.id }, false, Boolean(state.busyMessage))
             : "",
           task.status !== "complete" && task.status !== "skipped"
-            ? button("Skip", "skipTask", { taskId: task.id }, false, Boolean(state.busyMessage))
+            ? mkButton("Skip", "skipTask", { taskId: task.id }, false, Boolean(state.busyMessage))
             : "",
           "</div>",
           annotations,
@@ -716,7 +815,7 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         '<section class="card">',
         '<div class="card-body">',
         '<div class="title-row">',
-        '<div>',
+        "<div>",
         '<p class="eyebrow">Current Session</p>',
         '<h2 class="goal">' + escapeHtml(plan.goalStatement) + "</h2>",
         "</div>",
@@ -728,15 +827,38 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       ].join("");
     }
 
-    function renderBacklog(backlogSummary) {
-      if (!state.plan || !backlogSummary || backlogSummary.totalReady <= 0) {
-        return "";
-      }
+    function renderAnnotation(task, annotation, disabled) {
+      const detail = annotation.detail
+        ? '<p class="annotation-detail">' + escapeHtml(annotation.detail) + "</p>"
+        : "";
+      const pendingActions = annotation.status === "pending"
+        ? [
+            mkButton("Approve", "approveAnnotation", { annotationId: annotation.id }, true, disabled),
+            mkButton("Alter", "alterAnnotation", { taskId: task.id, annotationId: annotation.id }, false, disabled),
+            mkButton("Redirect", "redirectTask", { taskId: task.id }, false, disabled),
+          ].join("")
+        : "";
+      return [
+        '<div class="annotation">',
+        '<div class="title-row">',
+        '<div class="annotation-summary">' + escapeHtml(annotation.summary) + "</div>",
+        statusBadge(annotation.status),
+        "</div>",
+        detail,
+        '<div class="button-row">',
+        mkButton("Review", "showAnnotation", { taskId: task.id, annotationId: annotation.id }, false, disabled),
+        pendingActions,
+        "</div>",
+        "</div>",
+      ].join("");
+    }
 
+    function renderBacklog(backlogSummary) {
+      if (!state.plan || !backlogSummary || backlogSummary.totalReady <= 0) { return ""; }
       const nextTask = backlogSummary.nextTask;
-      const remaining = (backlogSummary.readyTasks || []).filter((task) =>
-        !nextTask || task.id !== nextTask.id,
-      );
+      const remaining = (backlogSummary.readyTasks || []).filter(function(task) {
+        return !nextTask || task.id !== nextTask.id;
+      });
       const nextMarkup = nextTask
         ? [
             '<div class="annotation" style="margin-top:0">',
@@ -750,25 +872,25 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             "</div>",
           ].join("")
         : '<p class="empty">No ready backlog task.</p>';
-
       const restMarkup = remaining.length > 0
-        ? remaining.map((task) => [
-            '<div class="task">',
-            '<div class="title-row">',
-            '<div class="task-title">[' + escapeHtml(task.priority) + "] " + escapeHtml(task.title) + "</div>",
-            statusBadge(task.status || "pending"),
-            "</div>",
-            '<p class="location">' + escapeHtml(formatCoord(task.targetCoord || {})) + "</p>",
-            task.phase ? '<p class="task-description">Phase: ' + escapeHtml(task.phase) + "</p>" : "",
-            "</div>",
-          ].join("")).join("")
+        ? remaining.map(function(task) {
+            return [
+              '<div class="task">',
+              '<div class="title-row">',
+              '<div class="task-title">[' + escapeHtml(task.priority) + "] " + escapeHtml(task.title) + "</div>",
+              statusBadge(task.status || "pending"),
+              "</div>",
+              '<p class="location">' + escapeHtml(formatCoord(task.targetCoord || {})) + "</p>",
+              task.phase ? '<p class="task-description">Phase: ' + escapeHtml(task.phase) + "</p>" : "",
+              "</div>",
+            ].join("");
+          }).join("")
         : '<p class="empty">No additional ready backlog tasks.</p>';
-
       return [
         '<section class="card">',
         '<div class="card-body">',
         '<div class="title-row">',
-        '<div>',
+        "<div>",
         '<p class="eyebrow">Backlog Handoff</p>',
         '<h3>' + escapeHtml(String(backlogSummary.totalReady)) + " ready task(s)</h3>",
         "</div>",
@@ -780,109 +902,54 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       ].join("");
     }
 
-    function renderDebugPanel() {
-      if (!state.debugActive) {
-        return "";
-      }
-      const loc = state.debugLocation ? '<p class="location" style="margin-bottom:8px">' + escapeHtml(state.debugLocation) + "</p>" : "";
-      const stopReasons = ["bug investigation", "exception", "understanding flow", "data inspection", "other"];
-      const options = stopReasons.map((r) =>
-        '<option value="' + escapeHtml(r) + '"' + (state.draftDebugReason === r ? " selected" : "") + ">" + escapeHtml(r) + "</option>"
-      ).join("");
-      return [
-        '<section class="card" style="border-top:3px solid var(--warning)">',
-        '<div class="card-body">',
-        '<p class="eyebrow">Debug Investigation</p>',
-        loc,
-        '<label style="display:block;margin-bottom:4px;color:var(--muted);font-size:11px">What do you want to investigate?</label>',
-        '<textarea id="debug-intent-input" placeholder="e.g. Why is user.balance going negative?" style="min-height:64px">' + escapeHtml(state.draftDebugIntent) + "</textarea>",
-        '<label style="display:block;margin-top:8px;margin-bottom:4px;color:var(--muted);font-size:11px">Why did you stop here?</label>',
-        '<select id="debug-reason-select" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:var(--panel-strong);color:inherit;font:inherit">',
-        options,
-        "</select>",
-        '<div class="button-row">',
-        '<button type="button" class="primary" data-action="pushDebugToAgent">Push to Agent</button>',
-        "</div>",
-        '<p class="hint">Snapshot written to <code>.waterfree/debug/snapshot.json</code> — agent queries it via <code>mcp_debug</code> tools.</p>',
-        "</div>",
-        "</section>",
-      ].join("");
-    }
-
     function render() {
-      const disabled = Boolean(state.busyMessage);
       root.innerHTML = [
         '<div class="stack">',
-        '<section class="card composer">',
-        '<div class="card-body">',
-        '<div class="title-row">',
-        '<div>',
-        '<p class="eyebrow">New Session</p>',
-        "<h1>Create a prompt</h1>",
-        "</div>",
-        disabled && state.busyMessage ? '<span class="badge pending">' + escapeHtml(state.busyMessage) + "</span>" : "",
-        "</div>",
-        '<textarea id="goal-input" placeholder="Describe what to build or fix.">' + escapeHtml(state.draftGoal) + "</textarea>",
-        '<label style="display:block;margin-top:8px;margin-bottom:4px;color:var(--muted);font-size:11px">Personality</label>',
-        '<div class="persona-row">',
-        PERSONAS.map((p) => {
-          const sel = state.selectedPersona === p.id ? " selected" : "";
-          const dis = disabled ? " disabled" : "";
-          return '<button type="button" class="persona-chip' + sel + '" data-action="selectPersona" data-persona-id="' + escapeHtml(p.id) + '" title="' + escapeHtml(p.title + ': ' + p.tagline) + '"' + dis + '>' + escapeHtml(p.icon) + '</button>';
-        }).join(""),
-        '</div>',
-        '<div class="button-row">',
-        '<button type="button" class="primary" data-action="startSession" ' + (disabled ? "disabled" : "") + ">Start Session</button>",
-        '<button type="button" data-action="buildKnowledge" title="Pair Snippetize: extract reusable patterns from this workspace into the global snippet store" ' + (disabled ? "disabled" : "") + ">&#x1F9E0; Snippetize</button>",
-        '<button type="button" data-action="addKnowledgeRepo" title="Pair Snippetize: snippetize an external git repo or local path" ' + (disabled ? "disabled" : "") + ">+ Snippetize Repo</button>",
-        "</div>",
-        '<p class="hint">The sidebar stays ready for the next prompt even when a session is active.</p>',
-        state.busyMessage ? '<p class="busy">' + escapeHtml(state.busyMessage) + "</p>" : "",
-        "</div>",
-        "</section>",
+        renderQuickJobs(),
+        renderWizards(),
         renderDebugPanel(),
         renderPlan(state.plan),
         renderBacklog(state.backlogSummary),
         "</div>",
       ].join("");
 
-      const input = document.getElementById("goal-input");
-      if (input) {
-        input.addEventListener("input", (event) => {
-          state.draftGoal = event.target.value;
-          persistState();
-        });
+      const goalInput = document.getElementById("goal-input");
+      if (goalInput) {
+        goalInput.addEventListener("input", function(e) { state.draftGoal = e.target.value; persistState(); });
+      }
+      const personaSelect = document.getElementById("persona-select");
+      if (personaSelect) {
+        personaSelect.addEventListener("change", function(e) { state.selectedPersona = e.target.value; persistState(); });
+      }
+      const wizardGoalInput = document.getElementById("wizard-goal-input");
+      if (wizardGoalInput) {
+        wizardGoalInput.addEventListener("input", function(e) { state.draftWizardGoal = e.target.value; persistState(); });
       }
       const debugIntentInput = document.getElementById("debug-intent-input");
       if (debugIntentInput) {
-        debugIntentInput.addEventListener("input", (event) => {
-          state.draftDebugIntent = event.target.value;
-          persistState();
-        });
+        debugIntentInput.addEventListener("input", function(e) { state.draftDebugIntent = e.target.value; persistState(); });
       }
       const debugReasonSelect = document.getElementById("debug-reason-select");
       if (debugReasonSelect) {
-        debugReasonSelect.addEventListener("change", (event) => {
-          state.draftDebugReason = event.target.value;
-          persistState();
-        });
+        debugReasonSelect.addEventListener("change", function(e) { state.draftDebugReason = e.target.value; persistState(); });
       }
     }
 
-    root.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-action]");
-      if (!button) {
-        return;
-      }
-      const action = button.getAttribute("data-action");
-      if (!action) {
-        return;
-      }
+    root.addEventListener("click", function(event) {
+      const el = event.target.closest("[data-action]");
+      if (!el) { return; }
+      const action = el.getAttribute("data-action");
+      if (!action) { return; }
 
-      if (action === "selectPersona") {
-        const personaId = button.getAttribute("data-persona-id");
-        if (personaId && !state.busyMessage) {
-          state.selectedPersona = personaId;
+      if (action === "toggleWizard") {
+        const wizardId = el.getAttribute("data-wizard-id");
+        if (wizardId) {
+          if (state.expandedWizard === wizardId) {
+            state.expandedWizard = null;
+          } else {
+            state.expandedWizard = wizardId;
+            state.draftWizardGoal = "";
+          }
           persistState();
           render();
         }
@@ -893,6 +960,16 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         const goal = state.draftGoal.trim();
         if (goal && !state.busyMessage) {
           vscode.postMessage({ type: "startSession", goal, persona: state.selectedPersona });
+        }
+        return;
+      }
+
+      if (action === "startWizard") {
+        if (!state.busyMessage) {
+          const wizardId = el.getAttribute("data-wizard-id");
+          if (wizardId) {
+            vscode.postMessage({ type: "startWizard", wizardId, goal: state.draftWizardGoal.trim(), persona: state.selectedPersona });
+          }
         }
         return;
       }
@@ -911,9 +988,7 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       }
 
       if (action === "addKnowledgeRepo") {
-        if (!state.busyMessage) {
-          vscode.postMessage({ type: "addKnowledgeRepo" });
-        }
+        if (!state.busyMessage) { vscode.postMessage({ type: "addKnowledgeRepo" }); }
         return;
       }
 
@@ -924,41 +999,28 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       }
 
-      if (state.busyMessage) {
-        return;
-      }
+      if (state.busyMessage) { return; }
 
-      const taskId = button.getAttribute("data-task-id") || undefined;
-      const annotationId = button.getAttribute("data-annotation-id") || undefined;
+      const taskId = el.getAttribute("data-task-id") || undefined;
+      const annotationId = el.getAttribute("data-annotation-id") || undefined;
 
       switch (action) {
         case "openTask":
         case "generateAnnotation":
         case "skipTask":
-          if (taskId) {
-            vscode.postMessage({ type: action, taskId });
-          }
+          if (taskId) { vscode.postMessage({ type: action, taskId }); }
           return;
         case "showAnnotation":
-          if (taskId) {
-            vscode.postMessage({ type: "showAnnotation", taskId, annotationId });
-          }
+          if (taskId) { vscode.postMessage({ type: "showAnnotation", taskId, annotationId }); }
           return;
         case "approveAnnotation":
-          if (annotationId) {
-            vscode.postMessage({ type: "approveAnnotation", annotationId });
-          }
+          if (annotationId) { vscode.postMessage({ type: "approveAnnotation", annotationId }); }
           return;
         case "alterAnnotation":
           if (taskId && annotationId) {
             const feedback = window.prompt("What should be different?");
             if (feedback && feedback.trim()) {
-              vscode.postMessage({
-                type: "alterAnnotation",
-                taskId,
-                annotationId,
-                feedback,
-              });
+              vscode.postMessage({ type: "alterAnnotation", taskId, annotationId, feedback });
             }
           }
           return;
@@ -966,24 +1028,17 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           if (taskId) {
             const instruction = window.prompt("Give a new direction for this task:");
             if (instruction && instruction.trim()) {
-              vscode.postMessage({
-                type: "redirectTask",
-                taskId,
-                instruction,
-              });
+              vscode.postMessage({ type: "redirectTask", taskId, instruction });
             }
           }
           return;
       }
     });
 
-    window.addEventListener("message", (event) => {
+    window.addEventListener("message", function(event) {
       const message = event.data || {};
       if (message.type === "state") {
-        state = {
-          ...state,
-          ...message.state,
-        };
+        state = { ...state, ...message.state };
         render();
       } else if (message.type === "clearComposer") {
         state.draftGoal = "";

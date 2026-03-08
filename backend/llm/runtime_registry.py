@@ -10,16 +10,11 @@ from typing import Callable, Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
-from backend.llm.providers import (
-    AnthropicRuntime,
-    DeepAgentsRuntime,
-    OllamaRuntime,
-    OpenAIRuntime,
-)
+from backend.llm.providers import DeepAgentsRuntime
 from backend.llm.runtime import AgentRuntime
 from backend.todo.store import TaskStore
 
-_DEFAULT_RUNTIME = "anthropic"
+_DEFAULT_RUNTIME = "deep_agents"
 _RUNTIME_ENV_VAR = "WATERFREE_AGENT_RUNTIME"
 
 
@@ -46,15 +41,6 @@ class RuntimeDescriptor:
 
 
 _RUNTIME_DESCRIPTORS: dict[str, RuntimeDescriptor] = {
-    "anthropic": RuntimeDescriptor(
-        id="anthropic",
-        label="Anthropic Claude",
-        provider="anthropic",
-        local=False,
-        supports_tools=True,
-        supports_skills=True,
-        supports_checkpoints=True,
-    ),
     "deep_agents": RuntimeDescriptor(
         id="deep_agents",
         label="Deep Agents",
@@ -88,7 +74,7 @@ _RUNTIME_DESCRIPTORS: dict[str, RuntimeDescriptor] = {
 def resolve_runtime_name(preferred: Optional[str] = None) -> str:
     raw = (preferred or os.environ.get(_RUNTIME_ENV_VAR) or _DEFAULT_RUNTIME).strip().lower()
     if raw in {"anthropic", "claude"}:
-        return "anthropic"
+        return "deep_agents"
     if raw in {"deep-agents", "deep_agents"}:
         return "deep_agents"
     if raw == "ollama":
@@ -134,12 +120,10 @@ def create_runtime(
         "knowledge_store": knowledge_store,
         "task_store_factory": task_store_factory,
     }
-    if name == "anthropic":
-        return AnthropicRuntime(**common_kwargs)
-    if name == "deep_agents":
-        return DeepAgentsRuntime(workspace_path=workspace_path, **common_kwargs)
-    if name == "ollama":
-        return OllamaRuntime(**common_kwargs)
-    if name == "openai":
-        return OpenAIRuntime(**common_kwargs)
+    if name in {"deep_agents", "ollama", "openai"}:
+        return DeepAgentsRuntime(
+            workspace_path=workspace_path,
+            provider_lane=name,
+            **common_kwargs,
+        )
     raise ValueError(f"Unsupported runtime '{name}'.")

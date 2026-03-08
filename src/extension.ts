@@ -892,6 +892,12 @@ class WaterFreeController implements vscode.Disposable {
       case "startSession":
         await this._cmdStart(action.goal, action.persona);
         return;
+      case "startWizard": {
+        const wizardLabel = action.wizardId.replace(/_/g, " ");
+        const goal = action.goal || `Run the ${wizardLabel} wizard`;
+        await this._cmdStart(goal, action.persona);
+        return;
+      }
       case "openTask":
         this._openTaskTarget(action.taskId);
         return;
