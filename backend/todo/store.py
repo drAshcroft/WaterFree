@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -23,38 +21,19 @@ from backend.session.models import (
     TaskStatus,
     TaskType,
 )
+from backend.todo.dependency_resolver import DependencyResolver
+from backend.todo.migration import maybe_import_legacy_json
+from backend.todo.utils import (
+    TaskStoreData,
+    instruction_title,
+    json_loads,
+    now,
+    to_workspace_relative,
+)
 
 _PAIRS_DIR = ".waterfree"
 _DB_FILE = "tasks.db"
 _LEGACY_JSON_FILE = "tasks.json"
-
-
-@dataclass
-class TaskStoreData:
-    version: int = 1
-    tasks: list[Task] = field(default_factory=list)
-    phases: list[str] = field(default_factory=list)
-    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    velocity_log: list[dict] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        return {
-            "version": self.version,
-            "tasks": [task.to_dict() for task in self.tasks],
-            "phases": self.phases,
-            "updatedAt": self.updated_at,
-            "velocityLog": self.velocity_log,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: dict) -> "TaskStoreData":
-        return cls(
-            version=int(payload.get("version", 1)),
-            tasks=[Task.from_dict(item) for item in payload.get("tasks", [])],
-            phases=[str(phase) for phase in payload.get("phases", [])],
-            updated_at=str(payload.get("updatedAt") or _now()),
-            velocity_log=list(payload.get("velocityLog", [])),
-        )
 
 
 class TaskStore:
@@ -68,11 +47,16 @@ class TaskStore:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
-        self._maybe_import_legacy_json()
+        self._deps = DependencyResolver(self._conn)
+        maybe_import_legacy_json(
+            self._conn, self._legacy_json_path, self.save, self._set_metadata
+        )
 
     @property
     def path(self) -> str:
         return str(self._path)
+
+    # ── Public read API ───────────────────────────────────────────────────────
 
     def load(self) -> TaskStoreData:
         metadata = self._load_metadata()
@@ -85,31 +69,10 @@ class TaskStore:
         return TaskStoreData(
             version=int(metadata.get("version", 1)),
             tasks=tasks,
-            phases=_json_loads(metadata.get("phases"), []),
-            updated_at=str(metadata.get("updated_at") or _now()),
-            velocity_log=_json_loads(metadata.get("velocity_log"), []),
+            phases=json_loads(metadata.get("phases"), []),
+            updated_at=str(metadata.get("updated_at") or now()),
+            velocity_log=json_loads(metadata.get("velocity_log"), []),
         )
-
-    def save(self, data: TaskStoreData) -> None:
-        data.updated_at = _now()
-        existing_session_ids = {
-            str(row["id"]): row["session_id"]
-            for row in self._conn.execute("SELECT id, session_id FROM tasks").fetchall()
-        }
-        with self._conn:
-            self._conn.execute("DELETE FROM task_dependencies")
-            self._conn.execute("DELETE FROM tasks")
-            for index, task in enumerate(data.tasks):
-                self._write_task_row(
-                    task,
-                    sort_index=index,
-                    session_id=existing_session_ids.get(task.id),
-                )
-                self._replace_dependencies(task)
-            self._set_metadata("version", str(data.version))
-            self._set_metadata("phases", json.dumps(data.phases, ensure_ascii=True))
-            self._set_metadata("updated_at", data.updated_at)
-            self._set_metadata("velocity_log", json.dumps(data.velocity_log, ensure_ascii=True))
 
     def list_tasks(
         self,
@@ -136,9 +99,9 @@ class TaskStore:
         return TaskStoreData(
             version=int(metadata.get("version", 1)),
             tasks=tasks,
-            phases=_json_loads(metadata.get("phases"), []),
-            updated_at=str(metadata.get("updated_at") or _now()),
-            velocity_log=_json_loads(metadata.get("velocity_log"), []),
+            phases=json_loads(metadata.get("phases"), []),
+            updated_at=str(metadata.get("updated_at") or now()),
+            velocity_log=json_loads(metadata.get("velocity_log"), []),
         )
 
     def search_tasks(self, query: str, limit: int = 20) -> list[Task]:
@@ -164,6 +127,48 @@ class TaskStore:
             (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
         ).fetchall()
         return [Task.from_dict(json.loads(row["payload"])) for row in rows]
+
+    def get_tasks_by_priority(self, priority: TaskPriority | str) -> list[Task]:
+        value = priority.value if isinstance(priority, TaskPriority) else str(priority)
+        return self._query_tasks(priority=value)
+
+    def get_tasks_by_phase(self, phase: str) -> list[Task]:
+        return self._query_tasks(phase=phase)
+
+    def get_tasks_by_owner(self, owner_name: str) -> list[Task]:
+        return self._query_tasks(owner_name=owner_name)
+
+    def get_blocked_tasks(self) -> list[Task]:
+        return self._deps.get_blocked_tasks()
+
+    def get_ready_tasks(self) -> list[Task]:
+        return self._deps.get_ready_tasks()
+
+    def get_next_task(self, owner_name: str = "", include_unassigned: bool = True) -> Optional[Task]:
+        return self._deps.get_next_task(owner_name=owner_name, include_unassigned=include_unassigned)
+
+    # ── Public write API ──────────────────────────────────────────────────────
+
+    def save(self, data: TaskStoreData) -> None:
+        data.updated_at = now()
+        existing_session_ids = {
+            str(row["id"]): row["session_id"]
+            for row in self._conn.execute("SELECT id, session_id FROM tasks").fetchall()
+        }
+        with self._conn:
+            self._conn.execute("DELETE FROM task_dependencies")
+            self._conn.execute("DELETE FROM tasks")
+            for index, task in enumerate(data.tasks):
+                self._write_task_row(
+                    task,
+                    sort_index=index,
+                    session_id=existing_session_ids.get(task.id),
+                )
+                self._replace_dependencies(task)
+            self._set_metadata("version", str(data.version))
+            self._set_metadata("phases", json.dumps(data.phases, ensure_ascii=True))
+            self._set_metadata("updated_at", data.updated_at)
+            self._set_metadata("velocity_log", json.dumps(data.velocity_log, ensure_ascii=True))
 
     def add_task(self, task_input: dict) -> Task:
         data = self.load()
@@ -203,61 +208,6 @@ class TaskStore:
             self.save(data)
         return data.phases
 
-    def get_tasks_by_priority(self, priority: TaskPriority | str) -> list[Task]:
-        value = priority.value if isinstance(priority, TaskPriority) else str(priority)
-        return self._query_tasks(priority=value)
-
-    def get_tasks_by_phase(self, phase: str) -> list[Task]:
-        return self._query_tasks(phase=phase)
-
-    def get_tasks_by_owner(self, owner_name: str) -> list[Task]:
-        return self._query_tasks(owner_name=owner_name)
-
-    def get_blocked_tasks(self) -> list[Task]:
-        rows = self._conn.execute(
-            f"""
-            SELECT payload
-            FROM tasks
-            WHERE {self._blocked_condition_sql()}
-              AND status NOT IN (?, ?)
-            ORDER BY {self._default_order_sql()}
-            """,
-            (TaskStatus.COMPLETE.value, TaskStatus.SKIPPED.value),
-        ).fetchall()
-        return [Task.from_dict(json.loads(row["payload"])) for row in rows]
-
-    def get_ready_tasks(self) -> list[Task]:
-        return self._query_tasks(ready_only=True)
-
-    def get_next_task(self, owner_name: str = "", include_unassigned: bool = True) -> Optional[Task]:
-        clauses = [
-            self._ready_condition_sql(),
-            "status NOT IN (?, ?)",
-        ]
-        params: list[object] = [TaskStatus.COMPLETE.value, TaskStatus.SKIPPED.value]
-
-        if owner_name:
-            if include_unassigned:
-                clauses.append("(lower(owner_name) = ? OR owner_type = ?)")
-                params.extend([owner_name.casefold(), OwnerType.UNASSIGNED.value])
-            else:
-                clauses.append("lower(owner_name) = ?")
-                params.append(owner_name.casefold())
-
-        rows = self._conn.execute(
-            f"""
-            SELECT payload
-            FROM tasks
-            WHERE {' AND '.join(clauses)}
-            ORDER BY {self._default_order_sql()}
-            LIMIT 1
-            """,
-            params,
-        ).fetchall()
-        if not rows:
-            return None
-        return Task.from_dict(json.loads(rows[0]["payload"]))
-
     def promote_to_session(self, task_id: str, session_id: str) -> Task:
         task = self._fetch_task(task_id)
         if not task:
@@ -289,7 +239,7 @@ class TaskStore:
         return imported
 
     def queue_todo(self, *, file_path: str, line: int, instruction: str) -> Task:
-        rel_file = _to_workspace_relative(self._workspace, file_path)
+        rel_file = to_workspace_relative(self._workspace, file_path)
         normalized = instruction.strip()
         existing = self._conn.execute(
             """
@@ -314,7 +264,7 @@ class TaskStore:
             return Task.from_dict(json.loads(existing["payload"]))
 
         task = Task(
-            title=_instruction_title(normalized),
+            title=instruction_title(normalized),
             description=normalized,
             target_coord=CodeCoord(
                 file=rel_file,
@@ -332,17 +282,19 @@ class TaskStore:
     def close(self) -> None:
         self._conn.close()
 
+    # ── Input helpers ─────────────────────────────────────────────────────────
+
     def _task_from_input(self, task_input: dict) -> Task:
         payload = dict(task_input)
         if "targetCoord" in payload:
             coord = CodeCoord.from_dict(payload["targetCoord"])
         else:
             coord = CodeCoord()
-        coord.file = _to_workspace_relative(self._workspace, coord.file)
+        coord.file = to_workspace_relative(self._workspace, coord.file)
 
         owner_payload = payload.get("owner", {})
         owner = TaskOwner.from_dict(owner_payload) if owner_payload else TaskOwner()
-        task = Task(
+        return Task(
             title=str(payload.get("title", "")).strip(),
             description=str(payload.get("description", "")).strip(),
             rationale=str(payload.get("rationale", "")).strip(),
@@ -363,7 +315,6 @@ class TaskStore:
             started_at=payload.get("startedAt"),
             completed_at=payload.get("completedAt"),
         )
-        return task
 
     def _apply_patch(self, task: Task, patch: dict) -> None:
         if "title" in patch:
@@ -398,12 +349,14 @@ class TaskStore:
             task.completed_at = patch["completedAt"]
         if "targetCoord" in patch:
             coord = CodeCoord.from_dict(patch["targetCoord"] or {})
-            coord.file = _to_workspace_relative(self._workspace, coord.file)
+            coord.file = to_workspace_relative(self._workspace, coord.file)
             task.target_coord = coord
         if "dependsOn" in patch:
             task.depends_on = [TaskDependency.from_dict(item) for item in patch["dependsOn"] or []]
         if "contextCoords" in patch:
             task.context_coords = [CodeCoord.from_dict(item) for item in patch["contextCoords"] or []]
+
+    # ── DB helpers ────────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
         with self._conn:
@@ -439,19 +392,12 @@ class TaskStore:
                 )
                 """
             )
+            self._conn.execute("INSERT OR IGNORE INTO metadata(key, value) VALUES ('version', '1')")
+            self._conn.execute("INSERT OR IGNORE INTO metadata(key, value) VALUES ('phases', '[]')")
             self._conn.execute(
-                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('version', '1')"
+                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('updated_at', ?)", (now(),)
             )
-            self._conn.execute(
-                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('phases', '[]')"
-            )
-            self._conn.execute(
-                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('updated_at', ?)",
-                (_now(),),
-            )
-            self._conn.execute(
-                "INSERT OR IGNORE INTO metadata(key, value) VALUES ('velocity_log', '[]')"
-            )
+            self._conn.execute("INSERT OR IGNORE INTO metadata(key, value) VALUES ('velocity_log', '[]')")
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS task_dependencies (
@@ -462,21 +408,11 @@ class TaskStore:
                 )
                 """
             )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_owner_name ON tasks(owner_name)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_owner_type ON tasks(owner_type)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
-            )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_name ON tasks(owner_name)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner_type ON tasks(owner_type)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_dependencies_task ON task_dependencies(task_id, dep_type)"
             )
@@ -494,19 +430,6 @@ class TaskStore:
             "INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)",
             (key, value),
         )
-
-    def _maybe_import_legacy_json(self) -> None:
-        row = self._conn.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()
-        task_count = int(row["count"]) if row else 0
-        if task_count > 0 or not self._legacy_json_path.exists():
-            return
-
-        payload = json.loads(self._legacy_json_path.read_text(encoding="utf-8"))
-        data = TaskStoreData.from_dict(payload)
-        self.save(data)
-        with self._conn:
-            self._set_metadata("legacy_imported_from", str(self._legacy_json_path))
-            self._set_metadata("legacy_imported_at", _now())
 
     def _query_tasks(
         self,
@@ -537,7 +460,7 @@ class TaskStore:
             clauses.append("phase = ?")
             params.append(phase)
         if ready_only:
-            clauses.append(self._ready_condition_sql())
+            clauses.append(self._deps.ready_condition_sql())
             clauses.append("status NOT IN (?, ?)")
             params.extend([TaskStatus.COMPLETE.value, TaskStatus.SKIPPED.value])
 
@@ -553,22 +476,6 @@ class TaskStore:
             [*params, max(0, limit)],
         ).fetchall()
         return [Task.from_dict(json.loads(row["payload"])) for row in rows]
-
-    def _ready_condition_sql(self) -> str:
-        return f"NOT EXISTS ({self._blocker_subquery_sql()})"
-
-    def _blocked_condition_sql(self) -> str:
-        return f"EXISTS ({self._blocker_subquery_sql()})"
-
-    def _blocker_subquery_sql(self) -> str:
-        return """
-            SELECT 1
-            FROM task_dependencies deps
-            LEFT JOIN tasks blocker ON blocker.id = deps.depends_on_task_id
-            WHERE deps.task_id = tasks.id
-              AND deps.dep_type = 'blocks'
-              AND (blocker.id IS NULL OR blocker.status != 'complete')
-        """
 
     def _default_order_sql(self) -> str:
         return """
@@ -618,16 +525,11 @@ class TaskStore:
         ).fetchall()
         for row in rows:
             task = Task.from_dict(json.loads(row["payload"]))
-            self._write_task_row(
-                task,
-                sort_index=int(row["sort_index"]),
-                session_id=row["session_id"],
-            )
+            self._write_task_row(task, sort_index=int(row["sort_index"]), session_id=row["session_id"])
 
     def _fetch_task(self, task_id: str) -> Optional[Task]:
         row = self._conn.execute(
-            "SELECT payload FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT payload FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return None
@@ -635,8 +537,7 @@ class TaskStore:
 
     def _sort_index_for_task(self, task_id: str, allow_append: bool = False) -> int:
         row = self._conn.execute(
-            "SELECT sort_index FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT sort_index FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if row:
             return int(row["sort_index"])
@@ -646,8 +547,7 @@ class TaskStore:
 
     def _session_id_for_task(self, task_id: str) -> Optional[str]:
         row = self._conn.execute(
-            "SELECT session_id FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return None
@@ -662,7 +562,7 @@ class TaskStore:
             self._write_task_row(task, sort_index=sort_index, session_id=session_id)
             self._replace_dependencies(task)
             self._ensure_phases([task.phase] if task.phase else [])
-            self._set_metadata("updated_at", _now())
+            self._set_metadata("updated_at", now())
 
     def _write_task_row(self, task: Task, *, sort_index: int, session_id: Optional[str]) -> None:
         payload = json.dumps(task.to_dict(), ensure_ascii=True)
@@ -719,10 +619,7 @@ class TaskStore:
             return
         self._conn.executemany(
             "INSERT INTO task_dependencies(task_id, depends_on_task_id, dep_type) VALUES (?, ?, ?)",
-            [
-                (task.id, dep.task_id, dep.type.value)
-                for dep in task.depends_on
-            ],
+            [(task.id, dep.task_id, dep.type.value) for dep in task.depends_on],
         )
 
     def _ensure_phases(self, phases: list[str]) -> None:
@@ -730,7 +627,7 @@ class TaskStore:
         if not cleaned:
             return
         metadata = self._load_metadata()
-        existing = _json_loads(metadata.get("phases"), [])
+        existing = json_loads(metadata.get("phases"), [])
         changed = False
         for phase in cleaned:
             if phase not in existing:
@@ -738,55 +635,3 @@ class TaskStore:
                 changed = True
         if changed:
             self._set_metadata("phases", json.dumps(existing, ensure_ascii=True))
-
-
-def _task_sort_key(task: Task) -> tuple[int, int, str, str]:
-    return (
-        _priority_rank(task.priority),
-        0 if task.started_at else 1,
-        task.phase or "",
-        task.title.casefold(),
-    )
-
-
-def _priority_rank(priority: TaskPriority) -> int:
-    order = {
-        TaskPriority.P0: 0,
-        TaskPriority.P1: 1,
-        TaskPriority.P2: 2,
-        TaskPriority.P3: 3,
-        TaskPriority.SPIKE: 4,
-    }
-    return order.get(priority, 99)
-
-
-def _instruction_title(instruction: str) -> str:
-    text = " ".join(instruction.split())
-    if len(text) <= 80:
-        return text
-    return text[:77].rstrip() + "..."
-
-
-def _to_workspace_relative(workspace: Path, file_path: str) -> str:
-    if not file_path:
-        return ""
-    candidate = Path(file_path)
-    if not candidate.is_absolute():
-        return file_path.replace("\\", "/")
-    try:
-        return str(candidate.resolve().relative_to(workspace)).replace("\\", "/")
-    except ValueError:
-        return str(candidate.resolve()).replace("\\", "/")
-
-
-def _json_loads(raw: Optional[str], default):
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()

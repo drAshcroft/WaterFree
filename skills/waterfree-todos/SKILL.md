@@ -3,9 +3,9 @@ name: waterfree-todos
 description: Use the WaterFree task MCP tools to inspect the workspace backlog, find ready work, add tasks, and update task status as implementation progresses.
 ---
 
-# PairProgram — Task / Todo Store Tools
+# WaterFree — Task / Todo Store Tools
 
-You have access to the workspace task backlog via the `pairprogram-todos` MCP server.
+You have access to the workspace task backlog via the `waterfree-todos` MCP server.
 Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite).
 
 ## When to Use

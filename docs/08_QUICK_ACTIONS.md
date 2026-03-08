@@ -5,7 +5,7 @@
 
 ## Overview
 
-The Quick Actions panel lives in the PairProtocol sidebar, directly below the Plan view. It provides one-click access to common programming tasks that are contextual to the file currently open in the editor.
+The Quick Actions panel lives in the WaterFree sidebar, directly below the Plan view. It provides one-click access to common programming tasks that are contextual to the file currently open in the editor.
 
 Instead of navigating to a chat panel or writing a detailed prompt, the developer clicks a button. The button either:
 1. **Inserts a structured `[wf]` TODO** into the active file (picked up by the TodoWatcher and queued as an instruction), or
@@ -19,7 +19,7 @@ This keeps the developer in their flow. The AI sees the intent as a properly for
 
 ```
 ┌─────────────────────────────────┐
-│  PAIRPROTOCOL                   │
+│  WATERFREE                   │
 │                                 │
 │  ▼ Plan                         │
 │    ✦ Task 1 — Add validation    │

@@ -158,10 +158,9 @@ The AI and human are tightly coupled at every step — which is exactly what bre
 
 
 1. Install the extension
-2. Set your API key:
-   - Open **Settings** → search `waterfree.anthropicApiKey`, or
-   - Set the `ANTHROPIC_API_KEY` environment variable
-3. Open a workspace and run **WaterFree: Start Session** from the command palette (`Ctrl+Shift+P`)
+2. Run `WaterFree: Setup` and enter your Anthropic API key when prompted
+3. Optional: run `.\install.ps1` from the repo root if you want the WaterFree MCP servers registered in Codex, Claude Code, or Kilo Code
+4. Open a workspace and run **WaterFree: Start Session** from the command palette (`Ctrl+Shift+P`)
 
 
 ### First Session
@@ -175,6 +174,7 @@ The AI and human are tightly coupled at every step — which is exactly what bre
 
 | Command | Description |
 |---|---|
+| `WaterFree: Setup` | Store the Anthropic API key in VS Code secure secret storage |
 | `WaterFree: Start Session` | Describe a goal and generate a task plan |
 | `WaterFree: Check/Index Workspace` | Index or refresh the codebase graph |
 | `WaterFree Snippetize: Snippetize Workspace` | Extract patterns from the workspace |
@@ -201,7 +201,7 @@ The AI and human are tightly coupled at every step — which is exactly what bre
 
 | Setting | Default | Description |
 |---|---|---|
-| `waterfree.anthropicApiKey` | `""` | API key (falls back to `ANTHROPIC_API_KEY` env var) |
+| `waterfree.anthropicApiKey` | `""` | Deprecated plaintext migration setting. Use `WaterFree: Setup` instead. |
 | `waterfree.planningModel` | `claude-opus-4-6` | Model used for planning |
 | `waterfree.executionModel` | `claude-sonnet-4-6` | Model used for annotation and execution |
 | `waterfree.pythonPath` | `python` | Path to Python 3.10+ executable |
@@ -242,6 +242,8 @@ WaterFree detects these on save and adds them to the active session's backlog au
 
 - All session data is stored locally in `.waterfree/` inside your workspace (add to `.gitignore`)
 - The codebase index, call graph, and session history never leave your machine except as context sent to the Anthropic API
+- `WaterFree: Setup` stores the Anthropic API key in VS Code secure secret storage instead of plain settings
+- `install.ps1` stores MCP-side provider secrets in a user-scoped Windows DPAPI store at `~/.waterfree/secrets.json`
 - No telemetry is collected by WaterFree itself
 
 

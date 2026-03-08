@@ -8,7 +8,7 @@ Run:
     python -m backend.mcp_todos
 
 Register with Claude Code:
-    claude mcp add pairprogram-todos python -- -m backend.mcp_todos
+    claude mcp add waterfree-todos python -- -m backend.mcp_todos
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from mcp.server.fastmcp import FastMCP
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
 from backend.todo.store import TaskStore
 
-mcp = FastMCP("pairprogram-todos")
-log, LOG_FILE = configure_mcp_logger("pairprogram-todos")
+mcp = FastMCP("waterfree-todos")
+log, LOG_FILE = configure_mcp_logger("waterfree-todos")
 
 # One TaskStore per workspace path, lazily created.
 _stores: dict[str, TaskStore] = {}
@@ -220,5 +220,5 @@ get_ready_tasks = mcp.tool()(instrument_tool(log, "get_ready_tasks", _get_ready_
 
 
 if __name__ == "__main__":
-    log.info("Starting MCP server pairprogram-todos (logFile=%s)", LOG_FILE)
+    log.info("Starting MCP server waterfree-todos (logFile=%s)", LOG_FILE)
     mcp.run()

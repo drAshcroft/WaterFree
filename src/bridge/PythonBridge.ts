@@ -145,6 +145,7 @@ export class PythonBridge implements vscode.Disposable {
   private _notificationHandlers = new Map<string, NotificationHandler[]>();
   private _nextId = 1;
   private _disposed = false;
+  private _anthropicApiKey = "";
   private readonly _logger: PairLoggerLike;
   private readonly _backendLogFilePath: string;
 
@@ -174,16 +175,16 @@ export class PythonBridge implements vscode.Disposable {
 
     const config = vscode.workspace.getConfiguration("waterfree");
     const pythonPath: string = config.get("pythonPath") ?? "python";
-    const apiKey: string = config.get<string>("anthropicApiKey") || process.env.ANTHROPIC_API_KEY || "";
+    const apiKey = this._anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
     const graphBinary: string = config.get<string>("graphBinaryPath") || "codebase-memory-mcp";
 
     if (apiKey) {
       const masked = `${apiKey.slice(0, 7)}…${apiKey.slice(-4)}`;
       this._log(`Anthropic API key found (${masked}) — will pass to backend`);
     } else {
-      this._log("WARNING: No Anthropic API key configured. Set waterfree.anthropicApiKey in settings or the ANTHROPIC_API_KEY environment variable.");
+      this._log("WARNING: No Anthropic API key configured. Run WaterFree: Setup or set ANTHROPIC_API_KEY.");
       vscode.window.showWarningMessage(
-        "WaterFree: No Anthropic API key found. Set waterfree.anthropicApiKey in settings or the ANTHROPIC_API_KEY environment variable.",
+        "WaterFree: No Anthropic API key found. Run WaterFree: Setup or set ANTHROPIC_API_KEY.",
       );
     }
 
@@ -259,6 +260,20 @@ export class PythonBridge implements vscode.Disposable {
 
   get isRunning(): boolean {
     return this._proc !== null && !this._proc.killed;
+  }
+
+  setAnthropicApiKey(apiKey: string): void {
+    this._anthropicApiKey = apiKey.trim();
+  }
+
+  restart(): void {
+    const proc = this._proc;
+    this._proc = null;
+    this._rejectPending(new Error("WaterFree backend restarting."));
+    if (proc) {
+      this._terminateBackend(proc);
+    }
+    this.start();
   }
 
   // ------------------------------------------------------------------

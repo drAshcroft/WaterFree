@@ -45,6 +45,10 @@
         "title": "WaterFree: Start Session"
       },
       {
+        "command": "waterfree.setup",
+        "title": "WaterFree: Setup"
+      },
+      {
         "command": "waterfree.indexWorkspace",
         "title": "WaterFree: Check/Index Workspace",
         "icon": {
@@ -219,7 +223,8 @@
         "waterfree.anthropicApiKey": {
           "type": "string",
           "default": "",
-          "description": "Anthropic API key. Leave blank to use ANTHROPIC_API_KEY environment variable."
+          "description": "Deprecated plaintext fallback. WaterFree now stores the Anthropic API key in secure secret storage and only uses this setting for one-time migration.",
+          "deprecationMessage": "Use the 'WaterFree: Setup' command instead. WaterFree stores API keys in secure secret storage."
         },
         "waterfree.planningModel": {
           "type": "string",

@@ -250,7 +250,7 @@ interface DiagnosticInterpretation {
   causedBy: string;           // link back to the change that caused it
   likelyFix: string;          // one-sentence fix
   isBlocking: boolean;        // will this prevent compilation/running?
-  autoFixable: boolean;       // can PairProtocol fix this automatically?
+  autoFixable: boolean;       // can WaterFree fix this automatically?
 }
 ```
 

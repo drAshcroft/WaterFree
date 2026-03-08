@@ -8,7 +8,7 @@ Run:
     python -m backend.mcp_index
 
 Register with Claude Code:
-    claude mcp add pairprogram-index python -- -m backend.mcp_index
+    claude mcp add waterfree-index python -- -m backend.mcp_index
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from mcp.server.fastmcp import FastMCP
 from backend.graph.client import GraphClient
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
 
-mcp = FastMCP("pairprogram-index")
-log, LOG_FILE = configure_mcp_logger("pairprogram-index")
+mcp = FastMCP("waterfree-index")
+log, LOG_FILE = configure_mcp_logger("waterfree-index")
 
 # One GraphClient per workspace path, lazily created.
 _clients: dict[str, GraphClient] = {}
@@ -207,5 +207,5 @@ list_projects = mcp.tool()(instrument_tool(log, "list_projects", _list_projects_
 
 
 if __name__ == "__main__":
-    log.info("Starting MCP server pairprogram-index (logFile=%s)", LOG_FILE)
+    log.info("Starting MCP server waterfree-index (logFile=%s)", LOG_FILE)
     mcp.run()

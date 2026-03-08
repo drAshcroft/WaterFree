@@ -5,7 +5,7 @@ description: Use the WaterFree knowledge MCP tools to search shared code snippet
 
 # WaterFree — Knowledge / Snippet Store Tools
 
-You have access to a global cross-project knowledge store via the `pairprogram-knowledge`
+You have access to a global cross-project knowledge store via the `waterfree-knowledge`
 MCP server. It contains code snippets, patterns, utilities, and conventions extracted
 from indexed repositories using LLM classification, and entries added directly by agents.
 

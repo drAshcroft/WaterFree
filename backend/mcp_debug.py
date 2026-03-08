@@ -1,5 +1,5 @@
 """
-PairProgram Debug MCP Server — mcp_debug.py
+WaterFree Debug MCP Server — mcp_debug.py
 
 Exposes live debug state captured from the VS Code debugger to the AI agent.
 The agent must query progressively to avoid context overflow:
@@ -11,7 +11,7 @@ The agent must query progressively to avoid context overflow:
   5. get_variable_value    → type-aware value chunks (slice arrays, navigate paths)
 
 The snapshot is written to .waterfree/debug/snapshot.json by the TypeScript
-extension when the user clicks "Push to Agent" in the PairProgram sidebar.
+extension when the user clicks "Push to Agent" in the WaterFree sidebar.
 
 Run as:
   python -m backend.mcp_debug
@@ -29,8 +29,8 @@ from mcp.server.fastmcp import FastMCP
 from backend.debug.snapshot_reader import DebugSnapshot, VarInfo
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
 
-mcp = FastMCP("pairprogram-debug")
-log, LOG_FILE = configure_mcp_logger("pairprogram-debug")
+mcp = FastMCP("waterfree-debug")
+log, LOG_FILE = configure_mcp_logger("waterfree-debug")
 
 _MAX_RESPONSE_CHARS = 2000
 
@@ -339,5 +339,5 @@ def _parse_list_repr(raw: str) -> Optional[list[str]]:
 
 
 if __name__ == "__main__":
-    log.info("Starting MCP server pairprogram-debug (logFile=%s)", LOG_FILE)
+    log.info("Starting MCP server waterfree-debug (logFile=%s)", LOG_FILE)
     mcp.run()

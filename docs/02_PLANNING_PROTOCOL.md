@@ -349,7 +349,7 @@ The plan is rendered in the VS Code Explorer sidebar as a TreeView. This is alwa
 
 **Visual structure:**
 ```
-PAIRPROTOCOL SESSION
+WATERFREE SESSION
 ├── Goal: Add rate limiting to auth endpoints
 │
 ├── PHASE 1: Middleware Layer             [2/5 complete]

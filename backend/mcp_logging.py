@@ -15,13 +15,13 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def resolve_mcp_log_dir() -> Path:
-    explicit = os.environ.get("PAIRPROTOCOL_MCP_LOG_DIR")
+    explicit = os.environ.get("WATERFREE_MCP_LOG_DIR")
     if explicit:
         return Path(explicit).expanduser()
 
     appdata = os.environ.get("APPDATA")
     if appdata:
-        return Path(appdata) / "PairProtocol" / "logs" / "mcp"
+        return Path(appdata) / "WaterFree" / "logs" / "mcp"
 
     return Path.home() / ".waterfree" / "logs" / "mcp"
 

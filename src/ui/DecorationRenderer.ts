@@ -3,7 +3,7 @@
  *
  * For each pending/approved annotation targeting the currently open file,
  * a CodeLens appears at the target line showing:
- *   [PP] {summary}   [✓ Approve] [✎ Alter] [⟳ Redirect]
+ *    [WF] {summary}   [✓ Approve] [✎ Alter] [⟳ Redirect]
  *
  * Annotations are in-memory only — nothing is written to the file.
  */
@@ -81,7 +81,7 @@ export class DecorationRenderer
       const statusIcon = annotation.status === "approved" ? "$(check)" : "$(circle-outline)";
       lenses.push(
         new vscode.CodeLens(range, {
-          title: `${statusIcon} [PP] ${annotation.summary}`,
+          title: `${statusIcon}  [WF] ${annotation.summary}`,
           command: "waterfree.showAnnotation",
           arguments: [task.id, annotation.id],
         }),

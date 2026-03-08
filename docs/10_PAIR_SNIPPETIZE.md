@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Pair Snippetize is a global, cross-project code knowledge base built into PairProtocol. It extracts reusable patterns, utilities, conventions, and API usage examples from any codebase using LLM-based analysis — not just structural indexing. The extracted knowledge persists across all workspaces and is automatically surfaced in planning and annotation prompts when relevant.
+Pair Snippetize is a global, cross-project code knowledge base built into WaterFree. It extracts reusable patterns, utilities, conventions, and API usage examples from any codebase using LLM-based analysis — not just structural indexing. The extracted knowledge persists across all workspaces and is automatically surfaced in planning and annotation prompts when relevant.
 
 **Three extraction modes:**
 

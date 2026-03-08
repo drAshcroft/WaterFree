@@ -14,7 +14,7 @@ This document covers the technical implementation of the VS Code extension shell
 ```json
 {
   "name": "pair-protocol",
-  "displayName": "PairProtocol",
+  "displayName": "WaterFree",
   "description": "Structured AI pair programming. Intent before action.",
   "version": "0.1.0",
   "engines": { "vscode": "^1.85.0" },
@@ -59,7 +59,7 @@ This document covers the technical implementation of the VS Code extension shell
       "explorer": [
         {
           "id": "waterfree.planView",
-          "name": "PairProtocol",
+          "name": "WaterFree",
           "when": "waterfree.sessionActive"
         }
       ]
@@ -69,14 +69,14 @@ This document covers the technical implementation of the VS Code extension shell
       "activitybar": [
         {
           "id": "waterfree",
-          "title": "PairProtocol",
+          "title": "WaterFree",
           "icon": "media/icon.svg"
         }
       ]
     },
     
     "configuration": {
-      "title": "PairProtocol",
+      "title": "WaterFree",
       "properties": {
         "waterfree.anthropicApiKey": {
           "type": "string",

@@ -8,7 +8,7 @@ Run:
     python -m backend.mcp_knowledge
 
 Register with Claude Code:
-    claude mcp add pairprogram-knowledge python -- -m backend.mcp_knowledge
+    claude mcp add waterfree-knowledge python -- -m backend.mcp_knowledge
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from backend.mcp_logging import configure_mcp_logger, instrument_tool
 from backend.knowledge.models import KnowledgeEntry
 from backend.knowledge.store import KnowledgeStore
 
-mcp = FastMCP("pairprogram-knowledge")
-log, LOG_FILE = configure_mcp_logger("pairprogram-knowledge")
+mcp = FastMCP("waterfree-knowledge")
+log, LOG_FILE = configure_mcp_logger("waterfree-knowledge")
 
 # Single global store — knowledge.db is at ~/.waterfree/global/knowledge.db
 _store: KnowledgeStore | None = None
@@ -209,5 +209,5 @@ delete_knowledge = mcp.tool()(instrument_tool(log, "delete_knowledge", _delete_k
 
 
 if __name__ == "__main__":
-    log.info("Starting MCP server pairprogram-knowledge (logFile=%s)", LOG_FILE)
+    log.info("Starting MCP server waterfree-knowledge (logFile=%s)", LOG_FILE)
     mcp.run()

@@ -1,1 +1,1 @@
-"""Global cross-project knowledge base for PairProtocol."""
+"""Global cross-project knowledge base for WaterFree."""

@@ -57,7 +57,7 @@ class DebugSnapshot:
         if not snapshot_path.exists():
             raise FileNotFoundError(
                 f"No debug snapshot at {snapshot_path}. "
-                "Open the PairProgram panel, fill in your intent, and click 'Push to Agent'."
+                "Open the WaterFree panel, fill in your intent, and click 'Push to Agent'."
             )
 
         data = json.loads(snapshot_path.read_text(encoding="utf-8"))

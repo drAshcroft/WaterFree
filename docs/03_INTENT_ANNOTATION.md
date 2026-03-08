@@ -5,7 +5,7 @@
 
 ## Purpose
 
-This is the most novel subsystem. It is the layer that makes PairProtocol feel fundamentally different from every other AI coding tool.
+This is the most novel subsystem. It is the layer that makes WaterFree feel fundamentally different from every other AI coding tool.
 
 **Core rule:** The AI is architecturally prohibited from editing any file until its intent has been expressed as an annotation and the human has approved it.
 

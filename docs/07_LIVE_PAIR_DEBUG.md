@@ -7,7 +7,7 @@
 
 Live Pair Debug allows the developer to summon the AI mid-debug, at a breakpoint, with **live program state** already loaded into context. Instead of describing a bug to the AI from memory, the AI sees exactly what the developer sees: the call stack, variable values, the code at the breakpoint, and any active exception.
 
-This is the same PairProtocol negotiation model — intent before action — but triggered on-demand from the debugger rather than from a planned task.
+This is the same WaterFree negotiation model — intent before action — but triggered on-demand from the debugger rather than from a planned task.
 
 ---
 
@@ -80,7 +80,7 @@ The `suggested_fix` follows the same IntentAnnotation schema — the developer c
 
 ## Relationship to Active Session
 
-If a PairProtocol session is active:
+If a WaterFree session is active:
 - The debug analysis is added as a note to the current session
 - The `suggested_fix` annotation is attached to the current task (or a new task is inserted)
 - AI state transitions to `awaiting_review`

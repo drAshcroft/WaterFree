@@ -82,7 +82,7 @@ The bundled example adds a much broader surface area:
 | Priority | Theme | Why it comes first |
 |---|---|---|
 | P0 | Trustworthy persistence and indexing | If the graph is stale or inconsistent, every higher-level feature lies |
-| P1 | Tool parity for discovery and inspection | Needed to make the graph genuinely usable inside PairProtocol |
+| P1 | Tool parity for discovery and inspection | Needed to make the graph genuinely usable inside WaterFree |
 | P2 | Rich graph semantics and architecture views | Raises the graph from basic symbol lookup to architectural reasoning |
 | P3 | Cross-service analysis, history coupling, and watcher automation | High value, but depends on stable core model and query behavior |
 | P4 | Language expansion and performance hardening | Important, but should sit on top of proven engine behavior |
@@ -402,7 +402,7 @@ The bundled example adds a much broader surface area:
 - maybe `backend/graph/routes.py`
 
 **Acceptance criteria**
-- frameworks used by PairProtocol-supported languages can surface routes as first-class graph entities
+- frameworks used by WaterFree-supported languages can surface routes as first-class graph entities
 - architecture view can list routes and their handlers
 
 **How to test**

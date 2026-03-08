@@ -5,7 +5,7 @@
 
 ## Vision
 
-PairProtocol is a VS Code extension that implements structured AI pair programming. It is not an autocomplete tool, a chat assistant, or an autonomous agent. It is a **turn-based, negotiated collaboration protocol** between a human developer and an AI model, modelled on how two experienced developers actually work together.
+WaterFree is a VS Code extension that implements structured AI pair programming. It is not an autocomplete tool, a chat assistant, or an autonomous agent. It is a **turn-based, negotiated collaboration protocol** between a human developer and an AI model, modelled on how two experienced developers actually work together.
 
 The guiding principle: **the AI explains its intent before it acts, and the human decides whether it proceeds.**
 
@@ -21,7 +21,7 @@ The experience should feel like working with an obsessive, highly competent coll
 
 ## Core Problems Being Solved
 
-| Problem with current tools | PairProtocol solution |
+| Problem with current tools | WaterFree solution |
 |---|---|
 | AI acts without shared context | Planning phase establishes shared mental model before any code is written |
 | Suggestions interrupt flow | AI is silent unless invoked or it's their "turn" |
@@ -82,7 +82,7 @@ Python Backend Process (spawned by extension on activate)
 
 ```
 1. INIT
-   └── User opens PairProtocol panel
+   └── User opens WaterFree panel
    └── Extension indexes workspace (Tree-sitter + embeddings)
    └── Index stored in .waterfree/index.json
 
@@ -171,7 +171,7 @@ The codebase index is shown to the user as a readable tree + summary, not a blac
 ## Repository Structure (Actual)
 
 ```
-PairProgram/
+WaterFree/
 ├── .waterfree/               # workspace session data (gitignored)
 │   └── sessions/current.json    # serialised PlanDocument
 ├── backend/                     # Python — all intelligence
@@ -194,7 +194,7 @@ PairProgram/
 │   └── debug/
 │       └── live_debug.py        # DebugContext model + LLM formatting
 ├── src/                         # TypeScript — VS Code shell only
-│   ├── extension.ts             # entry point + PairProtocolController
+│   ├── extension.ts             # entry point + WaterFreeController
 │   ├── bridge/
 │   │   └── PythonBridge.ts      # spawns backend, async JSON-RPC client
 │   ├── debug/
