@@ -15,8 +15,8 @@ from backend.session.models import (
 )
 
 if TYPE_CHECKING:
-    from backend.llm.claude_client import ClaudeClient
     from backend.llm.context_builder import ContextBuilder
+    from backend.llm.runtime import AgentRuntime
     from backend.negotiation.turn_manager import TurnManager
     from backend.session.session_manager import SessionManager
 
@@ -29,13 +29,13 @@ class NegotiationController:
         doc: PlanDocument,
         turn_manager: "TurnManager",
         session_manager: "SessionManager",
-        claude: "ClaudeClient",
+        runtime: "AgentRuntime",
         context_builder: "ContextBuilder",
     ):
         self._doc = doc
         self._tm = turn_manager
         self._sm = session_manager
-        self._claude = claude
+        self._runtime = runtime
         self._ctx = context_builder
 
     # ------------------------------------------------------------------
@@ -53,7 +53,7 @@ class NegotiationController:
         self._tm.start_annotating()
         try:
             context_str = self._ctx.build_annotation_context(task, self._doc)
-            new_ann = self._claude.alter_annotation(
+            new_ann = self._runtime.alter_annotation(
                 task,
                 old_ann,
                 feedback,

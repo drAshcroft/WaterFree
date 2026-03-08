@@ -84,9 +84,10 @@ from backend.debug.live_debug import DebugContext
 from backend.graph.client import GraphClient
 from backend.indexer.index_state_store import IndexStateStore
 from backend.knowledge.store import KnowledgeStore
-from backend.llm.claude_client import ClaudeClient
 from backend.llm.context_builder import ContextBuilder
 from backend.llm.context_lifecycle import ContextLifecycleManager
+from backend.llm.runtime import AgentRuntime
+from backend.llm.runtime_registry import create_runtime
 from backend.negotiation.negotiation_controller import NegotiationController
 from backend.negotiation.turn_manager import TurnManager, InvalidTransitionError
 from backend.session.models import (
@@ -104,14 +105,22 @@ class Server:
         self._session_managers: dict[str, SessionManager] = {}  # path -> SessionManager
         self._index_state_stores: dict[str, IndexStateStore] = {}  # path -> index state
         self._task_stores: dict[str, TaskStore] = {}  # path -> workspace task store
-        self._claude: Optional[ClaudeClient] = None
+        self._runtime: Optional[AgentRuntime] = None
+        self._claude: Optional[AgentRuntime] = None  # backward-compat alias
         self._knowledge_store: Optional[KnowledgeStore] = None
         self._context_lifecycle = ContextLifecycleManager()
 
-    def _get_claude(self) -> ClaudeClient:
-        if not self._claude:
-            self._claude = ClaudeClient(graph=self._graph)
-        return self._claude
+    def _get_runtime(self) -> AgentRuntime:
+        runtime = getattr(self, "_runtime", None) or getattr(self, "_claude", None)
+        if not runtime:
+            runtime = create_runtime(graph=self._graph)
+            self._runtime = runtime
+            self._claude = runtime
+        return runtime
+
+    def _get_claude(self) -> AgentRuntime:
+        # Compatibility shim for existing call sites/tests while runtime naming settles.
+        return self._get_runtime()
 
     def _get_knowledge_store(self) -> KnowledgeStore:
         if not self._knowledge_store:
@@ -250,8 +259,8 @@ class Server:
         ctx = ContextBuilder(self._graph)
         context_str = ctx.build_planning_context(goal, doc)
 
-        claude = self._get_claude()
-        tasks, questions = claude.generate_plan(
+        runtime = self._get_runtime()
+        tasks, questions = runtime.generate_plan(
             goal,
             context_str,
             workspace_path=workspace_path,
@@ -288,8 +297,8 @@ class Server:
         ctx = ContextBuilder(self._graph)
         context_str = ctx.build_annotation_context(task, doc)
 
-        claude = self._get_claude()
-        annotation = claude.generate_annotation(
+        runtime = self._get_runtime()
+        annotation = runtime.generate_annotation(
             task,
             context_str,
             workspace_path=doc.workspace_path,
@@ -367,8 +376,8 @@ class Server:
             if not task.started_at:
                 task.started_at = datetime.now(timezone.utc).isoformat()
 
-            claude = self._get_claude()
-            edits = claude.execute_task(
+            runtime = self._get_runtime()
+            edits = runtime.execute_task(
                 task,
                 context_str,
                 workspace_path=doc.workspace_path,
@@ -389,7 +398,7 @@ class Server:
             # preview of blast radius for any already-uncommitted changes.
             tm.begin_scan()
             scan_context = ctx.build_scan_context(task)
-            scan_analysis = claude.detect_ripple(
+            scan_analysis = runtime.detect_ripple(
                 task,
                 scan_context,
                 workspace_path=doc.workspace_path,
@@ -493,7 +502,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_claude(),
+            self._get_runtime(),
             ContextBuilder(self._graph),
         )
         return ctrl.alter_annotation(task_id, annotation_id, feedback)
@@ -509,7 +518,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_claude(),
+            self._get_runtime(),
             ContextBuilder(self._graph),
         )
         return ctrl.redirect_task(task_id, instruction)
@@ -524,7 +533,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_claude(),
+            self._get_runtime(),
             ContextBuilder(self._graph),
         )
         return ctrl.skip_task(task_id)
@@ -546,7 +555,7 @@ class Server:
                 doc,
                 TurnManager(doc, sm),
                 sm,
-                self._get_claude(),
+                self._get_runtime(),
                 ContextBuilder(self._graph),
             )
             session_result = ctrl.queue_todo_instruction(file_, line, instruction)
@@ -637,8 +646,8 @@ class Server:
         doc = self._sessions.get(session_id) if session_id else None
         persona = doc.persona if doc else "default"
 
-        claude = self._get_claude()
-        analysis = claude.analyze_debug_context(
+        runtime = self._get_runtime()
+        analysis = runtime.analyze_debug_context(
             context_str,
             workspace_path=workspace_path,
             persona=persona,
