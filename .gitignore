@@ -142,3 +142,5 @@ vite.config.ts.timestamp-*
 *.pyc
 /.tmp_task_store_tests
 /.tmp_claude_service_tests
+/.tmp_wizard_manager_tests
+waterfree.vsix

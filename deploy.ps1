@@ -46,6 +46,14 @@ $ScriptDir  = $PSScriptRoot
 $SkillsDir  = Join-Path $ScriptDir "skills"
 $VsixPath   = Join-Path $ScriptDir "waterfree.vsix"
 
+# Locate the VS Code CLI (avoids collision with 'code' resolving to Node on some systems)
+$CodeCmd = @(
+    "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
+    "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd",
+    (Get-Command code.cmd -ErrorAction SilentlyContinue)?.Source
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if (-not $CodeCmd) { $CodeCmd = "code" }  # fallback
+
 $McpServers = @(
     @{ name = "waterfree-debug";     module = "backend.mcp_debug"     }
     @{ name = "waterfree-index";     module = "backend.mcp_index"     }
@@ -142,15 +150,20 @@ function Deploy-Local {
     Write-Step "Packaging VSIX..."
     Push-Location $ScriptDir
     try {
-        npx --yes @vscode/vsce package --no-dependencies --out $VsixPath
+        npx --yes @vscode/vsce package --no-dependencies --out $VsixPath --baseContentUrl https://localhost
     } finally {
         Pop-Location
     }
 
     Write-Step "Installing extension..."
-    code --install-extension $VsixPath --force
-
-    Write-Ok "Installed. Use 'Developer: Reload Window' in VS Code to activate."
+    $installOut = & $CodeCmd --install-extension $VsixPath --force 2>&1
+    if ($LASTEXITCODE -ne 0 -and ($installOut -match "EBUSY|restart VS Code")) {
+        Write-Host "    Extension is locked by a running VS Code instance." -ForegroundColor Yellow
+        Write-Host "    Close VS Code (or run 'Developer: Reload Window'), then re-run this script." -ForegroundColor Yellow
+    } else {
+        Write-Host $installOut
+        Write-Ok "Installed. Use 'Developer: Reload Window' (Ctrl+Shift+P) in VS Code to activate."
+    }
 }
 
 function Deploy-Claude {

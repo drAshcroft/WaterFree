@@ -369,6 +369,7 @@ export class PythonBridge implements vscode.Disposable {
   createWizardSession(params: {
     goal: string;
     wizardId: string;
+    publicDocsPath?: string;
     workspacePath?: string;
     persona?: string;
   }): Promise<WizardResponse> {

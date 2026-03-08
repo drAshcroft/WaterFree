@@ -53,20 +53,50 @@ class WizardManagerTests(unittest.TestCase):
         manager = WizardManager(str(workspace))
 
         created = manager.create_or_resume_run(
-            goal="Neighborhood flood alert app",
+            goal="",
             wizard_id="bring_idea_to_life",
             persona="architect",
         )
         resumed = manager.create_or_resume_run(
-            goal="Neighborhood flood alert app",
+            goal="",
             wizard_id="bring_idea_to_life",
             persona="architect",
         )
 
-        market_doc = workspace / ".waterfree" / "wizards" / created.id / "market-research.md"
+        market_doc = workspace / "docs" / f"market-research-{created.id[:8]}.md"
         self.assertEqual(created.id, resumed.id)
         self.assertTrue(market_doc.exists())
         self.assertEqual(created.current_stage_id, "market_research")
+        content = market_doc.read_text(encoding="utf-8")
+        self.assertIn("# What is your idea? (describe in detail)", content)
+        self.assertNotIn("Stage Status:", content)
+        self.assertNotIn("## Similar Ideas and Niches", content)
+
+    def test_market_research_requires_idea_and_reveals_chunks_after_run(self) -> None:
+        workspace = self.make_workspace()
+        manager = WizardManager(str(workspace))
+        runtime = _FakeRuntime()
+        run = manager.create_or_resume_run(
+            goal="",
+            wizard_id="bring_idea_to_life",
+            persona="architect",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Describe the idea"):
+            manager.run_stage(run_id=run.id, stage_id="market_research", runtime=runtime)
+
+        market_doc = Path(run.get_stage("market_research").doc_path)
+        content = market_doc.read_text(encoding="utf-8").rstrip() + "\n\nA collaborative neighborhood flood alert app for residents near washes.\n"
+        market_doc.write_text(content, encoding="utf-8")
+
+        manager.run_stage(run_id=run.id, stage_id="market_research", runtime=runtime)
+        refreshed = manager.load_run(run.id)
+        self.assertEqual(refreshed.goal, "A collaborative neighborhood flood alert app for residents near washes.")
+
+        updated_doc = market_doc.read_text(encoding="utf-8")
+        self.assertIn("# Market Research", updated_doc)
+        self.assertIn("## Similar Ideas and Niches", updated_doc)
+        self.assertIn("## Who Wants This?", updated_doc)
 
     def test_accepting_architect_stage_creates_design_docs(self) -> None:
         workspace = self.make_workspace()

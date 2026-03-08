@@ -158,10 +158,12 @@ class Server:
             self._index_state_stores[path] = IndexStateStore(path)
         return self._index_state_stores[path]
 
-    def _get_wizard_manager(self, workspace_path: str) -> WizardManager:
+    def _get_wizard_manager(self, workspace_path: str, public_docs_path: str = "docs") -> WizardManager:
         path = os.path.abspath(workspace_path)
         if path not in self._wizard_managers:
-            self._wizard_managers[path] = WizardManager(path)
+            self._wizard_managers[path] = WizardManager(path, public_docs_path=public_docs_path)
+        else:
+            self._wizard_managers[path].set_public_docs_path(public_docs_path)
         return self._wizard_managers[path]
 
     def _get_session(self, session_id: str) -> Optional[PlanDocument]:
@@ -253,9 +255,10 @@ class Server:
     def handle_create_wizard_session(self, params: dict) -> dict:
         workspace_path = os.path.abspath(params.get("workspacePath", "."))
         goal = str(params.get("goal", "")).strip()
+        public_docs_path = str(params.get("publicDocsPath", "docs")).strip() or "docs"
         wizard_id = str(params.get("wizardId", "bring_idea_to_life")).strip() or "bring_idea_to_life"
         persona = str(params.get("persona", "architect")).strip() or "architect"
-        manager = self._get_wizard_manager(workspace_path)
+        manager = self._get_wizard_manager(workspace_path, public_docs_path=public_docs_path)
         run = manager.create_or_resume_run(goal=goal, wizard_id=wizard_id, persona=persona)
         return {
             "wizard": run.to_dict(),
@@ -265,7 +268,8 @@ class Server:
     def handle_get_wizard_session(self, params: dict) -> dict:
         workspace_path = os.path.abspath(params.get("workspacePath", "."))
         run_id = str(params.get("runId", "")).strip() or None
-        manager = self._get_wizard_manager(workspace_path)
+        public_docs_path = str(params.get("publicDocsPath", "docs")).strip() or "docs"
+        manager = self._get_wizard_manager(workspace_path, public_docs_path=public_docs_path)
         run = manager.get_run(run_id)
         if not run:
             return {"wizard": None, "openDocPath": ""}

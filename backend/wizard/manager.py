@@ -43,16 +43,22 @@ from backend.wizard.models import (
 
 _WIZARD_FILENAME = "wizard.json"
 _FRONTMATTER_BOUNDARY = "---"
+_FRONTMATTER_RE = re.compile(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?", re.DOTALL)
+_INITIAL_MARKET_RESEARCH_TITLE = "What is your idea? (describe in detail)"
 
 
 class WizardManager:
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str, public_docs_path: str = "docs"):
         self._workspace = Path(workspace_path).resolve()
         self._wizard_root = self._workspace / ".waterfree" / "wizards"
+        self._public_docs_path = public_docs_path.strip() or "docs"
 
     @property
     def root_path(self) -> Path:
         return self._wizard_root
+
+    def set_public_docs_path(self, public_docs_path: str) -> None:
+        self._public_docs_path = public_docs_path.strip() or "docs"
 
     def create_or_resume_run(self, *, goal: str, wizard_id: str, persona: str) -> WizardRun:
         if wizard_id != "bring_idea_to_life":
@@ -61,19 +67,27 @@ class WizardManager:
         existing = self._find_latest_active_run()
         cleaned_goal = goal.strip()
         if existing and (not cleaned_goal or existing.goal == cleaned_goal):
+            self._migrate_market_research_doc(existing)
             current = existing.get_stage(existing.current_stage_id) or existing.stages[0]
             self._ensure_stage_doc(existing, current)
+            market_stage = existing.get_stage(MARKET_RESEARCH_TEMPLATE.id)
+            if market_stage and market_stage is not current:
+                self._ensure_stage_doc(existing, market_stage)
             return existing
 
         run_id = str(uuid.uuid4())
         now = _now()
         run_dir = wizard_root(str(self._workspace), run_id)
         market = self._stage_from_template(run_id, MARKET_RESEARCH_TEMPLATE)
+        if cleaned_goal:
+            idea_chunk = market.get_chunk("initial_goal")
+            if idea_chunk:
+                idea_chunk.notes_snapshot = cleaned_goal
         architect = self._stage_from_template(run_id, ARCHITECT_TEMPLATE)
         run = WizardRun(
             id=run_id,
             wizard_id=wizard_id,
-            goal=cleaned_goal or "Bring idea to life",
+            goal=cleaned_goal,
             persona=persona or "architect",
             workspace_path=str(self._workspace),
             status=WizardRunStatus.ACTIVE,
@@ -124,8 +138,9 @@ class WizardManager:
             raise ValueError(f"Stage '{stage.title}' is locked until earlier stages are accepted.")
 
         notes_map = self._load_notes_map(stage)
-        for chunk in stage.chunks:
-            chunk.notes_snapshot = notes_map.get(chunk.id, chunk.notes_snapshot)
+        self._apply_notes_map(stage, notes_map)
+        self._sync_run_goal_from_market_stage(run, stage)
+        self._require_market_research_goal(run, stage)
 
         chunk_specs = []
         for chunk in stage.chunks:
@@ -167,6 +182,8 @@ class WizardManager:
             payload = self._fallback_stage_payload(run, stage, chunk_specs, revision_note)
 
         self._merge_stage_payload(stage, payload)
+        self._reveal_market_research_chunks(stage)
+        self._sync_run_goal_from_market_stage(run, stage)
         if stage.status != WizardStageStatus.ACCEPTED:
             stage.status = WizardStageStatus.DRAFTED
         stage.updated_at = _now()
@@ -191,6 +208,7 @@ class WizardManager:
         chunk.status = WizardChunkStatus.ACCEPTED
         chunk.updated_at = _now()
         stage.updated_at = _now()
+        self._sync_run_goal_from_market_stage(run, stage)
         self._ensure_stage_doc(run, stage)
         self._recompute_current_stage(run)
         self.save_run(run)
@@ -206,6 +224,16 @@ class WizardManager:
         stage = self._require_stage(run, stage_id)
         if not self._is_stage_unlocked(run, stage):
             raise ValueError(f"Stage '{stage.title}' is locked until earlier stages are accepted.")
+
+        if stage.id == MARKET_RESEARCH_TEMPLATE.id:
+            for chunk in stage.chunks:
+                if chunk.status == WizardChunkStatus.ACCEPTED:
+                    continue
+                if not chunk.draft_text.strip():
+                    continue
+                chunk.accepted_text = chunk.draft_text
+                chunk.status = WizardChunkStatus.ACCEPTED
+                chunk.updated_at = _now()
 
         missing = [chunk.title for chunk in stage.chunks if chunk.required and chunk.status != WizardChunkStatus.ACCEPTED]
         if missing:
@@ -307,7 +335,7 @@ class WizardManager:
         return latest
 
     def _stage_from_template(self, run_id: str, template: StageTemplate, subsystem_name: str = "") -> WizardStageState:
-        doc_path = wizard_root(str(self._workspace), run_id) / template.relative_doc_path
+        doc_path = self._doc_path_for_stage(run_id, template)
         return WizardStageState(
             id=template.id,
             kind=template.kind,
@@ -320,11 +348,23 @@ class WizardManager:
                     id=chunk.id,
                     title=chunk.title,
                     required=chunk.required,
+                    visible=template.id != MARKET_RESEARCH_TEMPLATE.id or index == 0,
                     guidance=chunk.guidance,
                 )
-                for chunk in template.chunks
+                for index, chunk in enumerate(template.chunks)
             ],
         )
+
+    def _doc_path_for_stage(self, run_id: str, template: StageTemplate) -> Path:
+        if template.id == MARKET_RESEARCH_TEMPLATE.id:
+            return self._public_docs_root() / f"market-research-{run_id[:8]}.md"
+        return wizard_root(str(self._workspace), run_id) / template.relative_doc_path
+
+    def _public_docs_root(self) -> Path:
+        configured = Path(self._public_docs_path)
+        if configured.is_absolute():
+            return configured
+        return (self._workspace / configured).resolve()
 
     def _require_stage(self, run: WizardRun, stage_id: str) -> WizardStageState:
         stage = run.get_stage(stage_id)
@@ -411,22 +451,35 @@ class WizardManager:
 
     def _ensure_stage_doc(self, run: WizardRun, stage: WizardStageState) -> None:
         notes_map = self._load_notes_map(stage)
-        for chunk in stage.chunks:
-            if chunk.id in notes_map:
-                chunk.notes_snapshot = notes_map[chunk.id]
+        self._apply_notes_map(stage, notes_map)
+        self._sync_run_goal_from_market_stage(run, stage)
         content = self._render_stage_doc(run, stage)
         doc_path = Path(stage.doc_path)
         doc_path.parent.mkdir(parents=True, exist_ok=True)
         doc_path.write_text(content, encoding="utf-8")
 
+    def _migrate_market_research_doc(self, run: WizardRun) -> None:
+        stage = run.get_stage(MARKET_RESEARCH_TEMPLATE.id)
+        if not stage:
+            return
+        target_path = self._doc_path_for_stage(run.id, MARKET_RESEARCH_TEMPLATE)
+        if Path(stage.doc_path).resolve() == target_path.resolve():
+            return
+        notes_map = self._load_notes_map(stage)
+        self._apply_notes_map(stage, notes_map)
+        stage.doc_path = str(target_path)
+
     def _render_stage_doc(self, run: WizardRun, stage: WizardStageState) -> str:
+        if stage.id == MARKET_RESEARCH_TEMPLATE.id:
+            return self._render_market_research_doc(run, stage)
+
+        visible_chunks = self._visible_chunks(stage)
         status_rows = "\n".join(
             f"| {chunk.title} | {self._chunk_label(chunk)} |"
-            for chunk in stage.chunks
+            for chunk in visible_chunks
         )
-        run_dir = wizard_root(run.workspace_path, run.id)
         related = "\n".join(
-            f"- `{Path(other.doc_path).relative_to(run_dir)}`"
+            f"- `{self._related_doc_label(run, other)}`"
             for other in run.stages
             if Path(other.doc_path).exists()
         ) or "- `(current stage only)`"
@@ -444,7 +497,7 @@ class WizardManager:
             ),
             f"# {stage.title}",
             "",
-            f"Goal: {run.goal}",
+            f"Goal: {run.goal.strip() or 'Describe the idea in the first chunk below.'}",
             "",
             f"Stage Status: {stage.status.value}",
             f"Persona: {stage.persona}",
@@ -507,7 +560,7 @@ class WizardManager:
             )
             sections.append("")
 
-        for chunk in stage.chunks:
+        for chunk in visible_chunks:
             accepted = chunk.status == WizardChunkStatus.ACCEPTED
             sections.extend([
                 f"## {chunk.title}",
@@ -517,7 +570,7 @@ class WizardManager:
                 "",
                 "### Working Notes",
                 f"<!-- wf:notes:{chunk.id}:start -->",
-                chunk.notes_snapshot.strip() if chunk.notes_snapshot.strip() else f"Add notes for {chunk.title.lower()} here.",
+                chunk.notes_snapshot.strip() if chunk.notes_snapshot.strip() else self._default_notes_text(chunk),
                 f"<!-- wf:notes:{chunk.id}:end -->",
                 "",
                 "### Latest Draft",
@@ -534,11 +587,129 @@ class WizardManager:
 
         return "\n".join(sections).rstrip() + "\n"
 
+    def _render_market_research_doc(self, run: WizardRun, stage: WizardStageState) -> str:
+        sections = [
+            _render_frontmatter(
+                {
+                    "waterfreeWizard": "true",
+                    "wizardId": run.wizard_id,
+                    "runId": run.id,
+                    "stageId": stage.id,
+                    "stageKind": stage.kind,
+                    "title": stage.title,
+                }
+            ),
+        ]
+
+        if self._is_initial_market_research_doc(stage):
+            idea_chunk = stage.get_chunk("initial_goal")
+            sections.extend([
+                f"# {_INITIAL_MARKET_RESEARCH_TITLE}",
+                "",
+            ])
+            if idea_chunk and idea_chunk.notes_snapshot.strip():
+                sections.extend([
+                    idea_chunk.notes_snapshot.strip(),
+                    "",
+                ])
+            return "\n".join(sections).rstrip() + "\n"
+
+        sections.extend([
+            "# Market Research",
+            "",
+        ])
+
+        for chunk in self._visible_chunks(stage):
+            sections.extend([
+                f"## {chunk.title}",
+                "",
+            ])
+            content = self._market_research_chunk_content(chunk)
+            if content:
+                sections.extend([
+                    content,
+                    "",
+                ])
+
+        if stage.questions:
+            sections.extend([
+                "## Questions and Suggestions",
+                "",
+                *[f"- {question}" for question in stage.questions],
+                "",
+            ])
+
+        if stage.external_research_prompt.strip():
+            sections.extend([
+                "## External Research Prompt",
+                "",
+                stage.external_research_prompt.strip(),
+                "",
+            ])
+
+        return "\n".join(sections).rstrip() + "\n"
+
+    def _visible_chunks(self, stage: WizardStageState) -> list[WizardChunkState]:
+        return [chunk for chunk in stage.chunks if chunk.visible]
+
+    def _default_notes_text(self, chunk: WizardChunkState) -> str:
+        if chunk.guidance.strip():
+            return chunk.guidance.strip()
+        return f"Add notes for {chunk.title.lower()} here."
+
+    def _apply_notes_map(self, stage: WizardStageState, notes_map: dict[str, str]) -> None:
+        for chunk in stage.chunks:
+            if chunk.id not in notes_map:
+                continue
+            chunk.notes_snapshot = self._sanitize_notes_snapshot(chunk, notes_map[chunk.id])
+
+    def _sanitize_notes_snapshot(self, chunk: WizardChunkState, notes: str) -> str:
+        candidate = notes.strip()
+        if not candidate:
+            return ""
+        default_text = self._default_notes_text(chunk)
+        fallback_text = f"Add notes for {chunk.title.lower()} here."
+        if _normalize_goal_text(candidate) in {
+            _normalize_goal_text(default_text),
+            _normalize_goal_text(fallback_text),
+        }:
+            return ""
+        return candidate
+
+    def _sync_run_goal_from_market_stage(self, run: WizardRun, stage: WizardStageState) -> None:
+        if stage.id != MARKET_RESEARCH_TEMPLATE.id:
+            return
+        idea_chunk = stage.get_chunk("initial_goal")
+        if not idea_chunk:
+            return
+        for candidate in (idea_chunk.accepted_text, idea_chunk.notes_snapshot, idea_chunk.draft_text):
+            normalized = _normalize_goal_text(candidate)
+            if normalized:
+                run.goal = normalized
+                return
+
+    def _require_market_research_goal(self, run: WizardRun, stage: WizardStageState) -> None:
+        if stage.id != MARKET_RESEARCH_TEMPLATE.id:
+            return
+        if run.goal.strip():
+            return
+        raise ValueError("Describe the idea in 'What is the idea?' before running market research.")
+
+    def _reveal_market_research_chunks(self, stage: WizardStageState) -> None:
+        if stage.id != MARKET_RESEARCH_TEMPLATE.id:
+            return
+        if not any(chunk.draft_text.strip() or chunk.accepted_text.strip() for chunk in stage.chunks):
+            return
+        for chunk in stage.chunks:
+            chunk.visible = True
+
     def _load_notes_map(self, stage: WizardStageState) -> dict[str, str]:
         doc_path = Path(stage.doc_path)
         if not doc_path.exists():
             return {}
         content = doc_path.read_text(encoding="utf-8")
+        if stage.id == MARKET_RESEARCH_TEMPLATE.id:
+            return self._load_market_research_notes_map(stage, content)
         notes: dict[str, str] = {}
         for chunk in stage.chunks:
             pattern = re.compile(
@@ -549,6 +720,63 @@ class WizardManager:
             if match:
                 notes[chunk.id] = match.group(1).strip()
         return notes
+
+    def _load_market_research_notes_map(self, stage: WizardStageState, content: str) -> dict[str, str]:
+        body = _strip_frontmatter(content).strip()
+        if not body:
+            return {}
+
+        if "## " not in body:
+            match = re.match(rf"^#\s+{re.escape(_INITIAL_MARKET_RESEARCH_TITLE)}\s*(.*)$", body, re.DOTALL)
+            if not match:
+                return {}
+            idea_text = match.group(1).strip()
+            return {"initial_goal": idea_text} if idea_text else {}
+
+        title_to_chunk_id = {
+            chunk.title.strip().lower(): chunk.id
+            for chunk in stage.chunks
+        }
+        notes: dict[str, str] = {}
+        section_re = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+        matches = list(section_re.finditer(body))
+        for index, match in enumerate(matches):
+            title = match.group(1).strip().lower()
+            chunk_id = title_to_chunk_id.get(title)
+            if not chunk_id:
+                continue
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+            section_body = body[start:end].strip()
+            if section_body:
+                notes[chunk_id] = section_body
+        return notes
+
+    def _is_initial_market_research_doc(self, stage: WizardStageState) -> bool:
+        hidden_chunks = [chunk for chunk in stage.chunks if not chunk.visible]
+        if hidden_chunks:
+            return True
+        if stage.summary.strip() or stage.questions or stage.external_research_prompt.strip():
+            return False
+        return not any(
+            chunk.draft_text.strip() or chunk.accepted_text.strip()
+            for chunk in stage.chunks
+        )
+
+    def _market_research_chunk_content(self, chunk: WizardChunkState) -> str:
+        for candidate in (chunk.accepted_text, chunk.draft_text, chunk.notes_snapshot):
+            if candidate.strip():
+                return candidate.strip()
+        return ""
+
+    def _related_doc_label(self, run: WizardRun, stage: WizardStageState) -> str:
+        doc_path = Path(stage.doc_path)
+        for root in (wizard_root(run.workspace_path, run.id), Path(run.workspace_path)):
+            try:
+                return str(doc_path.relative_to(root)).replace("\\", "/")
+            except ValueError:
+                continue
+        return doc_path.name
 
     def _merge_stage_payload(self, stage: WizardStageState, payload: dict) -> None:
         chunk_payloads = {str(item.get("id", "")): item for item in payload.get("chunks", []) if str(item.get("id", "")).strip()}
@@ -815,6 +1043,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_goal_text(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw).strip()
+
+
 def _render_frontmatter(values: dict[str, str]) -> str:
     lines = [_FRONTMATTER_BOUNDARY]
     for key, value in values.items():
@@ -823,14 +1055,18 @@ def _render_frontmatter(values: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _strip_frontmatter(content: str) -> str:
+    return _FRONTMATTER_RE.sub("", content, count=1)
+
+
 def _external_market_research_prompt(goal: str) -> str:
     return (
         "Research this software idea on the live web and return a concise market memo.\n\n"
         f"Idea: {goal}\n\n"
-        "Cover:\n"
-        "- comparable products and niches\n"
-        "- what feels differentiated or weak\n"
-        "- likely target audiences\n"
+        "Populate these sections:\n"
+        "- Similar Ideas and Niches: comparable products, adjacent niches, what looks strong, weak, or differentiated\n"
+        "- Who Wants This?: likely audiences, pains, urgency, and why they would care\n"
+        "\nAlso cover:\n"
         "- realistic MVP\n"
         "- pricing or monetization signals if visible\n"
         "- risks or reasons the idea may fail\n"

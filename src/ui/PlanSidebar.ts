@@ -545,8 +545,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       white-space: nowrap;
     }
 
-    .wizard-goal { min-height: 52px; }
-
     /* Task/session styles */
     .task-list { display: flex; flex-direction: column; gap: 10px; }
 
@@ -607,7 +605,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       debugActive: false,
       debugLocation: "",
       draftGoal: typeof savedState.draftGoal === "string" ? savedState.draftGoal : "",
-      draftWizardGoal: typeof savedState.draftWizardGoal === "string" ? savedState.draftWizardGoal : "",
       draftDebugIntent: typeof savedState.draftDebugIntent === "string" ? savedState.draftDebugIntent : "",
       draftDebugReason: typeof savedState.draftDebugReason === "string" ? savedState.draftDebugReason : "bug investigation",
       selectedPersona: typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect",
@@ -626,7 +623,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     function persistState() {
       vscode.setState({
         draftGoal: state.draftGoal,
-        draftWizardGoal: state.draftWizardGoal,
         draftDebugIntent: state.draftDebugIntent,
         draftDebugReason: state.draftDebugReason,
         selectedPersona: state.selectedPersona,
@@ -704,7 +700,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           bodyHtml = [
             '<div class="wizard-body">',
             stepsHtml,
-            '<textarea id="wizard-goal-input" class="wizard-goal" placeholder="Briefly describe your context or idea..."' + (disabled ? " disabled" : "") + ">" + escapeHtml(state.draftWizardGoal) + "</textarea>",
             '<div class="button-row">',
             '<button type="button" class="primary" data-action="openWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
             "</div>",
@@ -921,10 +916,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       if (personaSelect) {
         personaSelect.addEventListener("change", function(e) { state.selectedPersona = e.target.value; persistState(); });
       }
-      const wizardGoalInput = document.getElementById("wizard-goal-input");
-      if (wizardGoalInput) {
-        wizardGoalInput.addEventListener("input", function(e) { state.draftWizardGoal = e.target.value; persistState(); });
-      }
       const debugIntentInput = document.getElementById("debug-intent-input");
       if (debugIntentInput) {
         debugIntentInput.addEventListener("input", function(e) { state.draftDebugIntent = e.target.value; persistState(); });
@@ -948,7 +939,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             state.expandedWizard = null;
           } else {
             state.expandedWizard = wizardId;
-            state.draftWizardGoal = "";
           }
           persistState();
           render();
@@ -968,7 +958,7 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         if (!state.busyMessage) {
           const wizardId = el.getAttribute("data-wizard-id");
           if (wizardId) {
-            vscode.postMessage({ type: "openWizard", wizardId, goal: state.draftWizardGoal.trim(), persona: state.selectedPersona });
+            vscode.postMessage({ type: "openWizard", wizardId, persona: state.selectedPersona });
           }
         }
         return;

@@ -8,8 +8,9 @@
 
 ## Key Changes
 **UI and editor flow**
-- Keep the sidebar wizard card only as a launcher/resume entry point. Remove the current textarea-as-wizard behavior for `Bring Idea to Life`.
-- Opening the wizard creates or resumes a markdown doc and focuses it in the editor.
+- Keep the sidebar wizard card only as a launcher/resume entry point. Remove the current textarea-as-wizard behavior for `Bring Idea to Life` so the card is just a launch button.
+- Opening the wizard creates or resumes a markdown doc in the public docs folder and focuses it in the editor.
+- A new market-research doc opens as a plain prompt, `What is your idea? (describe in detail)`, with a single `Send for Refinement` action instead of internal wizard status blocks.
 - Make the markdown interactive with a `CodeLensProvider` and editor title actions for wizard docs. The available actions are `Accept Step` and `Revise Document` .
 - The markdown file uses fixed managed markers so the extension can safely rewrite generated blocks without clobbering human edits.
 - The document structure is depends on step: 

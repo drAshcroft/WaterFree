@@ -697,20 +697,13 @@ class WaterFreeController implements vscode.Disposable {
       return;
     }
 
-    const goal = launch?.goal?.trim() || await vscode.window.showInputBox({
-      prompt: "What idea should the wizard refine?",
-      placeHolder: "e.g. A collaborative neighborhood flood alert app",
-      validateInput: (value) => (value.trim() ? null : "Please describe the idea."),
-    });
-    if (!goal) {
-      return;
-    }
-
     this._sidebarProvider.setBusyMessage("Opening wizard...");
     try {
+      const config = vscode.workspace.getConfiguration("waterfree");
       const result = await this._bridge.createWizardSession({
-        goal: goal.trim(),
+        goal: launch?.goal?.trim() ?? "",
         wizardId,
+        publicDocsPath: config.get<string>("publicDocsPath") ?? "docs",
         workspacePath: this._workspacePath,
         persona: launch?.persona ?? "architect",
       });

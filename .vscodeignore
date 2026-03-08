@@ -1,9 +1,9 @@
 .git/**
 .vscode/**
 .waterfree/**
+.tmp_*/**
 node_modules/**
 src/**
-docs/**
 skills/**
 **/*.map
 tsconfig.json

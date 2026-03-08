@@ -30,6 +30,7 @@ class WizardChunkState:
     id: str
     title: str
     required: bool = True
+    visible: bool = True
     guidance: str = ""
     notes_snapshot: str = ""
     draft_text: str = ""
@@ -42,6 +43,7 @@ class WizardChunkState:
             "id": self.id,
             "title": self.title,
             "required": self.required,
+            "visible": self.visible,
             "guidance": self.guidance,
             "notesSnapshot": self.notes_snapshot,
             "draftText": self.draft_text,
@@ -56,6 +58,7 @@ class WizardChunkState:
             id=str(payload.get("id", "")),
             title=str(payload.get("title", "")),
             required=bool(payload.get("required", True)),
+            visible=bool(payload.get("visible", True)),
             guidance=str(payload.get("guidance", "")),
             notes_snapshot=str(payload.get("notesSnapshot", "")),
             draft_text=str(payload.get("draftText", "")),

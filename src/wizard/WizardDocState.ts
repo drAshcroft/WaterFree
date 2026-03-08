@@ -13,11 +13,13 @@ export type WizardChunkMarker = {
   title: string;
   required: boolean;
   accepted: boolean;
+  hasDraft: boolean;
   line: number;
 };
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
 const CHUNK_RE = /^##\s+(.+?)\r?\n<!-- wf:chunk (\{.+\}) -->/gm;
+const EMPTY_DRAFT_PLACEHOLDER = "_Run the stage to generate this chunk._";
 
 export function isWizardDoc(document: vscode.TextDocument): boolean {
   if (document.languageId !== "markdown") {
@@ -82,6 +84,7 @@ export function parseChunkMarkers(document: vscode.TextDocument): WizardChunkMar
       title: String(payload.title ?? chunkTitle),
       required: Boolean(payload.required),
       accepted: Boolean(payload.accepted),
+      hasDraft: hasGeneratedDraft(text, String(payload.id ?? "")),
       line,
     });
   }
@@ -95,4 +98,24 @@ export function describeWizardDoc(document: vscode.TextDocument): string {
     return path.basename(document.uri.fsPath);
   }
   return normalized.slice(idx + 1);
+}
+
+function hasGeneratedDraft(text: string, chunkId: string): boolean {
+  if (!chunkId) {
+    return false;
+  }
+  const draftRe = new RegExp(
+    `<!-- wf:draft:${escapeRegex(chunkId)}:start -->\\s*([\\s\\S]*?)\\s*<!-- wf:draft:${escapeRegex(chunkId)}:end -->`,
+    "m",
+  );
+  const match = draftRe.exec(text);
+  if (!match) {
+    return false;
+  }
+  const draft = match[1].trim();
+  return Boolean(draft && draft !== EMPTY_DRAFT_PLACEHOLDER);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

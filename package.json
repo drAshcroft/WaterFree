@@ -240,6 +240,11 @@
           "type": "string",
           "default": "codebase-memory-mcp",
           "description": "Path to the codebase-memory-mcp binary. Defaults to 'codebase-memory-mcp' (must be on PATH)."
+        },
+        "waterfree.publicDocsPath": {
+          "type": "string",
+          "default": "docs",
+          "description": "Workspace-relative or absolute folder where public wizard documents should be written."
         }
       }
     }
@@ -248,7 +253,7 @@
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
     "vscode:prepublish": "node esbuild.config.js --minify",
-    "package": "node esbuild.config.js --minify && npx @vscode/vsce package --no-dependencies --out waterfree.vsix"
+    "package": "node esbuild.config.js --minify && npx @vscode/vsce package --no-dependencies --out waterfree.vsix --baseContentUrl https://localhost"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

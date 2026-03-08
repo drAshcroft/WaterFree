@@ -29,25 +29,37 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
       return [];
     }
 
+    const text = document.getText();
+    const chunks = parseChunkMarkers(document);
+    const isMarketResearch = context.stageId === "market_research";
+    const isInitialIdeaDraft =
+      isMarketResearch &&
+      text.includes("# What is your idea? (describe in detail)");
+
     const lenses: vscode.CodeLens[] = [];
     const headerRange = new vscode.Range(0, 0, 0, 0);
     lenses.push(
       new vscode.CodeLens(headerRange, {
-        title: "Run Stage",
+        title: isMarketResearch ? "Send for Refinement" : "Run Stage",
         command: "waterfree.runWizardStep",
         arguments: [context],
       }),
-      new vscode.CodeLens(headerRange, {
-        title: "Accept Stage",
-        command: "waterfree.acceptWizardStep",
-        arguments: [context],
-      }),
-      new vscode.CodeLens(headerRange, {
-        title: "Promote Todos",
-        command: "waterfree.promoteWizardTodos",
-        arguments: [context],
-      }),
     );
+
+    if (!isInitialIdeaDraft) {
+      lenses.push(
+        new vscode.CodeLens(headerRange, {
+          title: "Accept Stage",
+          command: "waterfree.acceptWizardStep",
+          arguments: [context],
+        }),
+        new vscode.CodeLens(headerRange, {
+          title: "Promote Todos",
+          command: "waterfree.promoteWizardTodos",
+          arguments: [context],
+        }),
+      );
+    }
 
     if (context.stageId === "coding_agents") {
       lenses.push(
@@ -69,21 +81,31 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
       );
     }
 
-    for (const chunk of parseChunkMarkers(document)) {
+    if (isMarketResearch) {
+      return lenses;
+    }
+
+    for (const chunk of chunks) {
       const range = document.lineAt(chunk.line).range;
-      lenses.push(chunk.accepted
-        ? new vscode.CodeLens(range, {
+      if (chunk.accepted) {
+        lenses.push(
+          new vscode.CodeLens(range, {
             title: "$(lock) Accepted",
             command: "waterfree.openWizard",
             arguments: [{ wizardId: context.wizardId, goal: "", persona: context.wizardId === "bring_idea_to_life" ? "architect" : "default" }],
-          })
-        : new vscode.CodeLens(range, {
+          }),
+        );
+      } else if (chunk.hasDraft) {
+        lenses.push(
+          new vscode.CodeLens(range, {
             title: "Accept Chunk",
             command: "waterfree.acceptWizardChunk",
             arguments: [context, chunk.id],
-          }));
+          }),
+        );
+      }
 
-      if (!chunk.accepted) {
+      if (!chunk.accepted && chunk.hasDraft) {
         lenses.push(
           new vscode.CodeLens(range, {
             title: "Revise Chunk",
