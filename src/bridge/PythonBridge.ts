@@ -386,6 +386,7 @@ export class PythonBridge implements vscode.Disposable {
     chunkId?: string;
     revisionNote?: string;
     extraContext?: string;
+    mode?: "clarify" | "research";
     workspacePath?: string;
   }): Promise<WizardResponse> {
     return this.request("runWizardStep", params);

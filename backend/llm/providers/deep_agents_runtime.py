@@ -169,6 +169,179 @@ class DeepAgentsRuntime:
             return []
         return list(payload.get("edits", []))
 
+    def detect_ripple(
+        self,
+        task: Task,
+        scan_context: str,
+        workspace_path: str = "",
+    ) -> str:
+        prompt = (
+            'Return JSON only with shape: {"summary":"","followup":[]}\n\n'
+            f"TASK TITLE: {task.title}\n\n"
+            f"SCAN:\n{scan_context}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="RIPPLE_DETECTION",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona="reviewer",
+        )
+        if isinstance(payload, dict):
+            summary = str(payload.get("summary", "")).strip()
+            if summary:
+                return summary
+        return self._run_deepagents_text(
+            stage="RIPPLE_DETECTION",
+            prompt=scan_context,
+            workspace_path=workspace_path,
+            persona="reviewer",
+        ).strip()
+
+    def alter_annotation(
+        self,
+        task: Task,
+        old_annotation: IntentAnnotation,
+        feedback: str,
+        context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> IntentAnnotation:
+        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="annotation")
+        prompt = (
+            "Return JSON only with shape: "
+            '{"summary":"","detail":"","approach":"","willCreate":[],"willModify":[],"willDelete":[],"sideEffectWarnings":[],"assumptionsMade":[],"questionsBeforeProceeding":[]}\n\n'
+            f"TASK TITLE: {task.title}\n"
+            f"TASK DESCRIPTION: {task.description}\n\n"
+            f"PREVIOUS ANNOTATION SUMMARY: {old_annotation.summary}\n"
+            f"PREVIOUS ANNOTATION DETAIL: {old_annotation.detail}\n"
+            f"DEVELOPER FEEDBACK: {feedback}\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="ALTER_ANNOTATION",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+        if payload is None:
+            return IntentAnnotation(
+                task_id=task.id,
+                target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
+                summary=old_annotation.summary or "Annotation revised.",
+                detail=(old_annotation.detail or "").strip() + f"\n\nDeveloper feedback: {feedback}",
+                approach=old_annotation.approach,
+                will_create=list(old_annotation.will_create),
+                will_modify=list(old_annotation.will_modify),
+                will_delete=list(old_annotation.will_delete),
+                side_effect_warnings=list(old_annotation.side_effect_warnings),
+                assumptions_made=list(old_annotation.assumptions_made),
+                questions_before_proceeding=list(old_annotation.questions_before_proceeding),
+                status=AnnotationStatus.PENDING,
+            )
+        return IntentAnnotation(
+            task_id=task.id,
+            target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
+            summary=str(payload.get("summary", "")),
+            detail=str(payload.get("detail", "")),
+            approach=str(payload.get("approach", "")),
+            will_create=list(payload.get("willCreate", [])),
+            will_modify=list(payload.get("willModify", [])),
+            will_delete=list(payload.get("willDelete", [])),
+            side_effect_warnings=list(payload.get("sideEffectWarnings", [])),
+            assumptions_made=list(payload.get("assumptionsMade", [])),
+            questions_before_proceeding=list(payload.get("questionsBeforeProceeding", [])),
+            status=AnnotationStatus.PENDING,
+        )
+
+    def analyze_debug_context(
+        self,
+        debug_context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> dict:
+        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="live_debug")
+        prompt = (
+            "Return JSON only with shape: "
+            '{"diagnosis":"","likelyCause":"","suggestedFix":{"summary":"","detail":"","targetFile":"","targetLine":0,"willModify":[],"willCreate":[],"sideEffectWarnings":[]},"questions":[]}\n\n'
+            f"DEBUG CONTEXT:\n{self._skill_adapter.augment_context(debug_context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="LIVE_DEBUG",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+        if payload is None:
+            return {
+                "diagnosis": "Deep Agents could not analyze the debug context.",
+                "likelyCause": "",
+                "suggestedFix": {
+                    "summary": "Review the breakpoint state manually.",
+                    "detail": "No structured debug analysis was returned by the runtime.",
+                    "targetFile": "",
+                    "targetLine": 0,
+                    "willModify": [],
+                    "willCreate": [],
+                    "sideEffectWarnings": [],
+                },
+                "questions": [],
+            }
+        suggested_fix = dict(payload.get("suggestedFix", {}))
+        return {
+            "diagnosis": str(payload.get("diagnosis", "")),
+            "likelyCause": str(payload.get("likelyCause", "")),
+            "suggestedFix": {
+                "summary": str(suggested_fix.get("summary", "")),
+                "detail": str(suggested_fix.get("detail", "")),
+                "targetFile": str(suggested_fix.get("targetFile", "")),
+                "targetLine": int(suggested_fix.get("targetLine", 0) or 0),
+                "willModify": list(suggested_fix.get("willModify", [])),
+                "willCreate": list(suggested_fix.get("willCreate", [])),
+                "sideEffectWarnings": list(suggested_fix.get("sideEffectWarnings", [])),
+            },
+            "questions": list(payload.get("questions", [])),
+        }
+
+    def answer_question(
+        self,
+        question: str,
+        context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> dict:
+        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="question_answer")
+        prompt = (
+            "Return JSON only with shape: "
+            '{"answer":"","shouldUpdatePlan":false,"followupTasks":[],"questions":[]}\n\n'
+            f"QUESTION: {question}\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="QUESTION_ANSWER",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+        if payload is None:
+            text = self._run_deepagents_text(
+                stage="QUESTION_ANSWER",
+                prompt=prompt,
+                workspace_path=workspace_path,
+                persona=persona,
+            ).strip()
+            return {
+                "answer": text,
+                "shouldUpdatePlan": False,
+                "followupTasks": [],
+                "questions": [],
+            }
+        return {
+            "answer": str(payload.get("answer", "")),
+            "shouldUpdatePlan": bool(payload.get("shouldUpdatePlan", False)),
+            "followupTasks": list(payload.get("followupTasks", [])),
+            "questions": list(payload.get("questions", [])),
+        }
+
     def run_wizard_stage(
         self,
         *,

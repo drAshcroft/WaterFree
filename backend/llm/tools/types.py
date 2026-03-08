@@ -29,13 +29,6 @@ class ToolDescriptor:
     server_id: str = "waterfree-core"
     title: str = ""
 
-    def to_anthropic_tool(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_schema,
-        }
-
     def to_policy_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,

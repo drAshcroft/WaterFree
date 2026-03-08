@@ -112,13 +112,12 @@ class Server:
         self._task_stores: dict[str, TaskStore] = {}  # path -> workspace task store
         self._wizard_managers: dict[str, WizardManager] = {}  # path -> wizard artifact manager
         self._runtime: Optional[AgentRuntime] = None
-        self._claude: Optional[AgentRuntime] = None  # backward-compat alias
         self._knowledge_store: Optional[KnowledgeStore] = None
         self._context_lifecycle = ContextLifecycleManager()
         self._runtime_name = resolve_runtime_name()
 
     def _get_runtime(self, workspace_path: str = ".") -> AgentRuntime:
-        runtime = getattr(self, "_runtime", None) or getattr(self, "_claude", None)
+        runtime = getattr(self, "_runtime", None)
         if not runtime:
             runtime = create_runtime(
                 runtime_name=self._runtime_name,
@@ -128,12 +127,7 @@ class Server:
                 workspace_path=workspace_path,
             )
             self._runtime = runtime
-            self._claude = runtime
         return runtime
-
-    def _get_claude(self) -> AgentRuntime:
-        # Compatibility shim for existing call sites/tests while runtime naming settles.
-        return self._get_runtime()
 
     def _get_knowledge_store(self) -> KnowledgeStore:
         if not self._knowledge_store:
@@ -462,8 +456,8 @@ class Server:
 
     def handle_execute_task(self, params: dict) -> dict:
         """
-        Execute an approved annotation — call Claude to produce code edits,
-        then return the edit list to the TypeScript side for application via
+        Execute an approved annotation through the active runtime and return the
+        edit list to the TypeScript side for application via
         vscode.workspace.applyEdit (no files are written by the backend).
 
         Expects the annotation to already be in APPROVED status (set by
@@ -820,7 +814,6 @@ class Server:
             return {"ok": True, "runtimeId": self._runtime_name}
         self._runtime_name = runtime_id
         self._runtime = None
-        self._claude = None
         return {"ok": True, "runtimeId": self._runtime_name}
 
     def handle_list_skills(self, params: dict) -> dict:

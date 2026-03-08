@@ -29,15 +29,30 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
       return [];
     }
 
-    const text = document.getText();
     const chunks = parseChunkMarkers(document);
     const isMarketResearch = context.stageId === "market_research";
     const isInitialIdeaDraft =
-      isMarketResearch &&
-      text.includes("# What is your idea? (describe in detail)");
+      isMarketResearch && !chunks.some((c) => c.id === "initial_goal");
 
     const lenses: vscode.CodeLens[] = [];
     const headerRange = new vscode.Range(0, 0, 0, 0);
+
+    if (isInitialIdeaDraft) {
+      lenses.push(
+        new vscode.CodeLens(headerRange, {
+          title: "▶ Submit",
+          command: "waterfree.runWizardStep",
+          arguments: [context],
+        }),
+        new vscode.CodeLens(headerRange, {
+          title: "✦ Refine",
+          command: "waterfree.refineWizardIdea",
+          arguments: [context],
+        }),
+      );
+      return lenses;
+    }
+
     lenses.push(
       new vscode.CodeLens(headerRange, {
         title: isMarketResearch ? "Send for Refinement" : "Run Stage",
@@ -46,20 +61,18 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
       }),
     );
 
-    if (!isInitialIdeaDraft) {
-      lenses.push(
-        new vscode.CodeLens(headerRange, {
-          title: "Accept Stage",
-          command: "waterfree.acceptWizardStep",
-          arguments: [context],
-        }),
-        new vscode.CodeLens(headerRange, {
-          title: "Promote Todos",
-          command: "waterfree.promoteWizardTodos",
-          arguments: [context],
-        }),
-      );
-    }
+    lenses.push(
+      new vscode.CodeLens(headerRange, {
+        title: "Accept Stage",
+        command: "waterfree.acceptWizardStep",
+        arguments: [context],
+      }),
+      new vscode.CodeLens(headerRange, {
+        title: "Promote Todos",
+        command: "waterfree.promoteWizardTodos",
+        arguments: [context],
+      }),
+    );
 
     if (context.stageId === "coding_agents") {
       lenses.push(
@@ -82,6 +95,19 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
     }
 
     if (isMarketResearch) {
+      const separatorLine = findSeparatorLine(document);
+      if (separatorLine >= 0) {
+        const sepRange = document.lineAt(separatorLine).range;
+        const initialGoalChunk = chunks.find((c) => c.id === "initial_goal");
+        const isResolved = initialGoalChunk?.accepted ?? false;
+        lenses.push(
+          new vscode.CodeLens(sepRange, {
+            title: isResolved ? "$(lock) Resolved" : "$(warning) Unresolved",
+            command: "",
+            arguments: [],
+          }),
+        );
+      }
       return lenses;
     }
 
@@ -126,6 +152,25 @@ export class WizardCodeLensProvider implements vscode.CodeLensProvider, vscode.D
       disposable.dispose();
     }
   }
+}
+
+function findSeparatorLine(document: vscode.TextDocument): number {
+  let frontmatterCount = 0;
+  let frontmatterClosed = false;
+  for (let i = 0; i < document.lineCount; i++) {
+    const text = document.lineAt(i).text.trim();
+    if (text === "---") {
+      frontmatterCount++;
+      if (frontmatterCount === 2) {
+        frontmatterClosed = true;
+        continue;
+      }
+      if (frontmatterClosed) {
+        return i;
+      }
+    }
+  }
+  return -1;
 }
 
 export type { WizardDocContext };

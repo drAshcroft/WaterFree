@@ -137,6 +137,11 @@
         "command": "waterfree.runWizardReview",
         "title": "WaterFree: Run Wizard Review",
         "icon": "$(search)"
+      },
+      {
+        "command": "waterfree.refineWizardIdea",
+        "title": "WaterFree: Refine Wizard Idea",
+        "icon": "$(lightbulb)"
       }
     ],
     "menus": {

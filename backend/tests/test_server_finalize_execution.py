@@ -29,7 +29,7 @@ class ServerFinalizeExecutionTests(unittest.TestCase):
         server._session_managers = {}
         server._index_state_stores = {}
         server._task_stores = {}
-        server._claude = None
+        server._runtime = None
         server._knowledge_store = None
         server._context_lifecycle = None
         return server

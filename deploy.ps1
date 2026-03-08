@@ -59,6 +59,7 @@ $McpServers = @(
     @{ name = "waterfree-index";     module = "backend.mcp_index"     }
     @{ name = "waterfree-knowledge"; module = "backend.mcp_knowledge" }
     @{ name = "waterfree-todos";     module = "backend.mcp_todos"     }
+    @{ name = "waterfree-testing";   module = "backend.mcp_testing"   }
 )
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

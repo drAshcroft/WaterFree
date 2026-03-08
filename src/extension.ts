@@ -102,8 +102,6 @@ class WaterFreeController implements vscode.Disposable {
 
   private _sessionId: string | null = null;
   private _plan: PlanData | null = null;
-  private _marketResearchPanel: vscode.WebviewPanel | null = null;
-
   constructor(
     private readonly _workspacePath: string,
     context: vscode.ExtensionContext,
@@ -245,6 +243,7 @@ class WaterFreeController implements vscode.Disposable {
     register("waterfree.promoteWizardTodos", (ctx?: unknown) => this._cmdPromoteWizardTodos(ctx));
     register("waterfree.startWizardCoding", (ctx?: unknown) => this._cmdStartWizardCoding(ctx));
     register("waterfree.runWizardReview", (ctx?: unknown) => this._cmdRunWizardReview(ctx));
+    register("waterfree.refineWizardIdea", (ctx?: unknown) => this._cmdRefineWizardIdea(ctx));
   }
 
   // ------------------------------------------------------------------
@@ -933,14 +932,6 @@ class WaterFreeController implements vscode.Disposable {
       this._onPlanReceived(session);
     }
 
-    if (focusDocument && this._shouldUseMarketResearchUi(result)) {
-      await this._openOrUpdateMarketResearchUi(result);
-      return;
-    }
-
-    this._marketResearchPanel?.dispose();
-    this._marketResearchPanel = null;
-
     if (focusDocument && result.openDocPath) {
       await this._openWizardDocument(result.openDocPath);
     } else if (result.openDocPath && !focusDocument) {
@@ -948,260 +939,37 @@ class WaterFreeController implements vscode.Disposable {
     }
   }
 
-  private _shouldUseMarketResearchUi(result: WizardResponse): boolean {
-    const wizard = result.wizard as WizardRunData | null;
-    if (!wizard) {
-      return false;
-    }
-    return wizard.currentStageId === "market_research";
-  }
-
-  private async _openOrUpdateMarketResearchUi(result: WizardResponse): Promise<void> {
-    const wizard = result.wizard as WizardRunData | null;
+  private async _cmdRefineWizardIdea(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
     if (!wizard) {
       return;
     }
-    const stage = wizard.stages.find((candidate) => candidate.id === "market_research");
-    if (!stage) {
-      return;
-    }
-
-    if (!this._marketResearchPanel) {
-      this._marketResearchPanel = vscode.window.createWebviewPanel(
-        "waterfree.marketResearch",
-        "WaterFree: Market Research",
-        vscode.ViewColumn.Active,
-        { enableScripts: true, retainContextWhenHidden: true },
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Getting clarifying questions...");
+    try {
+      const result = await this._bridge.runWizardStep({
+        runId: wizard.runId,
+        stageId: wizard.stageId,
+        mode: "clarify",
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+      const stage = (result.wizard as WizardRunData | null)?.stages?.find(
+        (s: WizardStageData) => s.id === wizard.stageId,
       );
-      this._marketResearchPanel.onDidDispose(() => {
-        this._marketResearchPanel = null;
-      });
-      this._marketResearchPanel.webview.onDidReceiveMessage((message: unknown) => {
-        void this._onMarketResearchUiMessage(message);
-      });
-    } else {
-      this._marketResearchPanel.reveal(vscode.ViewColumn.Active);
-    }
-
-    this._marketResearchPanel.webview.html = this._renderMarketResearchUi(wizard, stage);
-  }
-
-  private async _onMarketResearchUiMessage(message: unknown): Promise<void> {
-    if (!message || typeof message !== "object") {
-      return;
-    }
-    const payload = message as Record<string, unknown>;
-    const type = typeof payload.type === "string" ? payload.type : "";
-    const runId = typeof payload.runId === "string" ? payload.runId : "";
-    if (!runId) {
-      return;
-    }
-
-    if (type === "sendRefinement") {
-      const idea = typeof payload.idea === "string" ? payload.idea.trim() : "";
-      if (!idea) {
-        void vscode.window.showWarningMessage("Enter your idea details first.");
-        return;
+      const questions: string[] = stage?.questions ?? [];
+      if (questions.length > 0) {
+        void vscode.window.showInformationMessage(
+          "WaterFree: Clarifying Questions",
+          { modal: true, detail: questions.map((q, i) => `${i + 1}. ${q}`).join("\n") },
+          "OK",
+        );
       }
-      this._sidebarProvider.setBusyMessage("Running market refinement...");
-      try {
-        const result = await this._bridge.runWizardStep({
-          runId,
-          stageId: "market_research",
-          extraContext: idea,
-          workspacePath: this._workspacePath,
-        });
-        await this._handleWizardResponse(result, true);
-      } catch (err) {
-        this._handleError("Market refinement failed", err);
-      } finally {
-        this._sidebarProvider.setBusyMessage(null);
-      }
-      return;
+    } catch (err) {
+      this._handleError("Refine idea failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
     }
-
-    if (type === "acceptAndContinue") {
-      this._sidebarProvider.setBusyMessage("Accepting market research...");
-      try {
-        const result = await this._bridge.acceptWizardStep({
-          runId,
-          stageId: "market_research",
-          workspacePath: this._workspacePath,
-        });
-        await this._handleWizardResponse(result, true);
-      } catch (err) {
-        this._handleError("Accept market research failed", err);
-      } finally {
-        this._sidebarProvider.setBusyMessage(null);
-      }
-      return;
-    }
-
-    if (type === "openMarkdown") {
-      const docPath = typeof payload.docPath === "string" ? payload.docPath : "";
-      if (docPath) {
-        await this._openWizardDocument(docPath);
-      }
-    }
-  }
-
-  private _renderMarketResearchUi(wizard: WizardRunData, stage: WizardStageData): string {
-    const nonce = String(Date.now());
-    const ideaChunk = stage.chunks.find((chunk) => chunk.id === "initial_goal");
-    const ideaText = (
-      ideaChunk?.acceptedText ||
-      ideaChunk?.draftText ||
-      ideaChunk?.notesSnapshot ||
-      wizard.goal ||
-      ""
-    ).trim();
-
-    const chunkOrder = ["similar_ideas", "who_wants_this", "core_features", "minimum_viable_product"];
-    const sections = stage.chunks
-      .filter((chunk) => chunk.id !== "initial_goal")
-      .sort((a, b) => {
-        const ai = chunkOrder.indexOf(a.id);
-        const bi = chunkOrder.indexOf(b.id);
-        return (ai < 0 ? 999 : ai) - (bi < 0 ? 999 : bi);
-      })
-      .filter((chunk) => (chunk.acceptedText || chunk.draftText || "").trim().length > 0)
-      .map((chunk) => {
-        const body = (chunk.acceptedText || chunk.draftText || "").trim();
-        return [
-          "<section class=\"card\">",
-          `<h3>${this._escapeHtml(chunk.title)}</h3>`,
-          `<div class="content">${this._escapeHtml(body)}</div>`,
-          "</section>",
-        ].join("");
-      })
-      .join("");
-
-    const questions = (stage.questions ?? [])
-      .map((question) => `<li>${this._escapeHtml(question)}</li>`)
-      .join("");
-
-    const hasRefinement = sections.length > 0;
-    const promptBlock = stage.externalResearchPrompt
-      ? [
-          "<section class=\"card\">",
-          "<h3>External Research Prompt</h3>",
-          `<div class="content">${this._escapeHtml(stage.externalResearchPrompt)}</div>`,
-          "</section>",
-        ].join("")
-      : "";
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: var(--vscode-editor-background);
-      --fg: var(--vscode-editor-foreground);
-      --muted: var(--vscode-descriptionForeground);
-      --border: var(--vscode-editorWidget-border);
-      --panel: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-editorWidget-background) 12%);
-      --accent: var(--vscode-textLink-foreground);
-      --button: var(--vscode-button-background);
-      --button-fg: var(--vscode-button-foreground);
-      --button-hover: var(--vscode-button-hoverBackground);
-    }
-    body {
-      margin: 0;
-      padding: 18px;
-      background: radial-gradient(1200px 500px at 0% -20%, color-mix(in srgb, var(--accent) 12%, transparent), transparent), var(--bg);
-      color: var(--fg);
-      font-family: var(--vscode-font-family);
-    }
-    h1 { margin: 0 0 6px; font-size: 22px; }
-    p.sub { margin: 0 0 14px; color: var(--muted); }
-    textarea {
-      width: 100%;
-      min-height: 120px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px;
-      background: var(--panel);
-      color: var(--fg);
-      font-family: var(--vscode-editor-font-family, var(--vscode-font-family));
-      font-size: 13px;
-      line-height: 1.4;
-      resize: vertical;
-      box-sizing: border-box;
-    }
-    .row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
-    button {
-      border: 0;
-      border-radius: 8px;
-      padding: 8px 14px;
-      cursor: pointer;
-      font-size: 12px;
-      font-weight: 600;
-    }
-    button.primary { background: var(--button); color: var(--button-fg); }
-    button.primary:hover { background: var(--button-hover); }
-    button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
-    .grid { margin-top: 16px; display: grid; gap: 12px; }
-    .card {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px;
-      background: var(--panel);
-    }
-    .card h3 { margin: 0 0 8px; font-size: 14px; }
-    .content {
-      white-space: pre-wrap;
-      line-height: 1.5;
-      color: var(--fg);
-    }
-    ul { margin: 6px 0 0; padding-left: 18px; }
-  </style>
-</head>
-<body>
-  <h1>What is your idea? (describe in detail)</h1>
-  <p class="sub">Describe the problem, target users, and why this matters.</p>
-  <textarea id="idea">${this._escapeHtml(ideaText)}</textarea>
-  <div class="row">
-    <button class="primary" id="send">Send for Refinement</button>
-    ${hasRefinement ? '<button class="primary" id="accept">Accept & Continue</button>' : ""}
-    <button class="secondary" id="openDoc">Open Markdown</button>
-  </div>
-  <div class="grid">
-    ${sections}
-    ${questions ? `<section class="card"><h3>Questions and Suggestions</h3><ul>${questions}</ul></section>` : ""}
-    ${promptBlock}
-  </div>
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const runId = ${JSON.stringify(wizard.id)};
-    const docPath = ${JSON.stringify(stage.docPath)};
-    const send = document.getElementById("send");
-    const accept = document.getElementById("accept");
-    const openDoc = document.getElementById("openDoc");
-    const idea = document.getElementById("idea");
-    send?.addEventListener("click", () => {
-      vscode.postMessage({ type: "sendRefinement", runId, idea: idea.value });
-    });
-    accept?.addEventListener("click", () => {
-      vscode.postMessage({ type: "acceptAndContinue", runId });
-    });
-    openDoc?.addEventListener("click", () => {
-      vscode.postMessage({ type: "openMarkdown", docPath });
-    });
-  </script>
-</body>
-</html>`;
-  }
-
-  private _escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
   }
 
   private async _openWizardDocument(docPath: string): Promise<void> {
@@ -1708,8 +1476,6 @@ class WaterFreeController implements vscode.Disposable {
   // ------------------------------------------------------------------
 
   dispose(): void {
-    this._marketResearchPanel?.dispose();
-    this._marketResearchPanel = null;
     this._disposables.forEach((d) => d.dispose());
   }
 }

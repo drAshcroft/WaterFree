@@ -42,12 +42,6 @@ class ToolRegistry:
             return descriptors
         return [descriptor for descriptor in descriptors if not descriptor.policy.optional]
 
-    def anthropic_tools(self, include_optional: bool = True) -> list[dict[str, Any]]:
-        return [
-            descriptor.to_anthropic_tool()
-            for descriptor in self.list_descriptors(include_optional=include_optional)
-        ]
-
     def policy_inventory(self, include_optional: bool = True) -> list[dict[str, Any]]:
         return [
             descriptor.to_policy_dict()

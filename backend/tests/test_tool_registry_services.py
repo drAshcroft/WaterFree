@@ -1,17 +1,12 @@
 import shutil
-import sys
-import types
 import unittest
 import uuid
 from pathlib import Path
 
-if "anthropic" not in sys.modules:
-    sys.modules["anthropic"] = types.SimpleNamespace(Anthropic=object, types=types.SimpleNamespace(Message=object))
-
-from backend.llm.claude_client import ClaudeClient
+from backend.llm.tools.registry import build_default_tool_registry
 from backend.todo.store import TaskStore
 
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_claude_service_tests"
+_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_tool_registry_service_tests"
 _TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -42,27 +37,26 @@ class FakeKnowledgeStore:
         return 1
 
 
-class ClaudeClientServiceToolTests(unittest.TestCase):
+class ToolRegistryServiceTests(unittest.TestCase):
     def make_workspace(self) -> Path:
         workspace = _TMP_ROOT / uuid.uuid4().hex
         workspace.mkdir(parents=True, exist_ok=False)
         self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
         return workspace
 
-    def make_client(self) -> ClaudeClient:
-        client = ClaudeClient.__new__(ClaudeClient)
-        client._client = None
-        client._graph = None
-        client._knowledge_store = FakeKnowledgeStore()
-        client._task_store_factory = lambda workspace_path: TaskStore(workspace_path)
-        client._task_stores = {}
-        return client
+    def make_registry(self):
+        return build_default_tool_registry(
+            graph=None,
+            task_store_factory=lambda workspace_path: TaskStore(workspace_path),
+            knowledge_store_factory=FakeKnowledgeStore,
+            enable_optional_web_tools=False,
+        )
 
     def test_task_tools_add_and_fetch_ready_work(self) -> None:
         workspace = self.make_workspace()
-        client = self.make_client()
+        registry = self.make_registry()
 
-        added = client._execute_host_tool(
+        added = registry.invoke(
             "add_task",
             {
                 "workspacePath": str(workspace),
@@ -73,12 +67,12 @@ class ClaudeClientServiceToolTests(unittest.TestCase):
             },
             str(workspace),
         )
-        listed = client._execute_host_tool(
+        listed = registry.invoke(
             "list_tasks",
             {"workspacePath": str(workspace), "readyOnly": True},
             str(workspace),
         )
-        next_task = client._execute_host_tool(
+        next_task = registry.invoke(
             "what_next",
             {"workspacePath": str(workspace), "ownerName": "codex"},
             str(workspace),
@@ -90,14 +84,14 @@ class ClaudeClientServiceToolTests(unittest.TestCase):
 
     def test_knowledge_tools_are_available(self) -> None:
         workspace = self.make_workspace()
-        client = self.make_client()
+        registry = self.make_registry()
 
-        result = client._execute_host_tool(
+        result = registry.invoke(
             "search_knowledge",
             {"query": "auth"},
             str(workspace),
         )
-        sources = client._execute_host_tool(
+        sources = registry.invoke(
             "list_knowledge_sources",
             {},
             str(workspace),
