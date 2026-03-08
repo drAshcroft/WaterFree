@@ -77,3 +77,18 @@ class AgentRuntime(Protocol):
 
     def resume(self, checkpoint_id: str, decision: dict) -> dict:
         ...
+
+    def run_wizard_stage(
+        self,
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        context: str,
+        chunk_specs: list[dict],
+        workspace_path: str = "",
+        persona: str = "default",
+        revision_request: str = "",
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        ...

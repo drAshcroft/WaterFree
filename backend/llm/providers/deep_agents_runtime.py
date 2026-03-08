@@ -1,9 +1,8 @@
 """
 Deep Agents runtime lane.
 
-Uses `deepagents` as the orchestration layer and falls back to the inherited
-Anthropic runtime behavior when deepagents is unavailable or returns malformed
-payloads.
+Uses `deepagents` as the orchestration layer.  Falls back to empty/no-op
+results when deepagents is unavailable or returns malformed payloads.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from backend.llm.tools import build_default_tool_registry
 from backend.session.models import AnnotationStatus, CodeCoord, IntentAnnotation, Task, TaskPriority
 from backend.todo.store import TaskStore
 
-class DeepAgentsRuntime( ):
+class DeepAgentsRuntime:
     def __init__(
         self,
         *,
@@ -33,27 +32,13 @@ class DeepAgentsRuntime( ):
         knowledge_store: Optional[KnowledgeStore] = None,
         task_store_factory: Optional[Callable[[str], TaskStore]] = None,
         checkpoint_store_factory: Optional[Callable[[str], CheckpointStore]] = None,
-        api_key: Optional[str] = None,
     ):
-        self._anthropic_available = False
         self._checkpoint_store_factory = checkpoint_store_factory or (lambda workspace: CheckpointStore(workspace))
         self._checkpoint_stores: dict[str, CheckpointStore] = {}
         self._task_store_factory = task_store_factory or (lambda workspace_path: TaskStore(workspace_path))
         self._task_stores: dict[str, TaskStore] = {}
         self._graph = graph
         self._knowledge_store = knowledge_store
-        self._client = None
-        try:
-            super().__init__(
-                api_key=api_key,
-                graph=graph,
-                knowledge_store=knowledge_store,
-                task_store_factory=self._task_store_factory,
-                checkpoint_store_factory=self._checkpoint_store_factory,
-            )
-            self._anthropic_available = True
-        except Exception:
-            self._anthropic_available = False
         self._workspace_path = workspace_path
         self._provider_lane = provider_lane
         self._skill_registry = SkillRegistry(workspace_path)
@@ -96,7 +81,7 @@ class DeepAgentsRuntime( ):
             persona=persona,
         )
         if payload is None:
-            return self._fallback_generate_plan(goal, context, workspace_path, persona)
+            return ([], [])
         tasks: list[Task] = []
         for raw in payload.get("tasks", []):
             tasks.append(
@@ -134,7 +119,13 @@ class DeepAgentsRuntime( ):
             persona=persona,
         )
         if payload is None:
-            return self._fallback_generate_annotation(task, context, workspace_path, persona)
+            return IntentAnnotation(
+                task_id=task.id,
+                target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
+                summary="Deep Agents could not produce structured annotation output.",
+                detail="Deep Agents unavailable or returned malformed output.",
+                status=AnnotationStatus.PENDING,
+            )
         return IntentAnnotation(
             task_id=task.id,
             target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
@@ -153,7 +144,7 @@ class DeepAgentsRuntime( ):
         task,
         context: str,
         workspace_path: str = "",
-        on_chunk=None,
+        on_chunk=None,  # noqa: ARG002 — streaming not used by this runtime
         persona: str = "default",
     ):
         bundle = self._skill_adapter.select(
@@ -175,8 +166,60 @@ class DeepAgentsRuntime( ):
             persona=persona,
         )
         if payload is None:
-            return self._fallback_execute_task(task, context, workspace_path, on_chunk, persona)
+            return []
         return list(payload.get("edits", []))
+
+    def run_wizard_stage(
+        self,
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        context: str,
+        chunk_specs: list[dict],
+        workspace_path: str = "",
+        persona: str = "default",
+        revision_request: str = "",
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        metadata = metadata or {}
+        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="planning")
+        web_tools = bool(metadata.get("webToolsEnabled"))
+        prompt = (
+            "Return JSON only with shape: "
+            '{"stageSummary":"","chunks":[{"id":"","content":""}],"todos":[{"title":"","description":"","prompt":"","phase":"","priority":"P0|P1|P2|P3|spike","taskType":"impl|test|spike|review|refactor","targetFile":"","targetFunction":"","ownerType":"human|agent|unassigned","ownerName":""}],"subsystems":[],"externalResearchPrompt":"","questions":[]}\n\n'
+            f"STAGE KIND: {stage_kind}\n"
+            f"STAGE TITLE: {stage_title}\n"
+            f"GOAL: {goal}\n"
+            f"WEB TOOLS AVAILABLE: {'yes' if web_tools else 'no'}\n"
+            f"REVISION REQUEST: {revision_request.strip() or '(none)'}\n"
+            f"METADATA: {json.dumps(metadata, ensure_ascii=True)}\n"
+            f"CHUNKS TO DRAFT: {json.dumps(chunk_specs, ensure_ascii=True)}\n\n"
+            "Rules:\n"
+            "- Draft only the requested chunk ids.\n"
+            "- Preserve the stage intent and produce concise markdown-ready prose.\n"
+            "- Emit todo items only when the stage naturally produces follow-up work.\n"
+            "- For architect review, include a realistic `subsystems` list.\n"
+            "- For market research without web tools, provide an `externalResearchPrompt`.\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        prompt_stage = "QUESTION_ANSWER" if stage_kind == "review" else "PLANNING"
+        payload = self._run_deepagents_structured(
+            stage=prompt_stage,
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+        if payload is None:
+            return self._fallback_wizard_stage(
+                stage_kind=stage_kind,
+                stage_title=stage_title,
+                goal=goal,
+                chunk_specs=chunk_specs,
+                revision_request=revision_request,
+                metadata=metadata,
+            )
+        return payload
 
     def list_subagents(self) -> list[dict]:
         return [
@@ -184,6 +227,10 @@ class DeepAgentsRuntime( ):
             {"id": "pattern_expert", "label": "Pattern Expert", "skills": ["waterfree-knowledge"]},
             {"id": "debug_detective", "label": "Debug Detective", "skills": ["waterfree-debug", "waterfree-index"]},
             {"id": "stub_wireframer", "label": "Stub/Wireframes", "skills": ["waterfree-todos"]},
+            {"id": "market_researcher", "label": "Market Researcher", "skills": ["waterfree-index", "waterfree-knowledge"]},
+            {"id": "bdd_test_designer", "label": "BDD Test Designer", "skills": ["waterfree-todos"]},
+            {"id": "coding_agent", "label": "Coding Agent", "skills": ["waterfree-todos"]},
+            {"id": "reviewer", "label": "Reviewer", "skills": ["waterfree-index", "waterfree-todos"]},
         ]
 
     def delegate_to_subagent(
@@ -219,6 +266,30 @@ class DeepAgentsRuntime( ):
 
     def get_skill_detail(self, skill_id: str) -> dict:
         return self._skill_registry.get_skill_detail(skill_id)
+
+    def checkpoint(self, session_id: str, reason: str, payload: dict) -> dict:
+        store = self._checkpoint_stores.setdefault(
+            session_id,
+            self._checkpoint_store_factory(self._workspace_path),
+        )
+        return store.create_checkpoint(
+            session_id=session_id,
+            reason=reason,
+            runtime_id=self._provider_lane,
+            payload=payload,
+        )
+
+    def resume(self, checkpoint_id: str, decision: dict) -> dict:
+        for store in self._checkpoint_stores.values():
+            cp = store.get_checkpoint(checkpoint_id)
+            if cp is not None:
+                return store.resume_checkpoint(checkpoint_id, decision)
+        raise ValueError(f"Checkpoint not found: {checkpoint_id}")
+
+    def _get_knowledge_store(self) -> KnowledgeStore:
+        if self._knowledge_store is None:
+            raise RuntimeError("No KnowledgeStore configured for this runtime.")
+        return self._knowledge_store
 
     def _load_deepagents(self) -> None:
         try:
@@ -331,52 +402,113 @@ class DeepAgentsRuntime( ):
             )
         return tools
 
-    def _fallback_generate_plan(self, goal: str, context: str, workspace_path: str, persona: str):
-        if not self._anthropic_available:
-            return ([], [])
-        return AnthropicRuntime.generate_plan(
-            self,
-            goal,
-            context,
-            workspace_path=workspace_path,
-            persona=persona,
-        )
-
-    def _fallback_generate_annotation(self, task: Task, context: str, workspace_path: str, persona: str):
-        if not self._anthropic_available:
-            return IntentAnnotation(
-                task_id=task.id,
-                target_coord=CodeCoord(file=task.target_file, line=task.target_line, method=task.target_function),
-                summary="Deep Agents could not produce structured annotation output.",
-                detail="Fallback used because Anthropic runtime was unavailable.",
-                status=AnnotationStatus.PENDING,
-            )
-        return AnthropicRuntime.generate_annotation(
-            self,
-            task,
-            context,
-            workspace_path=workspace_path,
-            persona=persona,
-        )
-
-    def _fallback_execute_task(
+    def _fallback_wizard_stage(
         self,
-        task: Task,
-        context: str,
-        workspace_path: str,
-        on_chunk: Optional[Callable[[str], None]],
-        persona: str,
-    ):
-        if not self._anthropic_available:
-            return []
-        return AnthropicRuntime.execute_task(
-            self,
-            task,
-            context,
-            workspace_path=workspace_path,
-            on_chunk=on_chunk,
-            persona=persona,
-        )
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        chunk_specs: list[dict],
+        revision_request: str,
+        metadata: dict,
+    ) -> dict:
+        chunks = []
+        for spec in chunk_specs:
+            note_text = str(spec.get("notes", "")).strip()
+            body = [
+                f"{stage_title} draft for {goal}.",
+                "",
+                f"Chunk: {spec.get('title', spec.get('id', 'chunk'))}.",
+            ]
+            if note_text:
+                body.extend(["", "Current notes:", note_text])
+            if revision_request.strip():
+                body.extend(["", "Revision request:", revision_request.strip()])
+            chunks.append({
+                "id": str(spec.get("id", "")),
+                "content": "\n".join(body).strip(),
+            })
+
+        todos: list[dict[str, str]] = []
+        if stage_kind == "architect_review":
+            todos.append({
+                "title": "Turn architect output into subsystem work",
+                "description": f"Convert the accepted architect review for '{goal}' into subsystem plans.",
+                "phase": stage_title,
+                "priority": "P1",
+                "taskType": "spike",
+                "targetFile": "",
+                "targetFunction": "",
+                "ownerType": "unassigned",
+                "ownerName": "",
+                "prompt": "Use the accepted architect chunks to define subsystem work.",
+            })
+        elif stage_kind == "wireframe_agents":
+            todos.append({
+                "title": f"Implement wireframe for {metadata.get('subsystemName') or stage_title}",
+                "description": f"Convert the accepted wireframe into coding work for {metadata.get('subsystemName') or stage_title}.",
+                "phase": stage_title,
+                "priority": "P1",
+                "taskType": "impl",
+                "targetFile": "",
+                "targetFunction": "",
+                "ownerType": "unassigned",
+                "ownerName": "",
+                "prompt": "Implement the accepted micro-prompts.",
+            })
+        elif stage_kind == "bdd_ai_tests":
+            todos.append({
+                "title": "Write BDD coverage",
+                "description": f"Translate the accepted BDD stage for '{goal}' into real tests.",
+                "phase": stage_title,
+                "priority": "P1",
+                "taskType": "test",
+                "targetFile": "",
+                "targetFunction": "",
+                "ownerType": "unassigned",
+                "ownerName": "",
+                "prompt": "Implement the accepted BDD scenarios as tests.",
+            })
+        elif stage_kind == "coding_agents":
+            todos.append({
+                "title": f"Build {goal}",
+                "description": "Execute the accepted coding handoff.",
+                "phase": stage_title,
+                "priority": "P1",
+                "taskType": "impl",
+                "targetFile": "",
+                "targetFunction": "",
+                "ownerType": "unassigned",
+                "ownerName": "",
+                "prompt": "Build the accepted coding tasks in order.",
+            })
+
+        subsystems = []
+        if stage_kind == "architect_review":
+            subsystems = ["Core Application", "API Layer", "Data Layer"]
+
+        external_prompt = ""
+        if stage_kind == "market_research" and not metadata.get("webToolsEnabled"):
+            external_prompt = (
+                "Research this software idea on the live web and return a concise market memo.\n\n"
+                f"Idea: {goal}\n\n"
+                "Cover:\n"
+                "- comparable products and niches\n"
+                "- what feels differentiated or weak\n"
+                "- likely target audiences\n"
+                "- realistic MVP\n"
+                "- pricing or monetization signals if visible\n"
+                "- risks or reasons the idea may fail\n"
+            )
+
+        return {
+            "stageSummary": f"{stage_title} drafted for {goal}.",
+            "chunks": chunks,
+            "todos": todos,
+            "subsystems": subsystems,
+            "externalResearchPrompt": external_prompt,
+            "questions": [],
+        }
 
     def _interrupt_config(self) -> dict[str, dict[str, list[str]]]:
         config: dict[str, dict[str, list[str]]] = {}
@@ -408,6 +540,26 @@ class DeepAgentsRuntime( ):
                 "name": "stub_wireframer",
                 "description": "Subsystem shell/stub generation",
                 "system_prompt": build_system_prompt("EXECUTION", "stub_wireframer"),
+            },
+            {
+                "name": "market_researcher",
+                "description": "Product framing, differentiation, and audience analysis",
+                "system_prompt": build_system_prompt("PLANNING", "market_researcher"),
+            },
+            {
+                "name": "bdd_test_designer",
+                "description": "Acceptance scenarios and human-language test design",
+                "system_prompt": build_system_prompt("PLANNING", "bdd_test_designer"),
+            },
+            {
+                "name": "coding_agent",
+                "description": "Turns accepted prompts into execution-ready coding tasks",
+                "system_prompt": build_system_prompt("PLANNING", "coding_agent"),
+            },
+            {
+                "name": "reviewer",
+                "description": "Collects issues, blockers, and follow-up work",
+                "system_prompt": build_system_prompt("QUESTION_ANSWER", "reviewer"),
             },
         ]
 

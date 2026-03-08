@@ -12,7 +12,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-import { PythonBridge } from "./bridge/PythonBridge.js";
+import { PythonBridge, type WizardResponse } from "./bridge/PythonBridge.js";
 import { LiveDebugCapture } from "./debug/LiveDebugCapture.js";
 import { PairLogger } from "./logging/PairLogger.js";
 import { StatusBarManager } from "./ui/StatusBarManager.js";
@@ -26,10 +26,12 @@ import {
   type SidebarAction,
   type TaskData,
 } from "./ui/PlanSidebar.js";
+import { WizardCodeLensProvider, type WizardDocContext } from "./ui/WizardCodeLensProvider.js";
 import { QuickActionsProvider } from "./ui/QuickActionsProvider.js";
 import { DecorationRenderer } from "./ui/DecorationRenderer.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
+import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
 
 // ------------------------------------------------------------------
 // Extension state (singleton per extension host)
@@ -87,6 +89,7 @@ class WaterFreeController implements vscode.Disposable {
   private readonly _sidebarProvider: PlanSidebarProvider;
   private readonly _quickActions: QuickActionsProvider;
   private readonly _decorations: DecorationRenderer;
+  private readonly _wizardLenses: WizardCodeLensProvider;
   private readonly _fileWatcher: FileWatcher;
   private readonly _todoWatcher: TodoWatcher;
   private readonly _liveDebug: LiveDebugCapture;
@@ -109,6 +112,7 @@ class WaterFreeController implements vscode.Disposable {
     this._sidebarProvider = new PlanSidebarProvider();
     this._quickActions = new QuickActionsProvider();
     this._decorations = new DecorationRenderer();
+    this._wizardLenses = new WizardCodeLensProvider();
     this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
     this._todoWatcher = new TodoWatcher();
     this._liveDebug = new LiveDebugCapture();
@@ -118,6 +122,7 @@ class WaterFreeController implements vscode.Disposable {
       this._sidebarProvider,
       this._quickActions,
       this._decorations,
+      this._wizardLenses,
       this._fileWatcher,
       this._todoWatcher,
       this._liveDebug,
@@ -160,6 +165,12 @@ class WaterFreeController implements vscode.Disposable {
     this._disposables.push(
       vscode.debug.onDidStartDebugSession(() => this._updateDebugState()),
       vscode.debug.onDidTerminateDebugSession(() => this._updateDebugState()),
+      vscode.window.onDidChangeActiveTextEditor((editor) => this._updateWizardEditorContext(editor)),
+      vscode.workspace.onDidOpenTextDocument((document) => {
+        if (vscode.window.activeTextEditor?.document === document) {
+          this._updateWizardEditorContext(vscode.window.activeTextEditor);
+        }
+      }),
     );
 
     // Commands
@@ -170,6 +181,7 @@ class WaterFreeController implements vscode.Disposable {
     this._log("startup", `extension log file=${this._logger.logFilePath}`);
     this._bridge.start();
     void this._autoIndex();
+    this._updateWizardEditorContext(vscode.window.activeTextEditor);
 
     // Try to resume an existing session
     this._sidebarProvider.setCheckingForSession(true);
@@ -215,6 +227,18 @@ class WaterFreeController implements vscode.Disposable {
     register("waterfree.buildKnowledge", () => this._cmdBuildKnowledge());
     register("waterfree.addKnowledgeRepo", () => this._cmdAddKnowledgeRepo());
     register("waterfree.extractProcedure", () => this._cmdExtractProcedure());
+    register("waterfree.openWizard", (args?: unknown) => this._cmdOpenWizard(args));
+    register("waterfree.runWizardStep", (ctx?: unknown) => this._cmdRunWizardStep(ctx));
+    register("waterfree.acceptWizardChunk", (ctx?: unknown, chunkId?: unknown) =>
+      this._cmdAcceptWizardChunk(ctx, chunkId),
+    );
+    register("waterfree.reviseWizardChunk", (ctx?: unknown, chunkId?: unknown) =>
+      this._cmdReviseWizardChunk(ctx, chunkId),
+    );
+    register("waterfree.acceptWizardStep", (ctx?: unknown) => this._cmdAcceptWizardStep(ctx));
+    register("waterfree.promoteWizardTodos", (ctx?: unknown) => this._cmdPromoteWizardTodos(ctx));
+    register("waterfree.startWizardCoding", (ctx?: unknown) => this._cmdStartWizardCoding(ctx));
+    register("waterfree.runWizardReview", (ctx?: unknown) => this._cmdRunWizardReview(ctx));
   }
 
   // ------------------------------------------------------------------
@@ -663,6 +687,271 @@ class WaterFreeController implements vscode.Disposable {
     void vscode.commands.executeCommand("waterfree.planSidebar.focus");
   }
 
+  private async _cmdOpenWizard(args?: unknown): Promise<void> {
+    const launch = this._parseWizardLaunchArgs(args);
+    const wizardId = launch?.wizardId ?? "bring_idea_to_life";
+    if (wizardId !== "bring_idea_to_life") {
+      void vscode.window.showInformationMessage(
+        `WaterFree: '${wizardId.replace(/_/g, " ")}' is not upgraded yet. Only Bring Idea to Life uses the markdown wizard flow right now.`,
+      );
+      return;
+    }
+
+    const goal = launch?.goal?.trim() || await vscode.window.showInputBox({
+      prompt: "What idea should the wizard refine?",
+      placeHolder: "e.g. A collaborative neighborhood flood alert app",
+      validateInput: (value) => (value.trim() ? null : "Please describe the idea."),
+    });
+    if (!goal) {
+      return;
+    }
+
+    this._sidebarProvider.setBusyMessage("Opening wizard...");
+    try {
+      const result = await this._bridge.createWizardSession({
+        goal: goal.trim(),
+        wizardId,
+        workspacePath: this._workspacePath,
+        persona: launch?.persona ?? "architect",
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Open wizard failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdRunWizardStep(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard) {
+      return;
+    }
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Running wizard stage...");
+    try {
+      const result = await this._bridge.runWizardStep({
+        runId: wizard.runId,
+        stageId: wizard.stageId,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Run wizard stage failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdAcceptWizardChunk(ctx?: unknown, chunkId?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard || typeof chunkId !== "string" || !chunkId.trim()) {
+      return;
+    }
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Accepting chunk...");
+    try {
+      const result = await this._bridge.acceptWizardChunk({
+        runId: wizard.runId,
+        stageId: wizard.stageId,
+        chunkId: chunkId.trim(),
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Accept chunk failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdReviseWizardChunk(ctx?: unknown, chunkId?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard || typeof chunkId !== "string" || !chunkId.trim()) {
+      return;
+    }
+
+    const revisionNote = await vscode.window.showInputBox({
+      prompt: "What should change in this chunk?",
+      placeHolder: "e.g. tighten the MVP and remove the enterprise assumptions",
+    });
+    if (revisionNote === undefined) {
+      return;
+    }
+
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Revising chunk...");
+    try {
+      const result = await this._bridge.runWizardStep({
+        runId: wizard.runId,
+        stageId: wizard.stageId,
+        chunkId: chunkId.trim(),
+        revisionNote: revisionNote.trim(),
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Revise chunk failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdAcceptWizardStep(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard) {
+      return;
+    }
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Accepting stage...");
+    try {
+      const result = await this._bridge.acceptWizardStep({
+        runId: wizard.runId,
+        stageId: wizard.stageId,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Accept stage failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdPromoteWizardTodos(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard) {
+      return;
+    }
+    this._sidebarProvider.setBusyMessage("Promoting wizard todos...");
+    try {
+      const result = await this._bridge.promoteWizardTodos({
+        runId: wizard.runId,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result, false);
+      const count = result.count ?? result.createdTaskIds?.length ?? 0;
+      void vscode.window.showInformationMessage(`WaterFree: promoted ${count} wizard todo(s) to the backlog.`);
+    } catch (err) {
+      this._handleError("Promote wizard todos failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdStartWizardCoding(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard) {
+      return;
+    }
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Starting coding handoff...");
+    try {
+      const result = await this._bridge.startWizardCoding({
+        runId: wizard.runId,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result, false);
+      void vscode.window.showInformationMessage("WaterFree: coding session created from accepted wizard outputs.");
+    } catch (err) {
+      this._handleError("Start wizard coding failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private async _cmdRunWizardReview(ctx?: unknown): Promise<void> {
+    const wizard = await this._resolveWizardContext(ctx);
+    if (!wizard) {
+      return;
+    }
+    await this._saveWizardDocument(wizard);
+    this._sidebarProvider.setBusyMessage("Running review...");
+    try {
+      const result = await this._bridge.runWizardReview({
+        runId: wizard.runId,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result);
+    } catch (err) {
+      this._handleError("Run wizard review failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
+  }
+
+  private _parseWizardLaunchArgs(args?: unknown): { wizardId: string; goal: string; persona: string } | null {
+    if (!args || typeof args !== "object") {
+      return null;
+    }
+    const payload = args as Record<string, unknown>;
+    return {
+      wizardId: typeof payload.wizardId === "string" ? payload.wizardId : "bring_idea_to_life",
+      goal: typeof payload.goal === "string" ? payload.goal : "",
+      persona: typeof payload.persona === "string" ? payload.persona : "architect",
+    };
+  }
+
+  private async _resolveWizardContext(ctx?: unknown): Promise<WizardDocContext | null> {
+    if (ctx && typeof ctx === "object") {
+      const payload = ctx as Record<string, unknown>;
+      if (typeof payload.runId === "string" && typeof payload.stageId === "string" && typeof payload.wizardId === "string") {
+        return {
+          runId: payload.runId,
+          stageId: payload.stageId,
+          wizardId: payload.wizardId,
+          title: typeof payload.title === "string" ? payload.title : payload.stageId,
+        };
+      }
+    }
+
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !isWizardDoc(editor.document)) {
+      void vscode.window.showWarningMessage("Open a WaterFree wizard markdown document first.");
+      return null;
+    }
+    return parseWizardDocContextFromDocument(editor.document);
+  }
+
+  private async _saveWizardDocument(ctx: WizardDocContext): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+    const active = parseWizardDocContextFromDocument(editor.document);
+    if (!active || active.runId !== ctx.runId || active.stageId !== ctx.stageId) {
+      return;
+    }
+    if (editor.document.isDirty) {
+      await editor.document.save();
+    }
+  }
+
+  private async _handleWizardResponse(result: WizardResponse, focusDocument = true): Promise<void> {
+    if (result.session && typeof result.session === "object") {
+      const session = result.session as PlanData;
+      this._sessionId = session.id;
+      this._onPlanReceived(session);
+    }
+
+    if (focusDocument && result.openDocPath) {
+      await this._openWizardDocument(result.openDocPath);
+    } else if (result.openDocPath && !focusDocument) {
+      this._updateWizardEditorContext(vscode.window.activeTextEditor);
+    }
+  }
+
+  private async _openWizardDocument(docPath: string): Promise<void> {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(docPath));
+    await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+    this._updateWizardEditorContext(vscode.window.activeTextEditor);
+  }
+
+  private _updateWizardEditorContext(editor: vscode.TextEditor | undefined): void {
+    const active = Boolean(editor && (isWizardDocPath(editor.document.uri.fsPath) || isWizardDoc(editor.document)));
+    void vscode.commands.executeCommand("setContext", "waterfree.wizardDocActive", active);
+  }
+
   private async _runSnippetizeProcedure(name: string, focus: string): Promise<void> {
     this._sidebarProvider.setBusyMessage(`Snippetizing '${name}'...`);
     try {
@@ -892,10 +1181,12 @@ class WaterFreeController implements vscode.Disposable {
       case "startSession":
         await this._cmdStart(action.goal, action.persona);
         return;
-      case "startWizard": {
-        const wizardLabel = action.wizardId.replace(/_/g, " ");
-        const goal = action.goal || `Run the ${wizardLabel} wizard`;
-        await this._cmdStart(goal, action.persona);
+      case "openWizard": {
+        await this._cmdOpenWizard({
+          wizardId: action.wizardId,
+          goal: action.goal,
+          persona: action.persona,
+        });
         return;
       }
       case "openTask":

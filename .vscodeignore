@@ -1,0 +1,12 @@
+.git/**
+.vscode/**
+.waterfree/**
+node_modules/**
+src/**
+docs/**
+skills/**
+**/*.map
+tsconfig.json
+esbuild.config.js
+package-lock.json
+deploy.ps1

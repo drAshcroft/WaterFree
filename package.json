@@ -97,6 +97,46 @@
         "command": "waterfree.extractProcedure",
         "title": "WaterFree Snippetize: Snippetize Procedure",
         "icon": "$(symbol-method)"
+      },
+      {
+        "command": "waterfree.openWizard",
+        "title": "WaterFree: Open Wizard",
+        "icon": "$(notebook)"
+      },
+      {
+        "command": "waterfree.runWizardStep",
+        "title": "WaterFree: Run Wizard Stage",
+        "icon": "$(play)"
+      },
+      {
+        "command": "waterfree.acceptWizardChunk",
+        "title": "WaterFree: Accept Wizard Chunk",
+        "icon": "$(check)"
+      },
+      {
+        "command": "waterfree.reviseWizardChunk",
+        "title": "WaterFree: Revise Wizard Chunk",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "waterfree.acceptWizardStep",
+        "title": "WaterFree: Accept Wizard Stage",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "waterfree.promoteWizardTodos",
+        "title": "WaterFree: Promote Wizard Todos",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "waterfree.startWizardCoding",
+        "title": "WaterFree: Start Wizard Coding",
+        "icon": "$(run)"
+      },
+      {
+        "command": "waterfree.runWizardReview",
+        "title": "WaterFree: Run Wizard Review",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -121,6 +161,33 @@
           "command": "waterfree.buildKnowledge",
           "when": "view == waterfree.planSidebar",
           "group": "navigation@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "waterfree.runWizardStep",
+          "when": "waterfree.wizardDocActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "waterfree.acceptWizardStep",
+          "when": "waterfree.wizardDocActive",
+          "group": "navigation@2"
+        },
+        {
+          "command": "waterfree.promoteWizardTodos",
+          "when": "waterfree.wizardDocActive",
+          "group": "navigation@3"
+        },
+        {
+          "command": "waterfree.startWizardCoding",
+          "when": "waterfree.wizardDocActive",
+          "group": "navigation@4"
+        },
+        {
+          "command": "waterfree.runWizardReview",
+          "when": "waterfree.wizardDocActive",
+          "group": "navigation@5"
         }
       ]
     },
@@ -180,7 +247,8 @@
   "scripts": {
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
-    "vscode:prepublish": "node esbuild.config.js --minify"
+    "vscode:prepublish": "node esbuild.config.js --minify",
+    "package": "node esbuild.config.js --minify && npx @vscode/vsce package --no-dependencies --out waterfree.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

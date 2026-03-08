@@ -81,7 +81,7 @@ export interface BacklogSummaryData {
 
 export type SidebarAction =
   | { type: "startSession"; goal: string; persona: string }
-  | { type: "startWizard"; wizardId: string; goal: string; persona: string }
+  | { type: "openWizard"; wizardId: string; goal: string; persona: string }
   | { type: "openTask"; taskId: string }
   | { type: "generateAnnotation"; taskId: string }
   | { type: "showAnnotation"; taskId: string; annotationId?: string }
@@ -229,10 +229,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           });
         }
         return;
-      case "startWizard":
+      case "openWizard":
         if (typeof message.wizardId === "string") {
           this._actionEmitter.fire({
-            type: "startWizard",
+            type: "openWizard",
             wizardId: message.wizardId,
             goal: typeof message.goal === "string" ? message.goal.trim() : "",
             persona: typeof message.persona === "string" ? message.persona : "architect",
@@ -706,7 +706,7 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             stepsHtml,
             '<textarea id="wizard-goal-input" class="wizard-goal" placeholder="Briefly describe your context or idea..."' + (disabled ? " disabled" : "") + ">" + escapeHtml(state.draftWizardGoal) + "</textarea>",
             '<div class="button-row">',
-            '<button type="button" class="primary" data-action="startWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
+            '<button type="button" class="primary" data-action="openWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
             "</div>",
             "</div>",
           ].join("");
@@ -964,11 +964,11 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       }
 
-      if (action === "startWizard") {
+      if (action === "openWizard") {
         if (!state.busyMessage) {
           const wizardId = el.getAttribute("data-wizard-id");
           if (wizardId) {
-            vscode.postMessage({ type: "startWizard", wizardId, goal: state.draftWizardGoal.trim(), persona: state.selectedPersona });
+            vscode.postMessage({ type: "openWizard", wizardId, goal: state.draftWizardGoal.trim(), persona: state.selectedPersona });
           }
         }
         return;

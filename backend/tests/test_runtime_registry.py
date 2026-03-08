@@ -2,6 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
+from backend.llm.providers.deep_agents_runtime import DeepAgentsRuntime
 from backend.llm.runtime_registry import (
     choose_runtime_for_stage,
     create_runtime,
@@ -54,6 +55,15 @@ class RuntimeRegistryTests(unittest.TestCase):
     def test_choose_runtime_for_stage_prefers_ollama_for_knowledge(self) -> None:
         selected = choose_runtime_for_stage(stage="knowledge", workload="knowledge extraction")
         self.assertEqual(selected, "ollama")
+
+    def test_deep_agents_runtime_exposes_wizard_subagents(self) -> None:
+        runtime = DeepAgentsRuntime(workspace_path="c:/repo")
+        ids = {item["id"] for item in runtime.list_subagents()}
+
+        self.assertIn("market_researcher", ids)
+        self.assertIn("bdd_test_designer", ids)
+        self.assertIn("coding_agent", ids)
+        self.assertIn("reviewer", ids)
 
 
 if __name__ == "__main__":

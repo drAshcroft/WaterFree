@@ -58,6 +58,81 @@ export type SubagentInfo = {
   skills: string[];
 };
 
+export type WizardChunkData = {
+  id: string;
+  title: string;
+  required: boolean;
+  guidance?: string;
+  notesSnapshot?: string;
+  draftText?: string;
+  acceptedText?: string;
+  status: "draft" | "accepted";
+  updatedAt?: string;
+};
+
+export type WizardTodoExport = {
+  id: string;
+  stageId: string;
+  title: string;
+  description: string;
+  prompt: string;
+  phase: string;
+  priority: "P0" | "P1" | "P2" | "P3" | "spike";
+  taskType: "impl" | "test" | "spike" | "review" | "refactor";
+  targetCoord: {
+    file: string;
+    class?: string;
+    method?: string;
+    line?: number;
+    anchorType: "create-at" | "modify" | "delete" | "read-only-context";
+  };
+  ownerType: "human" | "agent" | "unassigned";
+  ownerName: string;
+  promotedTaskId?: string | null;
+};
+
+export type WizardStageData = {
+  id: string;
+  kind: string;
+  title: string;
+  persona: string;
+  docPath: string;
+  status: "pending" | "drafted" | "accepted";
+  subsystemName?: string;
+  chunks: WizardChunkData[];
+  todoExports: WizardTodoExport[];
+  summary?: string;
+  questions?: string[];
+  externalResearchPrompt?: string;
+  derivedArtifacts?: Record<string, unknown>;
+  updatedAt?: string;
+};
+
+export type WizardRunData = {
+  id: string;
+  wizardId: string;
+  goal: string;
+  persona: string;
+  workspacePath: string;
+  status: "active" | "coding" | "complete";
+  currentStageId: string;
+  stages: WizardStageData[];
+  derivedTaskIds: Record<string, string>;
+  linkedSessionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WizardResponse = {
+  wizard: WizardRunData | null;
+  openDocPath: string;
+  stageId?: string;
+  chunkId?: string;
+  createdTaskIds?: string[];
+  count?: number;
+  session?: object;
+};
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -289,6 +364,67 @@ export class PythonBridge implements vscode.Disposable {
     workspacePath?: string;
   }): Promise<{ checkpointId?: string; result?: object | null }> {
     return this.request("delegateToSubagent", params);
+  }
+
+  createWizardSession(params: {
+    goal: string;
+    wizardId: string;
+    workspacePath?: string;
+    persona?: string;
+  }): Promise<WizardResponse> {
+    return this.request("createWizardSession", params);
+  }
+
+  getWizardSession(params: { runId?: string; workspacePath?: string } = {}): Promise<WizardResponse> {
+    return this.request("getWizardSession", params);
+  }
+
+  runWizardStep(params: {
+    runId: string;
+    stageId: string;
+    chunkId?: string;
+    revisionNote?: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("runWizardStep", params);
+  }
+
+  acceptWizardChunk(params: {
+    runId: string;
+    stageId: string;
+    chunkId: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("acceptWizardChunk", params);
+  }
+
+  acceptWizardStep(params: {
+    runId: string;
+    stageId: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("acceptWizardStep", params);
+  }
+
+  promoteWizardTodos(params: {
+    runId: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("promoteWizardTodos", params);
+  }
+
+  startWizardCoding(params: {
+    runId: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("startWizardCoding", params);
+  }
+
+  runWizardReview(params: {
+    runId: string;
+    workspacePath?: string;
+  }): Promise<WizardResponse> {
+    return this.request("runWizardReview", params);
   }
 
   // ------------------------------------------------------------------

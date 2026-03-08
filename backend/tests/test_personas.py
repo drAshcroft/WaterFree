@@ -43,6 +43,19 @@ class PersonaPromptTests(unittest.TestCase):
         self.assertIn("TODO: [wf]", execution)
         self.assertNotIn("subsystem-sized roughing tasks", architect)
 
+    def test_wizard_personas_are_registered(self) -> None:
+        self.assertIn("market_researcher", PERSONAS)
+        self.assertIn("bdd_test_designer", PERSONAS)
+        self.assertIn("coding_agent", PERSONAS)
+        self.assertIn("reviewer", PERSONAS)
+
+    def test_market_researcher_and_reviewer_have_stage_prompts(self) -> None:
+        market = build_system_prompt("PLANNING", "market_researcher")
+        reviewer = build_system_prompt("QUESTION_ANSWER", "reviewer")
+
+        self.assertIn("external research", market.lower())
+        self.assertIn("findings", reviewer.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
