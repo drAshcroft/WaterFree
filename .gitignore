@@ -145,3 +145,6 @@ vite.config.ts.timestamp-*
 /.tmp_wizard_manager_tests
 waterfree.vsix
 /.tmp_tool_registry_service_tests
+tmp-array.json
+tmp-object.json
+/tmpHome

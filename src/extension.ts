@@ -35,6 +35,7 @@ import {
 import { WizardCodeLensProvider, type WizardDocContext } from "./ui/WizardCodeLensProvider.js";
 import { QuickActionsProvider } from "./ui/QuickActionsProvider.js";
 import { DecorationRenderer } from "./ui/DecorationRenderer.js";
+import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPanel.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
@@ -98,6 +99,7 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _quickActions: QuickActionsProvider;
   private readonly _decorations: DecorationRenderer;
   private readonly _wizardLenses: WizardCodeLensProvider;
+  private readonly _wizardEditor: WizardEditorPanel;
   private readonly _fileWatcher: FileWatcher;
   private readonly _todoWatcher: TodoWatcher;
   private readonly _liveDebug: LiveDebugCapture;
@@ -122,6 +124,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._quickActions = new QuickActionsProvider();
     this._decorations = new DecorationRenderer();
     this._wizardLenses = new WizardCodeLensProvider();
+    this._wizardEditor = new WizardEditorPanel(context.extensionUri);
     this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
     this._todoWatcher = new TodoWatcher();
     this._liveDebug = new LiveDebugCapture();
@@ -132,6 +135,7 @@ export class WaterFreeController implements vscode.Disposable {
       this._quickActions,
       this._decorations,
       this._wizardLenses,
+      this._wizardEditor,
       this._fileWatcher,
       this._todoWatcher,
       this._liveDebug,
@@ -164,6 +168,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._sidebarProvider.onDidTriggerAction((action) => {
         void this._onSidebarAction(action);
+      }),
+      this._wizardEditor.onDidTriggerAction((action) => {
+        void this._onWizardEditorAction(action);
       }),
     );
 
@@ -611,11 +618,13 @@ export class WaterFreeController implements vscode.Disposable {
       return;
     }
     await this._saveWizardDocument(wizard);
+    const extraContext = this._getWizardDraftContext(wizard);
     this._sidebarProvider.setBusyMessage("Running wizard stage...");
     try {
       const result = await this._bridge.runWizardStep({
         runId: wizard.runId,
         stageId: wizard.stageId,
+        extraContext,
         workspacePath: this._workspacePath,
       });
       await this._handleWizardResponse(result);
@@ -769,12 +778,14 @@ export class WaterFreeController implements vscode.Disposable {
       return;
     }
     await this._saveWizardDocument(wizard);
+    const extraContext = this._getWizardDraftContext(wizard);
     this._sidebarProvider.setBusyMessage("Getting clarifying questions...");
     try {
       const result = await this._bridge.runWizardStep({
         runId: wizard.runId,
         stageId: wizard.stageId,
         mode: "clarify",
+        extraContext,
         workspacePath: this._workspacePath,
       });
       await this._handleWizardResponse(result);
@@ -1053,11 +1064,17 @@ export class WaterFreeController implements vscode.Disposable {
     }
 
     const editor = vscode.window.activeTextEditor;
-    if (!editor || !isWizardDoc(editor.document)) {
-      void vscode.window.showWarningMessage("Open a WaterFree wizard markdown document first.");
-      return null;
+    if (editor && isWizardDoc(editor.document)) {
+      return parseWizardDocContextFromDocument(editor.document);
     }
-    return parseWizardDocContextFromDocument(editor.document);
+
+    const panelContext = this._wizardEditor.currentContext();
+    if (panelContext) {
+      return panelContext;
+    }
+
+    void vscode.window.showWarningMessage("Open a WaterFree wizard document first.");
+    return null;
   }
 
   private async _saveWizardDocument(ctx: WizardDocContext): Promise<void> {
@@ -1074,11 +1091,22 @@ export class WaterFreeController implements vscode.Disposable {
     }
   }
 
+  private _getWizardDraftContext(ctx: WizardDocContext): string {
+    const draft = this._wizardEditor.currentDraftForContext(ctx);
+    return draft?.trim() ?? "";
+  }
+
   private async _handleWizardResponse(result: WizardResponse, focusDocument = true): Promise<void> {
     if (result.session && typeof result.session === "object") {
       const session = result.session as PlanData;
       this._sessionId = session.id;
       this._onPlanReceived(session);
+    }
+
+    if (result.wizard?.wizardId === "bring_idea_to_life") {
+      await this._wizardEditor.showResponse(result);
+      this._updateWizardEditorContext(vscode.window.activeTextEditor);
+      return;
     }
 
     if (focusDocument && result.openDocPath) {
@@ -1095,8 +1123,29 @@ export class WaterFreeController implements vscode.Disposable {
   }
 
   private _updateWizardEditorContext(editor: vscode.TextEditor | undefined): void {
-    const active = Boolean(editor && (isWizardDocPath(editor.document.uri.fsPath) || isWizardDoc(editor.document)));
+    const active = Boolean(
+      this._wizardEditor.currentContext()
+      || (editor && (isWizardDocPath(editor.document.uri.fsPath) || isWizardDoc(editor.document))),
+    );
     void vscode.commands.executeCommand("setContext", "waterfree.wizardDocActive", active);
+  }
+
+  private async _onWizardEditorAction(action: WizardEditorAction): Promise<void> {
+    this._sidebarProvider.setBusyMessage(action.type === "submit" ? "Running wizard stage..." : "Getting clarifying questions...");
+    try {
+      const result = await this._bridge.runWizardStep({
+        runId: action.context.runId,
+        stageId: action.context.stageId,
+        mode: action.type === "refine" ? "clarify" : undefined,
+        extraContext: action.body,
+        workspacePath: this._workspacePath,
+      });
+      await this._handleWizardResponse(result, false);
+    } catch (err) {
+      this._handleError(action.type === "submit" ? "Run wizard stage failed" : "Refine idea failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
   }
 
   private async _runSnippetizeProcedure(name: string, focus: string): Promise<void> {

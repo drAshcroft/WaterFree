@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{STYLE_URI}}">
+  <title>WaterFree Wizard</title>
+</head>
+<body>
+  <main class="editor-shell">
+    <article class="document">
+      <header class="document-header">
+        <h2 class="chunk-title" id="chunk-title"></h2>
+        <p class="guidance" id="guidance"></p>
+      </header>
+
+      <section class="document-body">
+        <div
+          id="body"
+          class="body-editor"
+          contenteditable="true"
+          role="textbox"
+          aria-multiline="true"
+          aria-label="Wizard editor"
+          data-placeholder="Describe the software idea, problem you want to solve or frustration in plain language."
+        ></div>
+      </section>
+
+      <section class="clarifications" id="clarifications" hidden>
+        <div id="questions"></div>
+      </section>
+
+      <footer class="document-footer">
+        <div class="separator">
+          <span class="separator-line"></span>
+          <span class="separator-label">Unresolved</span>
+          <span class="separator-line"></span>
+        </div>
+        <div class="actions">
+          <button id="refine" class="secondary" type="button">Refine</button>
+          <button id="submit" class="primary" type="button">Submit</button>
+        </div>
+      </footer>
+    </article>
+  </main>
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

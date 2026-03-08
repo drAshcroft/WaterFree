@@ -13,7 +13,9 @@ if TYPE_CHECKING:
 
 _FRONTMATTER_BOUNDARY = "---"
 _FRONTMATTER_RE = re.compile(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?", re.DOTALL)
-_INITIAL_MARKET_RESEARCH_TITLE = "What is your idea? (describe in detail)"
+_INITIAL_MARKET_RESEARCH_TITLE = "What is the idea?"
+_INITIAL_MARKET_RESEARCH_GUIDANCE = "Describe the software idea, problem you want to solve or frustration in plain language."
+_UNRESOLVED_SEPARATOR = "======================================== Unresolved ========================================"
 
 
 def render_frontmatter(values: dict[str, str]) -> str:
@@ -150,36 +152,34 @@ class DocumentRenderer:
         return "\n".join(sections).rstrip() + "\n"
 
     def _render_market_research_doc(self, run: WizardRun, stage: WizardStageState) -> str:
-        sections = [
-            render_frontmatter(
-                {
-                    "waterfreeWizard": "true",
-                    "wizardId": run.wizard_id,
-                    "runId": run.id,
-                    "stageId": stage.id,
-                    "stageKind": stage.kind,
-                    "title": stage.title,
-                }
-            ),
-        ]
-
         if self._is_initial_market_research_doc(stage):
             idea_chunk = stage.get_chunk("initial_goal")
+            sections = [
+                f"## {_INITIAL_MARKET_RESEARCH_TITLE}",
+                f"#  {_INITIAL_MARKET_RESEARCH_GUIDANCE}",
+                "",
+                "",
+            ]
+            if idea_chunk:
+                body = self._market_research_chunk_content(idea_chunk)
+                if body:
+                    sections.extend([
+                        body,
+                        "",
+                        "",
+                    ])
+                else:
+                    sections.extend(["", "", ""])
             sections.extend([
-                f"# {_INITIAL_MARKET_RESEARCH_TITLE}",
+                _UNRESOLVED_SEPARATOR,
                 "",
             ])
-            if idea_chunk and idea_chunk.notes_snapshot.strip():
-                sections.extend([
-                    idea_chunk.notes_snapshot.strip(),
-                    "",
-                ])
             return "\n".join(sections).rstrip() + "\n"
 
-        sections.extend([
+        sections = [
             "# Market Research",
             "",
-        ])
+        ]
 
         for chunk in self._visible_chunks(stage):
             sections.extend([
@@ -277,12 +277,9 @@ class DocumentRenderer:
         if not body:
             return {}
 
-        if "## " not in body:
-            match = re.match(rf"^#\s+{re.escape(_INITIAL_MARKET_RESEARCH_TITLE)}\s*(.*)$", body, re.DOTALL)
-            if not match:
-                return {}
-            idea_text = match.group(1).strip()
-            return {"initial_goal": idea_text} if idea_text else {}
+        initial_notes = self._extract_initial_market_research_notes(body)
+        if initial_notes is not None:
+            return {"initial_goal": initial_notes} if initial_notes else {}
 
         title_to_chunk_id = {
             chunk.title.strip().lower(): chunk.id
@@ -302,3 +299,22 @@ class DocumentRenderer:
             if section_body:
                 notes[chunk_id] = section_body
         return notes
+
+    def _extract_initial_market_research_notes(self, body: str) -> str | None:
+        initial_heading = f"## {_INITIAL_MARKET_RESEARCH_TITLE}"
+        if not body.startswith(initial_heading):
+            return None
+
+        content = body[len(initial_heading):].lstrip()
+        guidance_line = f"#  {_INITIAL_MARKET_RESEARCH_GUIDANCE}"
+        if content.startswith(guidance_line):
+            content = content[len(guidance_line):].lstrip()
+        elif content.startswith(f"# {_INITIAL_MARKET_RESEARCH_GUIDANCE}"):
+            content = content[len(f'# {_INITIAL_MARKET_RESEARCH_GUIDANCE}'):].lstrip()
+
+        if _UNRESOLVED_SEPARATOR in content:
+            before, after = content.split(_UNRESOLVED_SEPARATOR, 1)
+            before_text = before.strip()
+            after_text = after.strip()
+            return before_text or after_text
+        return content.strip()

@@ -1,0 +1,148 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--vscode-editor-background);
+  --fg: var(--vscode-editor-foreground);
+  --muted: var(--vscode-descriptionForeground);
+  --border: color-mix(in srgb, var(--vscode-panel-border) 55%, transparent);
+  --button-bg: var(--vscode-button-background);
+  --button-fg: var(--vscode-button-foreground);
+  --button-secondary-bg: var(--vscode-button-secondaryBackground);
+  --button-secondary-fg: var(--vscode-button-secondaryForeground);
+  --question-bg: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, var(--vscode-editor-background));
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  font: 14px/1.6 var(--vscode-editor-font-family, Consolas, monospace);
+}
+
+.editor-shell {
+  min-height: 100vh;
+  padding: 0;
+}
+
+.document {
+  max-width: 980px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px 36px 40px;
+}
+
+.document-header {
+  margin-bottom: 18px;
+}
+
+.chunk-title {
+  margin: 0 0 8px;
+  font: 600 26px/1.2 var(--vscode-editor-font-family, Consolas, monospace);
+  white-space: pre-wrap;
+}
+
+.chunk-title::before {
+  content: "## ";
+  color: var(--muted);
+}
+
+.guidance {
+  margin: 0;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+
+.guidance::before {
+  content: "# ";
+  color: var(--muted);
+}
+
+.document-body {
+  margin-top: 18px;
+}
+
+.body-editor {
+  min-height: 320px;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  caret-color: var(--fg);
+  font: 15px/1.8 var(--vscode-editor-font-family, Consolas, monospace);
+}
+
+.body-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+}
+
+.clarifications {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-left: 2px solid var(--border);
+  background: var(--question-bg);
+}
+
+.question {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+}
+
+.question:last-child {
+  margin-bottom: 0;
+}
+
+.document-footer {
+  margin-top: 26px;
+}
+
+.separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.separator-line {
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.separator-label {
+  font: 600 12px/1 var(--vscode-editor-font-family, Consolas, monospace);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+button {
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font: 13px/1.2 var(--vscode-font-family);
+}
+
+button.primary {
+  background: var(--button-bg);
+  color: var(--button-fg);
+}
+
+button.secondary {
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-fg);
+}

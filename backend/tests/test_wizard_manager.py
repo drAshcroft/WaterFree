@@ -68,9 +68,12 @@ class WizardManagerTests(unittest.TestCase):
         self.assertTrue(market_doc.exists())
         self.assertEqual(created.current_stage_id, "market_research")
         content = market_doc.read_text(encoding="utf-8")
-        self.assertIn("# What is your idea? (describe in detail)", content)
+        self.assertIn("## What is the idea?", content)
+        self.assertIn("#  Describe the software idea, problem you want to solve or frustration in plain language.", content)
+        self.assertIn("======================================== Unresolved ========================================", content)
         self.assertNotIn("Stage Status:", content)
         self.assertNotIn("## Similar Ideas and Niches", content)
+        self.assertNotIn("waterfreeWizard:", content)
 
     def test_market_research_requires_idea_and_reveals_chunks_after_run(self) -> None:
         workspace = self.make_workspace()

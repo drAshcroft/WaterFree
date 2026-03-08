@@ -49,10 +49,10 @@ $McpServers = @(
 )
 
 $LegacyMcpServerNames = @(
-    "waterfree-debug",
-    "waterfree-index",
-    "waterfree-knowledge",
-    "waterfree-todos"
+    "pairprogram-debug",
+    "pairprogram-index",
+    "pairprogram-knowledge",
+    "pairprogram-todos"
 )
 
 function Write-Step([string]$Message) {
@@ -83,6 +83,65 @@ function New-McpEntry([string]$Module) {
     }
 }
 
+function ConvertTo-McpServerMap($Value) {
+    $map = [ordered]@{}
+    if ($null -eq $Value) {
+        return $map
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string] -and $Value.PSObject.Properties.Name -notcontains "Name") {
+        foreach ($item in @($Value)) {
+            if ($null -eq $item) {
+                continue
+            }
+            $nameProperty = $item.PSObject.Properties["name"]
+            if ($null -eq $nameProperty) {
+                continue
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+                continue
+            }
+
+            $name = [string]$nameProperty.Value
+            $entry = [ordered]@{}
+            foreach ($prop in $item.PSObject.Properties) {
+                if ($prop.Name -eq "name") {
+                    continue
+                }
+                $entry[$prop.Name] = $prop.Value
+            }
+            $map[$name] = $entry
+        }
+        return $map
+    }
+
+    foreach ($prop in $Value.PSObject.Properties) {
+        $map[$prop.Name] = $prop.Value
+    }
+    return $map
+}
+
+function ConvertFrom-McpServerMap($Map, [bool]$AsArray) {
+    if ($AsArray) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($name in $Map.Keys) {
+            $entry = [ordered]@{ name = $name }
+            $value = $Map[$name]
+            foreach ($prop in $value.PSObject.Properties) {
+                $entry[$prop.Name] = $prop.Value
+            }
+            $items.Add([PSCustomObject]$entry)
+        }
+        return @($items.ToArray())
+    }
+
+    $obj = [PSCustomObject]@{}
+    foreach ($name in $Map.Keys) {
+        $obj | Add-Member -MemberType NoteProperty -Name $name -Value $Map[$name]
+    }
+    return $obj
+}
+
 function Merge-JsonMcpConfig([string]$ConfigPath) {
     $config = if (Test-Path $ConfigPath) {
         Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -90,25 +149,34 @@ function Merge-JsonMcpConfig([string]$ConfigPath) {
         [PSCustomObject]@{}
     }
 
-    if (-not ($config.PSObject.Properties.Name -contains "mcpServers")) {
-        $config | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([PSCustomObject]@{})
+    $existingMcpServers = if ($config.PSObject.Properties.Name -contains "mcpServers") {
+        $config.mcpServers
+    } else {
+        $null
     }
+    $mcpServersAsArray = $existingMcpServers -is [System.Collections.IEnumerable] -and
+        $existingMcpServers -isnot [string] -and
+        $existingMcpServers.PSObject.Properties.Name -notcontains "Name"
+    $mcpServerMap = ConvertTo-McpServerMap -Value $existingMcpServers
 
     foreach ($legacyName in $LegacyMcpServerNames) {
-        if ($config.mcpServers.PSObject.Properties.Name -contains $legacyName) {
-            $config.mcpServers.PSObject.Properties.Remove($legacyName)
+        if ($mcpServerMap.Contains($legacyName)) {
+            $mcpServerMap.Remove($legacyName)
             Write-Host "    Removed legacy $legacyName"
         }
     }
 
     foreach ($server in $McpServers) {
         $entry = New-McpEntry -Module $server.module
-        if ($config.mcpServers.PSObject.Properties.Name -contains $server.name) {
-            $config.mcpServers.($server.name) = $entry
-        } else {
-            $config.mcpServers | Add-Member -MemberType NoteProperty -Name $server.name -Value $entry
-        }
+        $mcpServerMap[$server.name] = [PSCustomObject]$entry
         Write-Host "    Registered $($server.name)"
+    }
+
+    $normalizedMcpServers = ConvertFrom-McpServerMap -Map $mcpServerMap -AsArray:$mcpServersAsArray
+    if ($config.PSObject.Properties.Name -contains "mcpServers") {
+        $config.mcpServers = $normalizedMcpServers
+    } else {
+        $config | Add-Member -MemberType NoteProperty -Name mcpServers -Value $normalizedMcpServers
     }
 
     $dir = Split-Path $ConfigPath -Parent
@@ -123,7 +191,11 @@ function Remove-WaterFreeYamlBlocks([string[]]$Lines) {
     $result = New-Object System.Collections.Generic.List[string]
     $skipping = $false
     foreach ($line in $Lines) {
-        if ($line -match '^\s*-\s+name:\s+(waterfree-|waterfree-)') {
+        if ($line -match '^\s*mcp_servers:\s*-\s+name:\s+') {
+            continue
+        }
+
+        if ($line -match '^\s*-\s+name:\s+(waterfree-|pairprogram-)') {
             $skipping = $true
             continue
         }
@@ -142,8 +214,9 @@ function Remove-WaterFreeYamlBlocks([string[]]$Lines) {
 }
 
 function Merge-YamlMcpConfig([string]$ConfigPath) {
-    $lines = if (Test-Path $ConfigPath) { Get-Content $ConfigPath } else { @() }
-    $lines = Remove-WaterFreeYamlBlocks -Lines $lines
+    $rawContent = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw } else { "" }
+    $lines = if ($rawContent) { @($rawContent -split "`r?`n") } else { @() }
+    $lines = @(Remove-WaterFreeYamlBlocks -Lines $lines)
 
     $output = New-Object System.Collections.Generic.List[string]
     $inserted = $false
@@ -259,7 +332,6 @@ switch ($Target) {
         Deploy-Local
         Deploy-Claude
         Deploy-Codex
-        Deploy-Kilo
     }
 }
 
