@@ -35,15 +35,12 @@ Returned value
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from typing import Optional
-
-import anthropic
 
 from backend.knowledge.models import KnowledgeEntry
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.runtime import AgentRuntime
 
 log = logging.getLogger(__name__)
 
@@ -58,60 +55,16 @@ _SINGLE_BODY_MAX_CHARS  = 8_000   # hard truncate
 _DEFAULT_MAX_DEPTH = 3
 _HARD_MAX_DEPTH = 5
 
-# ── LLM schema ───────────────────────────────────────────────────────────────
-_SUMMARIZE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "keep": {
-            "type": "boolean",
-            "description": "true if this procedure is worth storing as reusable knowledge",
-        },
-        "snippet_type": {
-            "type": "string",
-            "enum": ["pattern", "utility", "style", "api_usage", "convention"],
-        },
-        "title": {
-            "type": "string",
-            "description": "Short, searchable title — max 10 words",
-        },
-        "description": {
-            "type": "string",
-            "description": (
-                "4-6 sentence description: what the procedure does, what data flows "
-                "through it, its key dependencies, and why/when a developer would "
-                "reuse this pattern in another project."
-            ),
-        },
-        "tags": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "4-8 lowercase tags: language, framework, domain, concept, pattern-name",
-        },
-    },
-    "required": ["keep", "snippet_type", "title", "description", "tags"],
-}
-
-_SYSTEM_PROMPT = """\
-You are a code knowledge curator specialising in deep procedure analysis.
-You receive a procedure's source code along with its call chain (fetched from \
-a code graph) and any related data structures. Your job is to write a \
-comprehensive, searchable summary that captures not just what the procedure \
-does but how it does it — the data flow, the key dependencies, and the \
-transferable technique.
-
-If the call chain was truncated due to token limits, work with what was \
-provided and note the limitation in your description.\
-"""
-
-
 # ── Public entry point ───────────────────────────────────────────────────────
 
 def extract_procedure(
     graph,                    # GraphClient — passed in from server to avoid circular import
     store: KnowledgeStore,
+    runtime: AgentRuntime,
     name: str,
     source_repo: str,
     focus: str = "",
+    workspace_path: str = "",
     max_depth: int = _DEFAULT_MAX_DEPTH,
 ) -> dict:
     """
@@ -242,7 +195,7 @@ def extract_procedure(
     )
 
     # ── 6. LLM summarization ────────────────────────────────────────────────
-    llm_result = _call_llm(context, focus)
+    llm_result = _call_llm(runtime, context, focus, workspace_path)
     if not llm_result.get("keep"):
         log.info("extract_procedure: LLM marked '%s' as not worth keeping", name)
         return {
@@ -431,39 +384,17 @@ def _assemble_context(
     return "\n".join(parts)
 
 
-def _call_llm(context: str, focus: str) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    client = anthropic.Anthropic(api_key=api_key)
-
-    focus_line = f"\nUser focus: {focus}" if focus else ""
-    user_msg = (
-        f"Analyse this procedure and its call chain, then describe it as a knowledge entry.{focus_line}\n\n"
-        f"{context}"
+def _call_llm(
+    runtime: AgentRuntime,
+    context: str,
+    focus: str,
+    workspace_path: str,
+) -> dict:
+    return runtime.summarize_procedure_knowledge(
+        context=context,
+        focus=focus,
+        workspace_path=workspace_path,
     )
-
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        temperature=0.1,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-        tools=[
-            {
-                "name": "submit_procedure_knowledge",
-                "description": "Submit a knowledge entry for this procedure",
-                "input_schema": _SUMMARIZE_SCHEMA,
-            }
-        ],
-        tool_choice={"type": "tool", "name": "submit_procedure_knowledge"},
-    )
-
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_procedure_knowledge":
-            inp = block.input
-            if isinstance(inp, str):
-                return json.loads(inp)
-            return inp if isinstance(inp, dict) else {}
-    return {}
 
 
 def _not_found(name: str, warnings: list[str]) -> dict:

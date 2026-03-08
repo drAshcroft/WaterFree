@@ -19,6 +19,7 @@ from typing import Callable, Optional
 
 from backend.knowledge.extractor import KnowledgeExtractor
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.runtime_registry import choose_runtime_for_stage, create_runtime
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ _REPOS_DIR = Path.home() / ".waterfree" / "global" / "repos"
 def import_repo(
     source: str,
     store: KnowledgeStore,
+    runtime=None,
     focus: str = "",
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
@@ -63,11 +65,18 @@ def import_repo(
         if progress_cb:
             progress_cb(done, total)
 
+    active_runtime = runtime or create_runtime(
+        runtime_name=choose_runtime_for_stage(stage="knowledge", workload="knowledge extraction"),
+        workspace_path=local_path,
+    )
+
     extractor = KnowledgeExtractor(
         store=store,
+        runtime=active_runtime,
         source_repo=repo_name,
         source_repo_url=remote_url,
         focus=focus,
+        workspace_path=local_path,
         progress_cb=wrapped_progress,
     )
 

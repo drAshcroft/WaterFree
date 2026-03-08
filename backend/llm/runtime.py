@@ -78,6 +78,35 @@ class AgentRuntime(Protocol):
     def resume(self, checkpoint_id: str, decision: dict) -> dict:
         ...
 
+    def triage_knowledge_symbols(
+        self,
+        *,
+        source_repo: str,
+        focus: str,
+        batch: list[dict],
+        workspace_path: str = "",
+    ) -> list[int]:
+        ...
+
+    def describe_knowledge_batch(
+        self,
+        *,
+        source_repo: str,
+        focus: str,
+        batch: list[dict],
+        workspace_path: str = "",
+    ) -> list[dict]:
+        ...
+
+    def summarize_procedure_knowledge(
+        self,
+        *,
+        context: str,
+        focus: str = "",
+        workspace_path: str = "",
+    ) -> dict:
+        ...
+
     def run_wizard_stage(
         self,
         *,

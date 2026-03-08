@@ -88,6 +88,7 @@ from backend.llm.context_builder import ContextBuilder
 from backend.llm.context_lifecycle import ContextLifecycleManager
 from backend.llm.runtime import AgentRuntime
 from backend.llm.runtime_registry import (
+    choose_runtime_for_stage,
     create_runtime,
     list_runtime_descriptors,
     resolve_runtime_name,
@@ -128,6 +129,16 @@ class Server:
             )
             self._runtime = runtime
         return runtime
+
+    def _get_runtime_for_stage(self, workspace_path: str, *, stage: str, workload: str = "") -> AgentRuntime:
+        runtime_name = choose_runtime_for_stage(stage=stage, workload=workload)
+        return create_runtime(
+            runtime_name=runtime_name,
+            graph=self._graph,
+            knowledge_store=self._knowledge_store,
+            task_store_factory=self._get_task_store,
+            workspace_path=workspace_path,
+        )
 
     def _get_knowledge_store(self) -> KnowledgeStore:
         if not self._knowledge_store:
@@ -1018,10 +1029,18 @@ class Server:
         def progress(done: int, tot: int) -> None:
             _write_notification("indexProgress", {"done": done, "total": tot, "phase": "knowledge"})
 
+        runtime = self._get_runtime_for_stage(
+            workspace_path,
+            stage="knowledge",
+            workload="knowledge extraction",
+        )
+
         extractor = KnowledgeExtractor(
             store=store,
+            runtime=runtime,
             source_repo=repo_name,
             focus=focus,
+            workspace_path=workspace_path,
             progress_cb=progress,
         )
         added = extractor.extract_from_symbols(symbols)
@@ -1050,7 +1069,12 @@ class Server:
         def progress(done: int, total: int) -> None:
             _write_notification("indexProgress", {"done": done, "total": total, "phase": "knowledge"})
 
-        result = import_repo(source, store, focus=focus, progress_cb=progress)
+        runtime = self._get_runtime_for_stage(
+            source if os.path.isdir(source) else workspace_path_from_source(source),
+            stage="knowledge",
+            workload="knowledge extraction",
+        )
+        result = import_repo(source, store, runtime=runtime, focus=focus, progress_cb=progress)
         log.info("addKnowledgeRepo: %s", result)
         return result
 
@@ -1100,13 +1124,20 @@ class Server:
 
         source_repo = os.path.basename(os.path.abspath(workspace_path))
         store = self._get_knowledge_store()
+        runtime = self._get_runtime_for_stage(
+            workspace_path,
+            stage="knowledge",
+            workload="procedure extraction",
+        )
 
         result = extract_procedure(
             graph=self._graph,
             store=store,
+            runtime=runtime,
             name=name,
             source_repo=source_repo,
             focus=focus,
+            workspace_path=workspace_path,
             max_depth=max_depth,
         )
         log.info(
@@ -1279,6 +1310,12 @@ def _diagnostic_location(diagnostic: dict) -> str:
     if line:
         return f"line {line}"
     return ""
+
+
+def workspace_path_from_source(source: str) -> str:
+    if os.path.isdir(source):
+        return os.path.abspath(source)
+    return os.getcwd()
 
 
 def _error(req_id: Any, code: int, message: str) -> dict:

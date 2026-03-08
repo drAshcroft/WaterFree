@@ -342,6 +342,113 @@ class DeepAgentsRuntime:
             "questions": list(payload.get("questions", [])),
         }
 
+    def triage_knowledge_symbols(
+        self,
+        *,
+        source_repo: str,
+        focus: str,
+        batch: list[dict],
+        workspace_path: str = "",
+    ) -> list[int]:
+        focus_clause = (
+            f"The user specifically wants knowledge about: {focus.strip()}"
+            if focus.strip()
+            else "Apply general judgement — keep broadly reusable content."
+        )
+        index_lines = []
+        for i, sym in enumerate(batch):
+            body = (sym.get("body") or sym.get("source") or "").strip()
+            signature = body.split("\n")[0][:120]
+            label = sym.get("label", "fn")
+            name = sym.get("name", f"symbol_{i}")
+            file_path = sym.get("file_path", "")
+            index_lines.append(f"[{i}] {label} `{name}` — {file_path}\n    {signature}")
+
+        prompt = (
+            'Return JSON only with shape: {"selected":[0]}\n\n'
+            "You are a code knowledge curator. Identify which symbols are worth fetching full source code for.\n"
+            f"{focus_clause}\n\n"
+            f"Symbol index from '{source_repo}' ({len(batch)} symbols):\n\n"
+            f"{chr(10).join(index_lines)}\n\n"
+            "Be selective and prefer reusable patterns, utilities, conventions, and non-obvious API usage."
+        )
+        payload = self._run_deepagents_structured(
+            stage="PLANNING",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona="pattern_expert",
+        )
+        selected = payload.get("selected", []) if isinstance(payload, dict) else []
+        return [
+            int(index)
+            for index in selected
+            if isinstance(index, (int, float)) and 0 <= int(index) < len(batch)
+        ]
+
+    def describe_knowledge_batch(
+        self,
+        *,
+        source_repo: str,
+        focus: str,
+        batch: list[dict],
+        workspace_path: str = "",
+    ) -> list[dict]:
+        focus_clause = (
+            f"The user specifically wants knowledge about: {focus.strip()}"
+            if focus.strip()
+            else "Apply general judgement — keep broadly reusable content."
+        )
+        snippets: list[str] = []
+        for i, symbol in enumerate(batch):
+            body = (symbol.get("body") or symbol.get("source") or "").strip()
+            if len(body) > 900:
+                body = body[:900] + "\n... (truncated)"
+            label = symbol.get("label", "function")
+            name = symbol.get("name", f"symbol_{i}")
+            file_path = symbol.get("file_path", "")
+            snippets.append(f"--- [{i}] {label}: {name} ({file_path}) ---\n{body}")
+
+        prompt = (
+            "Return JSON only with shape: "
+            '{"entries":[{"index":0,"keep":true,"snippet_type":"pattern","title":"","description":"","tags":[]}]}\n\n'
+            "You are a code knowledge curator. For each snippet, decide whether it belongs in a reusable knowledge base.\n"
+            f"{focus_clause}\n\n"
+            f"Describe these {len(batch)} pre-selected snippets from '{source_repo}'.\n\n"
+            f"{chr(10).join(snippets)}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="PLANNING",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona="pattern_expert",
+        )
+        entries = payload.get("entries", []) if isinstance(payload, dict) else []
+        return [item for item in entries if isinstance(item, dict)]
+
+    def summarize_procedure_knowledge(
+        self,
+        *,
+        context: str,
+        focus: str = "",
+        workspace_path: str = "",
+    ) -> dict:
+        focus_line = f"User focus: {focus.strip()}\n\n" if focus.strip() else ""
+        prompt = (
+            "Return JSON only with shape: "
+            '{"keep":true,"snippet_type":"pattern","title":"","description":"","tags":[]}\n\n'
+            "You are a code knowledge curator specialising in deep procedure analysis.\n"
+            f"{focus_line}"
+            "Summarize the procedure, its call chain, and the reusable technique.\n\n"
+            f"{context}"
+        )
+        payload = self._run_deepagents_structured(
+            stage="PLANNING",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona="pattern_expert",
+        )
+        return payload if isinstance(payload, dict) else {}
+
     def run_wizard_stage(
         self,
         *,
