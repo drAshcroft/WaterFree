@@ -16,7 +16,12 @@ if "anthropic" not in sys.modules:
         types=types.SimpleNamespace(Message=object),
     )
 
-from backend.llm.runtime_registry import create_runtime, resolve_runtime_name
+from backend.llm.runtime_registry import (
+    choose_runtime_for_stage,
+    create_runtime,
+    resolve_runtime_name,
+)
+from backend.llm.runtime_registry import list_runtime_descriptors
 
 
 class RuntimeRegistryTests(unittest.TestCase):
@@ -39,8 +44,35 @@ class RuntimeRegistryTests(unittest.TestCase):
         runtime_cls.assert_called_once()
 
     def test_create_runtime_rejects_unimplemented_runtime(self) -> None:
-        with self.assertRaises(NotImplementedError):
-            create_runtime(runtime_name="ollama")
+        with patch("backend.llm.runtime_registry.OllamaRuntime", return_value=object()) as runtime_cls:
+            runtime = create_runtime(runtime_name="ollama")
+        self.assertIsNotNone(runtime)
+        runtime_cls.assert_called_once()
+
+    def test_create_runtime_builds_deep_agents_runtime(self) -> None:
+        sentinel = object()
+        with patch("backend.llm.runtime_registry.DeepAgentsRuntime", return_value=sentinel) as runtime_cls:
+            runtime = create_runtime(runtime_name="deep_agents", workspace_path="c:/repo")
+        self.assertIs(runtime, sentinel)
+        runtime_cls.assert_called_once()
+
+    def test_create_runtime_builds_openai_runtime(self) -> None:
+        sentinel = object()
+        with patch("backend.llm.runtime_registry.OpenAIRuntime", return_value=sentinel) as runtime_cls:
+            runtime = create_runtime(runtime_name="openai")
+        self.assertIs(runtime, sentinel)
+        runtime_cls.assert_called_once()
+
+    def test_list_runtime_descriptors_exposes_all_lanes(self) -> None:
+        ids = {item.id for item in list_runtime_descriptors()}
+        self.assertIn("anthropic", ids)
+        self.assertIn("deep_agents", ids)
+        self.assertIn("ollama", ids)
+        self.assertIn("openai", ids)
+
+    def test_choose_runtime_for_stage_prefers_ollama_for_knowledge(self) -> None:
+        selected = choose_runtime_for_stage(stage="knowledge", workload="knowledge extraction")
+        self.assertEqual(selected, "ollama")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,45 @@ import { PairLoggerLike } from "../logging/PairLogger.js";
 
 export type NotificationHandler = (params: unknown) => void;
 
+export type RuntimeInfo = {
+  id: string;
+  label: string;
+  provider: "anthropic" | "ollama" | "openai" | "deep_agents" | "custom";
+  local: boolean;
+  supportsTools: boolean;
+  supportsSkills: boolean;
+  supportsCheckpoints: boolean;
+};
+
+export type SkillInfo = {
+  id: string;
+  title: string;
+  description: string;
+  path: string;
+  appliesTo: string[];
+  hasScripts: boolean;
+  hasReferences: boolean;
+};
+
+export type CheckpointInfo = {
+  id: string;
+  sessionId: string;
+  reason: string;
+  createdAt: string;
+  runtimeId: string;
+  subagentId?: string;
+  requiresApproval: boolean;
+  summary: string;
+  touchedFiles: string[];
+  toolCalls: Array<{ serverId: string; toolName: string }>;
+};
+
+export type SubagentInfo = {
+  id: string;
+  label: string;
+  skills: string[];
+};
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -195,6 +234,61 @@ export class PythonBridge implements vscode.Disposable {
       );
       this._notificationHandlers.set(method, updated);
     });
+  }
+
+  listRuntimes(): Promise<{ runtimes: RuntimeInfo[] }> {
+    return this.request("listRuntimes", {});
+  }
+
+  getActiveRuntime(): Promise<{ runtimeId: string }> {
+    return this.request("getActiveRuntime", {});
+  }
+
+  setActiveRuntime(runtimeId: string): Promise<{ ok: boolean; runtimeId: string }> {
+    return this.request("setActiveRuntime", { runtimeId });
+  }
+
+  listSkills(params: { persona?: string; stage?: string } = {}): Promise<{ skills: SkillInfo[] }> {
+    return this.request("listSkills", params);
+  }
+
+  reloadSkills(): Promise<{ ok: boolean; count: number }> {
+    return this.request("reloadSkills", {});
+  }
+
+  getSkillDetail(skillId: string): Promise<{ markdown: string; references: string[]; scripts: string[] }> {
+    return this.request("getSkillDetail", { skillId });
+  }
+
+  listCheckpoints(
+    params: { sessionId?: string; workspacePath?: string } = {},
+  ): Promise<{ checkpoints: CheckpointInfo[] }> {
+    return this.request("listCheckpoints", params);
+  }
+
+  resumeCheckpoint(
+    checkpointId: string,
+    decision: Record<string, unknown>,
+  ): Promise<{ ok: boolean; checkpoint: CheckpointInfo }> {
+    return this.request("resumeCheckpoint", { checkpointId, decision });
+  }
+
+  discardCheckpoint(checkpointId: string): Promise<{ ok: boolean; checkpointId: string }> {
+    return this.request("discardCheckpoint", { checkpointId });
+  }
+
+  listSubagents(): Promise<{ subagents: SubagentInfo[] }> {
+    return this.request("listSubagents", {});
+  }
+
+  delegateToSubagent(params: {
+    sessionId: string;
+    subagentId: string;
+    taskId: string;
+    prompt: string;
+    workspacePath?: string;
+  }): Promise<{ checkpointId?: string; result?: object | null }> {
+    return this.request("delegateToSubagent", params);
   }
 
   // ------------------------------------------------------------------

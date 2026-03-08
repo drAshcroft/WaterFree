@@ -22,6 +22,7 @@ from backend.session.models import (
     Task,
     TaskPriority,
 )
+from backend.llm.tools import build_default_tool_registry
 from backend.todo.store import TaskStore
 from backend.llm import prompt_templates
 from backend.llm.prompt_templates import build_system_prompt
@@ -154,6 +155,12 @@ class ClaudeClient:
         self._knowledge_store = knowledge_store
         self._task_store_factory = task_store_factory or (lambda workspace_path: TaskStore(workspace_path))
         self._task_stores: dict[str, TaskStore] = {}
+        self._tool_registry = build_default_tool_registry(
+            graph=self._graph,
+            task_store_factory=self._task_store_factory,
+            knowledge_store_factory=self._get_knowledge_store,
+            enable_optional_web_tools=False,
+        )
 
     def generate_plan(
         self,
@@ -835,6 +842,9 @@ class ClaudeClient:
         ]
 
     def _host_tools(self) -> list[dict]:
+        registry = getattr(self, "_tool_registry", None)
+        if registry is not None:
+            return registry.anthropic_tools(include_optional=False)
         return [*self._graph_tools(), *self._task_tools(), *self._knowledge_tools()]
 
     def _ensure_graph_workspace(self, workspace_path: str) -> None:
@@ -859,6 +869,12 @@ class ClaudeClient:
         return self._knowledge_store
 
     def _execute_host_tool(self, name: str, tool_input: dict, workspace_path: str) -> dict:
+        registry = getattr(self, "_tool_registry", None)
+        if registry is not None:
+            result = registry.invoke(name, dict(tool_input), workspace_path)
+            if not (isinstance(result, dict) and result.get("error") == f"Unsupported tool: {name}"):
+                return result
+
         if name in {
             "index_repository",
             "list_projects",

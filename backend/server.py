@@ -87,7 +87,11 @@ from backend.knowledge.store import KnowledgeStore
 from backend.llm.context_builder import ContextBuilder
 from backend.llm.context_lifecycle import ContextLifecycleManager
 from backend.llm.runtime import AgentRuntime
-from backend.llm.runtime_registry import create_runtime
+from backend.llm.runtime_registry import (
+    create_runtime,
+    list_runtime_descriptors,
+    resolve_runtime_name,
+)
 from backend.negotiation.negotiation_controller import NegotiationController
 from backend.negotiation.turn_manager import TurnManager, InvalidTransitionError
 from backend.session.models import (
@@ -109,11 +113,18 @@ class Server:
         self._claude: Optional[AgentRuntime] = None  # backward-compat alias
         self._knowledge_store: Optional[KnowledgeStore] = None
         self._context_lifecycle = ContextLifecycleManager()
+        self._runtime_name = resolve_runtime_name()
 
-    def _get_runtime(self) -> AgentRuntime:
+    def _get_runtime(self, workspace_path: str = ".") -> AgentRuntime:
         runtime = getattr(self, "_runtime", None) or getattr(self, "_claude", None)
         if not runtime:
-            runtime = create_runtime(graph=self._graph)
+            runtime = create_runtime(
+                runtime_name=self._runtime_name,
+                graph=self._graph,
+                knowledge_store=self._knowledge_store,
+                task_store_factory=self._get_task_store,
+                workspace_path=workspace_path,
+            )
             self._runtime = runtime
             self._claude = runtime
         return runtime
@@ -259,7 +270,7 @@ class Server:
         ctx = ContextBuilder(self._graph)
         context_str = ctx.build_planning_context(goal, doc)
 
-        runtime = self._get_runtime()
+        runtime = self._get_runtime(workspace_path)
         tasks, questions = runtime.generate_plan(
             goal,
             context_str,
@@ -297,7 +308,7 @@ class Server:
         ctx = ContextBuilder(self._graph)
         context_str = ctx.build_annotation_context(task, doc)
 
-        runtime = self._get_runtime()
+        runtime = self._get_runtime(doc.workspace_path)
         annotation = runtime.generate_annotation(
             task,
             context_str,
@@ -376,7 +387,7 @@ class Server:
             if not task.started_at:
                 task.started_at = datetime.now(timezone.utc).isoformat()
 
-            runtime = self._get_runtime()
+            runtime = self._get_runtime(doc.workspace_path)
             edits = runtime.execute_task(
                 task,
                 context_str,
@@ -502,7 +513,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_runtime(),
+            self._get_runtime(doc.workspace_path),
             ContextBuilder(self._graph),
         )
         return ctrl.alter_annotation(task_id, annotation_id, feedback)
@@ -518,7 +529,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_runtime(),
+            self._get_runtime(doc.workspace_path),
             ContextBuilder(self._graph),
         )
         return ctrl.redirect_task(task_id, instruction)
@@ -533,7 +544,7 @@ class Server:
             doc,
             TurnManager(doc, sm),
             sm,
-            self._get_runtime(),
+            self._get_runtime(doc.workspace_path),
             ContextBuilder(self._graph),
         )
         return ctrl.skip_task(task_id)
@@ -555,7 +566,7 @@ class Server:
                 doc,
                 TurnManager(doc, sm),
                 sm,
-                self._get_runtime(),
+                self._get_runtime(doc.workspace_path),
                 ContextBuilder(self._graph),
             )
             session_result = ctrl.queue_todo_instruction(file_, line, instruction)
@@ -646,7 +657,7 @@ class Server:
         doc = self._sessions.get(session_id) if session_id else None
         persona = doc.persona if doc else "default"
 
-        runtime = self._get_runtime()
+        runtime = self._get_runtime(workspace_path)
         analysis = runtime.analyze_debug_context(
             context_str,
             workspace_path=workspace_path,
@@ -675,6 +686,118 @@ class Server:
 
     def handle_remove_file(self, params: dict) -> dict:
         return {"ok": True}
+
+    def handle_list_runtimes(self, params: dict) -> dict:
+        _ = params
+        return {"runtimes": [descriptor.to_dict() for descriptor in list_runtime_descriptors()]}
+
+    def handle_get_active_runtime(self, params: dict) -> dict:
+        _ = params
+        return {"runtimeId": self._runtime_name}
+
+    def handle_set_active_runtime(self, params: dict) -> dict:
+        runtime_id = resolve_runtime_name(str(params.get("runtimeId", "")))
+        if runtime_id == self._runtime_name:
+            return {"ok": True, "runtimeId": self._runtime_name}
+        self._runtime_name = runtime_id
+        self._runtime = None
+        self._claude = None
+        return {"ok": True, "runtimeId": self._runtime_name}
+
+    def handle_list_skills(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        persona = str(params.get("persona", ""))
+        stage = str(params.get("stage", ""))
+        runtime = self._get_runtime(workspace_path)
+        list_skills = getattr(runtime, "list_skills", None)
+        if callable(list_skills):
+            return {"skills": list_skills(persona=persona, stage=stage)}
+        from backend.llm.skills.registry import SkillRegistry
+        registry = SkillRegistry(workspace_path)
+        return {"skills": registry.to_dicts(persona=persona, stage=stage)}
+
+    def handle_reload_skills(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        runtime = self._get_runtime(workspace_path)
+        refresh = getattr(runtime, "refresh_skills", None)
+        if callable(refresh):
+            count = int(refresh())
+            return {"ok": True, "count": count}
+        from backend.llm.skills.registry import SkillRegistry
+        count = len(SkillRegistry(workspace_path).reload())
+        return {"ok": True, "count": count}
+
+    def handle_get_skill_detail(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        skill_id = str(params.get("skillId", "")).strip()
+        if not skill_id:
+            raise ValueError("skillId is required")
+        runtime = self._get_runtime(workspace_path)
+        get_detail = getattr(runtime, "get_skill_detail", None)
+        if callable(get_detail):
+            return get_detail(skill_id)
+        from backend.llm.skills.registry import SkillRegistry
+        return SkillRegistry(workspace_path).get_skill_detail(skill_id)
+
+    def handle_list_checkpoints(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        session_id = str(params.get("sessionId", ""))
+        runtime = self._get_runtime(workspace_path)
+        list_checkpoints = getattr(runtime, "list_checkpoints", None)
+        if not callable(list_checkpoints):
+            return {"checkpoints": []}
+        checkpoints = list_checkpoints(workspace_path, session_id=session_id)
+        return {"checkpoints": checkpoints}
+
+    def handle_resume_checkpoint(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        checkpoint_id = str(params.get("checkpointId", "")).strip()
+        if not checkpoint_id:
+            raise ValueError("checkpointId is required")
+        decision = dict(params.get("decision", {}))
+        decision.setdefault("workspacePath", workspace_path)
+        runtime = self._get_runtime(workspace_path)
+        return {"ok": True, "checkpoint": runtime.resume(checkpoint_id, decision)}
+
+    def handle_discard_checkpoint(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        checkpoint_id = str(params.get("checkpointId", "")).strip()
+        if not checkpoint_id:
+            raise ValueError("checkpointId is required")
+        runtime = self._get_runtime(workspace_path)
+        discard = getattr(runtime, "discard", None)
+        if not callable(discard):
+            raise ValueError("Runtime does not support checkpoint discard.")
+        result = discard(checkpoint_id, {"workspacePath": workspace_path})
+        return {"ok": bool(result.get("ok", False)), "checkpointId": checkpoint_id}
+
+    def handle_list_subagents(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        runtime = self._get_runtime(workspace_path)
+        list_subagents = getattr(runtime, "list_subagents", None)
+        if not callable(list_subagents):
+            return {"subagents": []}
+        return {"subagents": list_subagents()}
+
+    def handle_delegate_to_subagent(self, params: dict) -> dict:
+        workspace_path = os.path.abspath(params.get("workspacePath", "."))
+        session_id = str(params.get("sessionId", "")).strip()
+        subagent_id = str(params.get("subagentId", "")).strip()
+        task_id = str(params.get("taskId", "")).strip()
+        prompt = str(params.get("prompt", "")).strip()
+        if not session_id or not subagent_id or not task_id:
+            raise ValueError("sessionId, subagentId, and taskId are required")
+        runtime = self._get_runtime(workspace_path)
+        delegate = getattr(runtime, "delegate_to_subagent", None)
+        if not callable(delegate):
+            raise ValueError("Runtime does not support subagent delegation.")
+        return delegate(
+            session_id=session_id,
+            subagent_id=subagent_id,
+            task_id=task_id,
+            prompt=prompt,
+            workspace_path=workspace_path,
+        )
 
     # ------------------------------------------------------------------
     # ADR management — persistent architectural memory via the graph
@@ -934,6 +1057,18 @@ class Server:
         "liveDebug":            handle_live_debug,
         "updateFile":           handle_update_file,
         "removeFile":           handle_remove_file,
+        # Runtime management
+        "listRuntimes":         handle_list_runtimes,
+        "getActiveRuntime":     handle_get_active_runtime,
+        "setActiveRuntime":     handle_set_active_runtime,
+        "listSkills":           handle_list_skills,
+        "reloadSkills":         handle_reload_skills,
+        "getSkillDetail":       handle_get_skill_detail,
+        "listCheckpoints":      handle_list_checkpoints,
+        "resumeCheckpoint":     handle_resume_checkpoint,
+        "discardCheckpoint":    handle_discard_checkpoint,
+        "listSubagents":        handle_list_subagents,
+        "delegateToSubagent":   handle_delegate_to_subagent,
         # ADR management
         "getADR":               handle_get_adr,
         "storeADR":             handle_store_adr,
