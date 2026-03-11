@@ -5,7 +5,13 @@ from enum import Enum
 from typing import Optional
 import uuid
 
-from backend.session.models import CodeCoord, OwnerType, TaskPriority, TaskType
+from backend.session.models import (
+    CodeCoord,
+    OwnerType,
+    TaskDependency,
+    TaskPriority,
+    TaskType,
+)
 
 
 class WizardChunkStatus(str, Enum):
@@ -78,9 +84,14 @@ class WizardTodoExport:
     phase: str = ""
     priority: TaskPriority = TaskPriority.P2
     task_type: TaskType = TaskType.IMPL
+    rationale: str = ""
     target_coord: CodeCoord = field(default_factory=CodeCoord)
+    context_coords: list[CodeCoord] = field(default_factory=list)
+    depends_on: list[TaskDependency] = field(default_factory=list)
     owner_type: OwnerType = OwnerType.UNASSIGNED
     owner_name: str = ""
+    estimated_minutes: Optional[int] = None
+    ai_notes: str = ""
     promoted_task_id: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -93,9 +104,14 @@ class WizardTodoExport:
             "phase": self.phase,
             "priority": self.priority.value,
             "taskType": self.task_type.value,
+            "rationale": self.rationale,
             "targetCoord": self.target_coord.to_dict(),
+            "contextCoords": [coord.to_dict() for coord in self.context_coords],
+            "dependsOn": [dep.to_dict() for dep in self.depends_on],
             "ownerType": self.owner_type.value,
             "ownerName": self.owner_name,
+            "estimatedMinutes": self.estimated_minutes,
+            "aiNotes": self.ai_notes,
             "promotedTaskId": self.promoted_task_id,
         }
 
@@ -110,9 +126,14 @@ class WizardTodoExport:
             phase=str(payload.get("phase", "")),
             priority=TaskPriority(str(payload.get("priority", TaskPriority.P2.value))),
             task_type=TaskType(str(payload.get("taskType", TaskType.IMPL.value))),
+            rationale=str(payload.get("rationale", "")),
             target_coord=CodeCoord.from_dict(payload.get("targetCoord", {})),
+            context_coords=[CodeCoord.from_dict(item) for item in payload.get("contextCoords", [])],
+            depends_on=[TaskDependency.from_dict(item) for item in payload.get("dependsOn", [])],
             owner_type=OwnerType(str(payload.get("ownerType", OwnerType.UNASSIGNED.value))),
             owner_name=str(payload.get("ownerName", "")),
+            estimated_minutes=payload.get("estimatedMinutes"),
+            ai_notes=str(payload.get("aiNotes", "")),
             promoted_task_id=payload.get("promotedTaskId"),
         )
 

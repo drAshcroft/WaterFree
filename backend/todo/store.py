@@ -19,6 +19,7 @@ from backend.session.models import (
     TaskOwner,
     TaskPriority,
     TaskStatus,
+    TaskTiming,
     TaskType,
 )
 from backend.todo.dependency_resolver import DependencyResolver
@@ -121,10 +122,12 @@ class TaskStore:
                OR lower(target_method) LIKE ?
                OR lower(owner_name) LIKE ?
                OR lower(phase) LIKE ?
+               OR lower(json_extract(payload, '$.acceptanceCriteria')) LIKE ?
+               OR lower(json_extract(payload, '$.trigger')) LIKE ?
             ORDER BY sort_index ASC, id ASC
             LIMIT ?
             """,
-            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
+            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
         ).fetchall()
         return [Task.from_dict(json.loads(row["payload"])) for row in rows]
 
@@ -186,6 +189,9 @@ class TaskStore:
             raise ValueError(f"Task not found: {task_id}")
 
         self._apply_patch(task, patch)
+        if task.status == TaskStatus.COMPLETE and task.timing == TaskTiming.RECURRING:
+            task.status = TaskStatus.PENDING
+            task.completed_at = None
         if task.phase and task.phase not in data.phases:
             data.phases.append(task.phase)
         self.save(data)
@@ -207,6 +213,35 @@ class TaskStore:
             data.phases.append(phase)
             self.save(data)
         return data.phases
+
+    def save_task_board(self, layout: list[dict], phases: list[str]) -> TaskStoreData:
+        data = self.load()
+        tasks_by_id = {task.id: task for task in data.tasks}
+        ordered: list[Task] = []
+        seen: set[str] = set()
+
+        for item in layout:
+            task_id = str(item.get("id", "")).strip()
+            if not task_id or task_id in seen:
+                continue
+            task = tasks_by_id.get(task_id)
+            if not task:
+                continue
+
+            if "phase" in item:
+                task.phase = self._normalize_phase(item.get("phase"))
+
+            ordered.append(task)
+            seen.add(task_id)
+
+        for task in data.tasks:
+            if task.id not in seen:
+                ordered.append(task)
+
+        data.tasks = ordered
+        data.phases = self._normalize_phase_list(phases, ordered)
+        self.save(data)
+        return data
 
     def promote_to_session(self, task_id: str, session_id: str) -> Task:
         task = self._fetch_task(task_id)
@@ -314,6 +349,9 @@ class TaskStore:
             annotations=[],
             started_at=payload.get("startedAt"),
             completed_at=payload.get("completedAt"),
+            acceptance_criteria=payload.get("acceptanceCriteria") or None,
+            trigger=payload.get("trigger") or None,
+            timing=TaskTiming(payload.get("timing", TaskTiming.ONE_TIME.value)),
         )
 
     def _apply_patch(self, task: Task, patch: dict) -> None:
@@ -355,6 +393,12 @@ class TaskStore:
             task.depends_on = [TaskDependency.from_dict(item) for item in patch["dependsOn"] or []]
         if "contextCoords" in patch:
             task.context_coords = [CodeCoord.from_dict(item) for item in patch["contextCoords"] or []]
+        if "acceptanceCriteria" in patch:
+            task.acceptance_criteria = patch["acceptanceCriteria"] or None
+        if "trigger" in patch:
+            task.trigger = patch["trigger"] or None
+        if "timing" in patch:
+            task.timing = TaskTiming(str(patch["timing"]))
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
@@ -556,6 +600,28 @@ class TaskStore:
     def _next_sort_index(self) -> int:
         row = self._conn.execute("SELECT COALESCE(MAX(sort_index), -1) AS max_sort FROM tasks").fetchone()
         return int(row["max_sort"]) + 1 if row else 0
+
+    def _normalize_phase(self, value: object) -> Optional[str]:
+        phase = str(value or "").strip()
+        return phase or None
+
+    def _normalize_phase_list(self, phases: list[str], tasks: list[Task]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        for raw in phases:
+            phase = str(raw or "").strip()
+            if phase and phase not in seen:
+                ordered.append(phase)
+                seen.add(phase)
+
+        for task in tasks:
+            phase = str(task.phase or "").strip()
+            if phase and phase not in seen:
+                ordered.append(phase)
+                seen.add(phase)
+
+        return ordered
 
     def _upsert_task_record(self, task: Task, sort_index: int, session_id: Optional[str]) -> None:
         with self._conn:

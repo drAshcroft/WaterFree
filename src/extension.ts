@@ -20,6 +20,7 @@ import {
 } from "./bridge/PythonBridge.js";
 import { LiveDebugCapture } from "./debug/LiveDebugCapture.js";
 import { PairLogger } from "./logging/PairLogger.js";
+import { WaterFreeProviders } from "./security/WaterFreeProviders.js";
 import { WaterFreeSecrets } from "./security/WaterFreeSecrets.js";
 import { StatusBarManager } from "./ui/StatusBarManager.js";
 import {
@@ -35,7 +36,13 @@ import {
 import { WizardCodeLensProvider, type WizardDocContext } from "./ui/WizardCodeLensProvider.js";
 import { QuickActionsProvider } from "./ui/QuickActionsProvider.js";
 import { DecorationRenderer } from "./ui/DecorationRenderer.js";
+import {
+  TodoBoardPanel,
+  type TodoBoardAction,
+  type TodoBoardState,
+} from "./ui/TodoBoardPanel.js";
 import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPanel.js";
+import { MonitorPanel } from "./ui/MonitorPanel.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
@@ -94,12 +101,15 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _logger: PairLogger;
   private readonly _bridge: PythonBridge;
   private readonly _secrets: WaterFreeSecrets;
+  private readonly _providers: WaterFreeProviders;
   private readonly _statusBar: StatusBarManager;
   private readonly _sidebarProvider: PlanSidebarProvider;
   private readonly _quickActions: QuickActionsProvider;
   private readonly _decorations: DecorationRenderer;
   private readonly _wizardLenses: WizardCodeLensProvider;
   private readonly _wizardEditor: WizardEditorPanel;
+  private readonly _todoBoard: TodoBoardPanel;
+  private readonly _monitorPanel: MonitorPanel;
   private readonly _fileWatcher: FileWatcher;
   private readonly _todoWatcher: TodoWatcher;
   private readonly _liveDebug: LiveDebugCapture;
@@ -118,6 +128,7 @@ export class WaterFreeController implements vscode.Disposable {
 
     // Core subsystems
     this._secrets = new WaterFreeSecrets(context, context.extensionUri.fsPath);
+    this._providers = new WaterFreeProviders(context);
     this._bridge = new PythonBridge(_workspacePath, context.extensionUri.fsPath, this._logger);
     this._statusBar = new StatusBarManager();
     this._sidebarProvider = new PlanSidebarProvider(context.extensionUri);
@@ -125,6 +136,9 @@ export class WaterFreeController implements vscode.Disposable {
     this._decorations = new DecorationRenderer();
     this._wizardLenses = new WizardCodeLensProvider();
     this._wizardEditor = new WizardEditorPanel(context.extensionUri);
+    this._todoBoard = new TodoBoardPanel(context.extensionUri);
+    this._monitorPanel = new MonitorPanel(context.extensionUri, _workspacePath);
+    this._monitorPanel.attach(context);
     this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
     this._todoWatcher = new TodoWatcher();
     this._liveDebug = new LiveDebugCapture();
@@ -136,6 +150,8 @@ export class WaterFreeController implements vscode.Disposable {
       this._decorations,
       this._wizardLenses,
       this._wizardEditor,
+      this._todoBoard,
+      this._monitorPanel,
       this._fileWatcher,
       this._todoWatcher,
       this._liveDebug,
@@ -168,6 +184,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._sidebarProvider.onDidTriggerAction((action) => {
         void this._onSidebarAction(action);
+      }),
+      this._todoBoard.onDidTriggerAction((action) => {
+        void this._onTodoBoardAction(action);
       }),
       this._wizardEditor.onDidTriggerAction((action) => {
         void this._onWizardEditorAction(action);
@@ -209,6 +228,22 @@ export class WaterFreeController implements vscode.Disposable {
 
   getQuickActions(): QuickActionsProvider {
     return this._quickActions;
+  }
+
+  async cmdOpenTodoBoard(): Promise<void> {
+    try {
+      const state = await this._loadTodoBoardState();
+      await this._todoBoard.show(state);
+    } catch (err) {
+      this._handleError("Open todo board failed", err);
+    }
+  }
+
+  cmdOpenMonitorPanel(): void {
+    // The panel is self-managing; opening is triggered by the registered command
+    // inside MonitorPanel.attach(). This method exists so CommandRegistry can
+    // route to it consistently.
+    void vscode.commands.executeCommand("waterfree.openMonitorPanel");
   }
 
   // ------------------------------------------------------------------
@@ -722,6 +757,7 @@ export class WaterFreeController implements vscode.Disposable {
         workspacePath: this._workspacePath,
       });
       await this._handleWizardResponse(result, false);
+      await this._refreshBacklogSummary();
       const count = result.count ?? result.createdTaskIds?.length ?? 0;
       void vscode.window.showInformationMessage(`WaterFree: promoted ${count} wizard todo(s) to the backlog.`);
     } catch (err) {
@@ -943,8 +979,10 @@ export class WaterFreeController implements vscode.Disposable {
   private async _bootstrap(): Promise<void> {
     try {
       await this._secrets.initialize();
+      await this._providers.initialize(this._secrets.storedKey);
       await this._secrets.promptForSetupIfNeeded();
-      this._bridge.setAnthropicApiKey(this._secrets.anthropicApiKey);
+      const primaryKey = await this._providers.getPrimaryKey("claude");
+      this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
       this._bridge.start();
       await this._autoIndex();
       await this._tryResumeSession();
@@ -1131,7 +1169,15 @@ export class WaterFreeController implements vscode.Disposable {
   }
 
   private async _onWizardEditorAction(action: WizardEditorAction): Promise<void> {
-    this._sidebarProvider.setBusyMessage(action.type === "submit" ? "Running wizard stage..." : "Getting clarifying questions...");
+    if (action.type === "reopenChunk") {
+      void vscode.window.showInformationMessage(
+        "To edit an accepted section, use WaterFree: Revise Chunk or make changes in the document and re-run the stage.",
+      );
+      return;
+    }
+
+    const busyMsg = action.type === "submit" ? "Running wizard stage..." : "Getting clarifying questions...";
+    this._sidebarProvider.setBusyMessage(busyMsg);
     try {
       const result = await this._bridge.runWizardStep({
         runId: action.context.runId,
@@ -1142,7 +1188,7 @@ export class WaterFreeController implements vscode.Disposable {
       });
       await this._handleWizardResponse(result, false);
     } catch (err) {
-      this._handleError(action.type === "submit" ? "Run wizard stage failed" : "Refine idea failed", err);
+      this._handleError(action.type === "submit" ? "Accept and continue failed" : "Refine prompt failed", err);
     } finally {
       this._sidebarProvider.setBusyMessage(null);
     }
@@ -1255,9 +1301,24 @@ export class WaterFreeController implements vscode.Disposable {
     }
   }
 
+  private async _loadTodoBoardState(): Promise<TodoBoardState> {
+    return this._bridge.request<TodoBoardState>("getTaskBoard", {
+      workspacePath: this._workspacePath,
+    });
+  }
+
+  private async _refreshTodoBoardIfVisible(): Promise<void> {
+    if (!this._todoBoard.isVisible()) {
+      return;
+    }
+    const state = await this._loadTodoBoardState();
+    await this._todoBoard.update(state);
+  }
+
   private async _refreshBacklogSummary(): Promise<void> {
     if (!this._sessionId) {
       this._sidebarProvider.setBacklogSummary(this._emptyBacklogSummary());
+      await this._refreshTodoBoardIfVisible().catch(() => undefined);
       return;
     }
 
@@ -1280,6 +1341,8 @@ export class WaterFreeController implements vscode.Disposable {
       });
     } catch {
       this._sidebarProvider.setBacklogSummary(this._emptyBacklogSummary());
+    } finally {
+      await this._refreshTodoBoardIfVisible().catch(() => undefined);
     }
   }
 
@@ -1375,6 +1438,111 @@ export class WaterFreeController implements vscode.Disposable {
       case "pushDebugToAgent":
         await this.cmdPushDebugToAgent(action.intent, action.stopReason);
         return;
+      case "openTodoBoard":
+        await this.cmdOpenTodoBoard();
+        return;
+      case "requestSettings": {
+        const statuses = await this._providers.getStatuses();
+        this._sidebarProvider.sendSettings({ providers: statuses });
+        return;
+      }
+      case "addProvider": {
+        await this._providers.add({
+          type: action.providerType as never,
+          name: action.name,
+          baseUrl: action.baseUrl,
+          models: action.models,
+          modes: action.modes,
+          useWith: action.useWith,
+          enabled: action.enabled,
+        }, action.apiKey);
+        const primaryKey = await this._providers.getPrimaryKey("claude");
+        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+        this._bridge.restart();
+        const statuses = await this._providers.getStatuses();
+        this._sidebarProvider.sendSettings({ providers: statuses });
+        return;
+      }
+      case "updateProvider": {
+        await this._providers.update(action.id, {
+          type: action.providerType as never,
+          name: action.name,
+          baseUrl: action.baseUrl,
+          models: action.models,
+          modes: action.modes,
+          useWith: action.useWith,
+          enabled: action.enabled,
+        }, action.apiKey);
+        const primaryKey = await this._providers.getPrimaryKey("claude");
+        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+        this._bridge.restart();
+        const statuses = await this._providers.getStatuses();
+        this._sidebarProvider.sendSettings({ providers: statuses });
+        return;
+      }
+      case "removeProvider": {
+        await this._providers.remove(action.id);
+        const primaryKey = await this._providers.getPrimaryKey("claude");
+        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+        this._bridge.restart();
+        const statuses = await this._providers.getStatuses();
+        this._sidebarProvider.sendSettings({ providers: statuses });
+        return;
+      }
+      case "toggleProvider": {
+        await this._providers.toggle(action.id);
+        const primaryKey = await this._providers.getPrimaryKey("claude");
+        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+        this._bridge.restart();
+        const statuses = await this._providers.getStatuses();
+        this._sidebarProvider.sendSettings({ providers: statuses });
+        return;
+      }
+    }
+  }
+
+  private async _onTodoBoardAction(action: TodoBoardAction): Promise<void> {
+    try {
+      switch (action.type) {
+        case "refresh":
+          await this._refreshTodoBoardIfVisible();
+          return;
+        case "openTask":
+          await this._openTodoTarget(action.file, action.line);
+          return;
+        case "addTask":
+          await this._bridge.request("addTask", {
+            workspacePath: this._workspacePath,
+            task: action.task,
+          });
+          await this._refreshBacklogSummary();
+          return;
+        case "updateTask":
+          await this._bridge.request("updateTask", {
+            workspacePath: this._workspacePath,
+            taskId: action.taskId,
+            patch: action.patch,
+          });
+          await this._refreshBacklogSummary();
+          return;
+        case "deleteTask":
+          await this._bridge.request("deleteTask", {
+            workspacePath: this._workspacePath,
+            taskId: action.taskId,
+          });
+          await this._refreshBacklogSummary();
+          return;
+        case "saveBoard":
+          await this._bridge.request("saveTaskBoard", {
+            workspacePath: this._workspacePath,
+            tasks: action.tasks,
+            phases: action.phases,
+          });
+          await this._refreshBacklogSummary();
+          return;
+      }
+    } catch (err) {
+      this._handleError("Todo board action failed", err);
     }
   }
 
@@ -1390,6 +1558,17 @@ export class WaterFreeController implements vscode.Disposable {
     const targetLine = getTaskTargetLine(task);
     void vscode.window.showTextDocument(vscode.Uri.file(targetFile), {
       selection: new vscode.Range(targetLine, 0, targetLine, 0),
+      preview: true,
+    });
+  }
+
+  private async _openTodoTarget(targetFile: string, line?: number): Promise<void> {
+    const resolved = path.isAbsolute(targetFile)
+      ? targetFile
+      : path.join(this._workspacePath, targetFile);
+    const selectionLine = typeof line === "number" && line > 0 ? line - 1 : 0;
+    await vscode.window.showTextDocument(vscode.Uri.file(resolved), {
+      selection: new vscode.Range(selectionLine, 0, selectionLine, 0),
       preview: true,
     });
   }
@@ -1441,6 +1620,7 @@ export class WaterFreeController implements vscode.Disposable {
         if (this._sessionId) {
           await this._reloadSession();
         }
+        await this._refreshBacklogSummary();
         void vscode.window.showInformationMessage("WaterFree: Debug fix queued into the backlog.");
       } catch (err) {
         this._handleError("Could not add debug task", err);

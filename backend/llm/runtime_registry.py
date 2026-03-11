@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
-from backend.llm.providers import DeepAgentsRuntime
+from backend.llm.providers import DeepAgentsRuntime, HuggingFaceRuntime, MockRuntime, MonitorRuntime
 from backend.llm.runtime import AgentRuntime
 from backend.todo.store import TaskStore
 
@@ -68,6 +68,33 @@ _RUNTIME_DESCRIPTORS: dict[str, RuntimeDescriptor] = {
         supports_skills=True,
         supports_checkpoints=True,
     ),
+    "huggingface": RuntimeDescriptor(
+        id="huggingface",
+        label="HuggingFace Inference",
+        provider="huggingface",
+        local=False,
+        supports_tools=False,
+        supports_skills=True,
+        supports_checkpoints=True,
+    ),
+    "mock": RuntimeDescriptor(
+        id="mock",
+        label="Mock (Functional Testing)",
+        provider="mock",
+        local=True,
+        supports_tools=False,
+        supports_skills=False,
+        supports_checkpoints=True,
+    ),
+    "monitor": RuntimeDescriptor(
+        id="monitor",
+        label="Monitor (Human-in-the-Loop)",
+        provider="monitor",
+        local=True,
+        supports_tools=False,
+        supports_skills=True,
+        supports_checkpoints=True,
+    ),
 }
 
 
@@ -81,6 +108,12 @@ def resolve_runtime_name(preferred: Optional[str] = None) -> str:
         return "ollama"
     if raw == "openai":
         return "openai"
+    if raw in {"huggingface", "hf"}:
+        return "huggingface"
+    if raw == "mock":
+        return "mock"
+    if raw == "monitor":
+        return "monitor"
     raise ValueError(f"Unsupported runtime '{raw}'.")
 
 
@@ -125,5 +158,20 @@ def create_runtime(
             workspace_path=workspace_path,
             provider_lane=name,
             **common_kwargs,
+        )
+    if name == "huggingface":
+        return HuggingFaceRuntime(
+            workspace_path=workspace_path,
+            task_store_factory=task_store_factory,
+        )
+    if name == "mock":
+        return MockRuntime(
+            workspace_path=workspace_path,
+            task_store_factory=task_store_factory,
+        )
+    if name == "monitor":
+        return MonitorRuntime(
+            workspace_path=workspace_path,
+            task_store_factory=task_store_factory,
         )
     raise ValueError(f"Unsupported runtime '{name}'.")

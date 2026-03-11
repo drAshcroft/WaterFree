@@ -100,6 +100,47 @@ class ToolRegistryServiceTests(unittest.TestCase):
         self.assertEqual(result["entries"][0]["title"], "match:auth")
         self.assertEqual(sources["repos"][0]["name"], "demo-repo")
 
+    def test_testing_tools_are_registered(self) -> None:
+        registry = self.make_registry()
+
+        names = set(registry.names())
+
+        self.assertIn("list_tests", names)
+        self.assertIn("run_tests", names)
+        self.assertIn("run_test", names)
+        self.assertIn("get_test_logs", names)
+
+    def test_stub_wireframer_execution_gets_write_and_test_tools(self) -> None:
+        registry = self.make_registry()
+
+        names = {
+            descriptor.name
+            for descriptor in registry.select_descriptors(
+                persona="stub_wireframer",
+                stage="execution",
+                include_optional=False,
+            )
+        }
+
+        self.assertIn("apply_workspace_patch", names)
+        self.assertIn("run_tests", names)
+        self.assertIn("run_test", names)
+
+    def test_architect_execution_stays_read_heavy(self) -> None:
+        registry = self.make_registry()
+
+        names = {
+            descriptor.name
+            for descriptor in registry.select_descriptors(
+                persona="architect",
+                stage="execution",
+                include_optional=False,
+            )
+        }
+
+        self.assertNotIn("apply_workspace_patch", names)
+        self.assertNotIn("run_tests", names)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,11 @@ from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
 from backend.llm.prompt_templates import build_system_prompt
 from backend.llm.personas import DEFAULT_PERSONA, PERSONAS
+from backend.llm.structural_support import (
+    apply_task_dependencies,
+    route_structural_persona,
+    task_from_raw,
+)
 from backend.llm.skills import SkillAdapter, SkillRegistry
 from backend.llm.tools import build_default_tool_registry
 from backend.llm.checkpoints.store import CheckpointStore
@@ -140,30 +145,21 @@ class DeepAgentsRuntime:
         workspace_path: str = "",
         persona: str = "default",
     ):
-        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="planning")
+        effective_persona = route_structural_persona(persona, "planning", goal, context)
+        bundle = self._skill_adapter.select(persona=_normalize_persona(effective_persona), stage="planning")
         prompt = (
             "Return JSON only with shape: "
-            '{"tasks":[{"title":"","description":"","targetFile":"","targetFunction":"","priority":"P0|P1|P2|P3|spike"}],"questions":[]}\n\n'
+            '{"tasks":[{"id":"","title":"","description":"","rationale":"","targetFile":"","targetFunction":"","priority":"P0|P1|P2|P3|spike","phase":"","taskType":"impl|test|spike|review|refactor","contextCoords":[{"file":"","class":"","method":"","line":0,"anchorType":"modify"}],"dependsOn":[{"taskId":"","title":"","type":"blocks|informs|shares-file"}],"owner":{"type":"human|agent|unassigned","name":""},"estimatedMinutes":0,"aiNotes":""}],"designArtifacts":{"subsystems":[],"interfaces":[],"interfaceMethods":[],"dataContracts":[],"apiCatalog":[],"patternChoices":[],"antiPatterns":[],"integrationPolicies":[],"todos":[]},"questions":[]}\n\n'
             f"GOAL:\n{goal}\n\nCONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
         payload = self._run_deepagents_structured(
-            stage="PLANNING", prompt=prompt, workspace_path=workspace_path, persona=persona,
+            stage="PLANNING", prompt=prompt, workspace_path=workspace_path, persona=effective_persona,
         )
         if payload is None:
             return ([], [])
-        tasks: list[Task] = []
-        for raw in payload.get("tasks", []):
-            tasks.append(
-                Task(
-                    title=str(raw.get("title", "")),
-                    description=str(raw.get("description", "")),
-                    target_coord=CodeCoord(
-                        file=str(raw.get("targetFile", "")),
-                        method=str(raw.get("targetFunction", "")) or None,
-                    ),
-                    priority=_coerce_priority(raw.get("priority", "P2")),
-                )
-            )
+        raw_tasks = [item for item in payload.get("tasks", []) if isinstance(item, dict)]
+        tasks = [task_from_raw(raw) for raw in raw_tasks]
+        apply_task_dependencies(tasks, raw_tasks)
         return tasks, list(payload.get("questions", []))
 
     def generate_annotation(
@@ -173,7 +169,14 @@ class DeepAgentsRuntime:
         workspace_path: str = "",
         persona: str = "default",
     ):
-        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="annotation")
+        effective_persona = route_structural_persona(
+            persona,
+            "annotation",
+            task.title,
+            task.description,
+            context,
+        )
+        bundle = self._skill_adapter.select(persona=_normalize_persona(effective_persona), stage="annotation")
         prompt = (
             "Return JSON only with shape: "
             '{"summary":"","detail":"","willCreate":[],"willModify":[],"sideEffectWarnings":[],"assumptionsMade":[],"questionsBeforeProceeding":[]}\n\n'
@@ -182,7 +185,7 @@ class DeepAgentsRuntime:
             f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
         payload = self._run_deepagents_structured(
-            stage="ANNOTATION", prompt=prompt, workspace_path=workspace_path, persona=persona,
+            stage="ANNOTATION", prompt=prompt, workspace_path=workspace_path, persona=effective_persona,
         )
         if payload is None:
             return IntentAnnotation(
@@ -236,7 +239,17 @@ class DeepAgentsRuntime:
         workspace_path: str = "",
         persona: str = "default",
     ) -> IntentAnnotation:
-        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="annotation")
+        effective_persona = route_structural_persona(
+            persona,
+            "alter_annotation",
+            task.title,
+            task.description,
+            feedback,
+            old_annotation.summary,
+            old_annotation.detail,
+            context,
+        )
+        bundle = self._skill_adapter.select(persona=_normalize_persona(effective_persona), stage="annotation")
         prompt = (
             "Return JSON only with shape: "
             '{"summary":"","detail":"","approach":"","willCreate":[],"willModify":[],"willDelete":[],"sideEffectWarnings":[],"assumptionsMade":[],"questionsBeforeProceeding":[]}\n\n'
@@ -248,7 +261,7 @@ class DeepAgentsRuntime:
             f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
         payload = self._run_deepagents_structured(
-            stage="ALTER_ANNOTATION", prompt=prompt, workspace_path=workspace_path, persona=persona,
+            stage="ALTER_ANNOTATION", prompt=prompt, workspace_path=workspace_path, persona=effective_persona,
         )
         if payload is None:
             return IntentAnnotation(
@@ -333,25 +346,32 @@ class DeepAgentsRuntime:
         workspace_path: str = "",
         persona: str = "default",
     ) -> dict:
-        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage="question_answer")
+        effective_persona = route_structural_persona(
+            persona,
+            "question_answer",
+            question,
+            context,
+        )
+        bundle = self._skill_adapter.select(persona=_normalize_persona(effective_persona), stage="question_answer")
         prompt = (
             "Return JSON only with shape: "
-            '{"answer":"","shouldUpdatePlan":false,"followupTasks":[],"questions":[]}\n\n'
+            '{"answer":"","shouldUpdatePlan":false,"followupTasks":[],"designArtifacts":{"subsystems":[],"interfaces":[],"interfaceMethods":[],"dataContracts":[],"apiCatalog":[],"patternChoices":[],"antiPatterns":[],"integrationPolicies":[],"todos":[]},"questions":[]}\n\n'
             f"QUESTION: {question}\n\n"
             f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
         payload = self._run_deepagents_structured(
-            stage="QUESTION_ANSWER", prompt=prompt, workspace_path=workspace_path, persona=persona,
+            stage="QUESTION_ANSWER", prompt=prompt, workspace_path=workspace_path, persona=effective_persona,
         )
         if payload is None:
             text = self._run_deepagents_text(
-                stage="QUESTION_ANSWER", prompt=prompt, workspace_path=workspace_path, persona=persona,
+                stage="QUESTION_ANSWER", prompt=prompt, workspace_path=workspace_path, persona=effective_persona,
             ).strip()
             return {"answer": text, "shouldUpdatePlan": False, "followupTasks": [], "questions": []}
         return {
             "answer": str(payload.get("answer", "")),
             "shouldUpdatePlan": bool(payload.get("shouldUpdatePlan", False)),
             "followupTasks": list(payload.get("followupTasks", [])),
+            "designArtifacts": dict(payload.get("designArtifacts", {})),
             "questions": list(payload.get("questions", [])),
         }
 
@@ -440,13 +460,21 @@ class DeepAgentsRuntime:
     def list_subagents(self) -> list[dict]:
         return [
             {"id": "architect", "label": "Architect", "skills": ["waterfree-index", "waterfree-knowledge"]},
-            {"id": "pattern_expert", "label": "Pattern Expert", "skills": ["waterfree-knowledge"]},
+            {"id": "pattern_expert", "label": "Pattern Expert", "skills": ["waterfree-index", "waterfree-knowledge", "waterfree-todos"]},
             {"id": "debug_detective", "label": "Debug Detective", "skills": ["waterfree-debug", "waterfree-index"]},
-            {"id": "stub_wireframer", "label": "Stub/Wireframes", "skills": ["waterfree-todos"]},
+            {
+                "id": "stub_wireframer",
+                "label": "Stub/Wireframes",
+                "skills": ["waterfree-index", "waterfree-todos", "waterfree-testing"],
+            },
             {"id": "market_researcher", "label": "Market Researcher", "skills": ["waterfree-index", "waterfree-knowledge"]},
-            {"id": "bdd_test_designer", "label": "BDD Test Designer", "skills": ["waterfree-todos"]},
-            {"id": "coding_agent", "label": "Coding Agent", "skills": ["waterfree-todos"]},
-            {"id": "reviewer", "label": "Reviewer", "skills": ["waterfree-index", "waterfree-todos"]},
+            {"id": "bdd_test_designer", "label": "BDD Test Designer", "skills": ["waterfree-todos", "waterfree-testing"]},
+            {
+                "id": "coding_agent",
+                "label": "Coding Agent",
+                "skills": ["waterfree-index", "waterfree-knowledge", "waterfree-todos", "waterfree-testing"],
+            },
+            {"id": "reviewer", "label": "Reviewer", "skills": ["waterfree-index", "waterfree-todos", "waterfree-testing"]},
         ]
 
     def delegate_to_subagent(
@@ -559,7 +587,7 @@ class DeepAgentsRuntime:
             },
             {
                 "name": "stub_wireframer",
-                "description": "Subsystem shell/stub generation",
+                "description": "Subsystem shell generation with TODO handoff and verification",
                 "system_prompt": build_system_prompt("EXECUTION", "stub_wireframer"),
             },
             {
@@ -574,7 +602,7 @@ class DeepAgentsRuntime:
             },
             {
                 "name": "coding_agent",
-                "description": "Turns accepted prompts into execution-ready coding tasks",
+                "description": "Implements code, escalates bad guidance, and drives execution-ready backlog work",
                 "system_prompt": build_system_prompt("PLANNING", "coding_agent"),
             },
             {

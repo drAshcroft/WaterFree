@@ -3,6 +3,7 @@
   "displayName": "WaterFree",
   "description": "You architect. AI executes. Structured AI pair programming where you lead like a waterfall — free from the bottlenecks.",
   "version": "0.1.0",
+  "repository":"https://github.com/drAshcroft/WaterFree",
   "publisher": "waterfree",
   "engines": {
     "vscode": "^1.85.0"
@@ -96,6 +97,11 @@
       {
         "command": "waterfree.addKnowledgeRepo",
         "title": "WaterFree Snippetize: Snippetize Repo (Git URL or Path)"
+      },
+      {
+        "command": "waterfree.openTodoBoard",
+        "title": "WaterFree: Open Todo Board",
+        "icon": "$(list-tree)"
       },
       {
         "command": "waterfree.extractProcedure",
@@ -255,6 +261,23 @@
           "type": "string",
           "default": "docs",
           "description": "Workspace-relative or absolute folder where public wizard documents should be written."
+        },
+        "waterfree.webSearch.provider": {
+          "type": "string",
+          "enum": ["none", "brave", "tavily", "exa"],
+          "enumDescriptions": [
+            "Web search disabled (default).",
+            "Brave Search API — free tier: 2 000 queries/month. Get a key at https://api.search.brave.com.",
+            "Tavily — designed for AI agents. Free tier: 1 000 queries/month. Get a key at https://app.tavily.com.",
+            "Exa — neural search, good for recent content. Get a key at https://exa.ai."
+          ],
+          "default": "none",
+          "description": "Web search provider used by the Market Research stage. Requires waterfree.webSearch.apiKey or WATERFREE_WEB_SEARCH_API_KEY environment variable."
+        },
+        "waterfree.webSearch.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the selected web search provider. For better security, set WATERFREE_WEB_SEARCH_API_KEY as an environment variable instead of storing it here."
         }
       }
     }

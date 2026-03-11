@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{STYLE_URI}}">
+  <title>WaterFree Todo Board</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Project Flow</p>
+        <h1>Todo Board</h1>
+        <p class="hero-copy">Reorder the backlog, reshape phases, and edit tasks without leaving the editor surface.</p>
+      </div>
+      <div class="hero-actions">
+        <button type="button" class="ghost-btn" data-action="newPhase">New Phase</button>
+        <button type="button" class="ghost-btn" data-action="refresh">Refresh</button>
+      </div>
+    </header>
+    <section id="overview" class="overview"></section>
+    <main class="workspace">
+      <section class="board-panel">
+        <div id="board" class="board"></div>
+      </section>
+      <aside class="detail-panel">
+        <div id="composer" class="detail-card"></div>
+        <div id="detail" class="detail-card"></div>
+      </aside>
+    </main>
+  </div>
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

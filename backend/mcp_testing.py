@@ -68,6 +68,23 @@ class TestRunner(Protocol):
     def list_tests(self, workspace_path: str) -> list[str]: ...
 
 
+def _run_command(
+    cmd: list[str],
+    *,
+    workspace_path: str,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a test command without inheriting the MCP stdio pipe."""
+    return subprocess.run(
+        cmd,
+        cwd=workspace_path,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        stdin=subprocess.DEVNULL,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unittest Runner
 # ---------------------------------------------------------------------------
@@ -133,18 +150,35 @@ def _unittest_display_to_qualified(display: str) -> str:
 def _parse_unittest_output(raw: str) -> TestRunResult:
     lines = raw.splitlines()
     results: list[TestResult] = []
+    pending_name: str | None = None
 
-    # Parse per-test verbose lines: "test_foo (pkg.Class) ... ok"
+    # Parse verbose unittest output, including cases where logs are emitted
+    # between "..."" and the final status line.
     for line in lines:
         line_s = line.strip()
-        if " ... " in line_s:
-            name_part, _, status = line_s.rpartition(" ... ")
-            passed = status.strip().lower() == "ok"
+        m_inline = re.match(r"^(?P<name>.+?)\s+\.\.\.\s+(?P<status>ok|FAIL|ERROR|skipped.*)$", line_s)
+        if m_inline:
             results.append(TestResult(
-                name=name_part.strip(),
-                passed=passed,
-                error=None if passed else status.strip(),
+                name=m_inline.group("name").strip(),
+                passed=m_inline.group("status").strip().lower() == "ok",
+                error=None if m_inline.group("status").strip().lower() == "ok" else m_inline.group("status").strip(),
             ))
+            pending_name = None
+            continue
+
+        m_pending = re.match(r"^(?P<name>.+?)\s+\.\.\.(?:\s+.+)?$", line_s)
+        if m_pending:
+            pending_name = m_pending.group("name").strip()
+            continue
+
+        if pending_name and re.match(r"^(ok|FAIL|ERROR|skipped.*)$", line_s):
+            passed = line_s.lower() == "ok"
+            results.append(TestResult(
+                name=pending_name,
+                passed=passed,
+                error=None if passed else line_s,
+            ))
+            pending_name = None
 
     # Attach detailed error/failure messages to failing results
     i = 0
@@ -193,22 +227,18 @@ def _parse_unittest_output(raw: str) -> TestRunResult:
 
 class UnittestRunner:
     def list_tests(self, workspace_path: str) -> list[str]:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-c", _UNITTEST_LIST_SCRIPT],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=30,
         )
         return [line.strip() for line in r.stdout.splitlines() if line.strip()]
 
     def run_all(self, workspace_path: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-m", "unittest", "discover",
              "-s", "backend/tests", "-p", "test_*.py", "-v"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         raw = r.stdout + r.stderr
@@ -217,11 +247,9 @@ class UnittestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-c", _UNITTEST_RUN_ONE_SCRIPT, name_substr],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         raw = r.stdout + r.stderr
@@ -277,11 +305,9 @@ def _parse_pytest_output(raw: str) -> TestRunResult:
 
 class PytestRunner:
     def list_tests(self, workspace_path: str) -> list[str]:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=30,
         )
         return [
@@ -291,11 +317,9 @@ class PytestRunner:
         ]
 
     def run_all(self, workspace_path: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         raw = r.stdout + r.stderr
@@ -304,12 +328,10 @@ class PytestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             [sys.executable, "-m", "pytest", "-v", "--tb=short", "--no-header",
              "-k", name_substr],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         raw = r.stdout + r.stderr
@@ -366,22 +388,18 @@ def _parse_jest_json(raw: str) -> TestRunResult:
 
 class JestRunner:
     def list_tests(self, workspace_path: str) -> list[str]:
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "jest", "--json", "--passWithNoTests"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=60,
         )
         result = _parse_jest_json(r.stdout)
         return [t.name for t in result.results]
 
     def run_all(self, workspace_path: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "jest", "--json"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         result = _parse_jest_json(r.stdout)
@@ -389,11 +407,9 @@ class JestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "jest", "-t", name_substr, "--json"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         result = _parse_jest_json(r.stdout)
@@ -445,11 +461,9 @@ class VitestRunner:
         return p
 
     def list_tests(self, workspace_path: str) -> list[str]:
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "vitest", "list"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=30,
         )
         # vitest list outputs one test name per line, prefixed with checkmarks or file paths
@@ -466,11 +480,9 @@ class VitestRunner:
 
     def run_all(self, workspace_path: str) -> TestRunResult:
         tmp = self._json_output_path(workspace_path)
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "vitest", "run", "--reporter=json", f"--outputFile={tmp}"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         if tmp.exists():
@@ -484,12 +496,10 @@ class VitestRunner:
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
         tmp = self._json_output_path(workspace_path)
-        r = subprocess.run(
+        r = _run_command(
             ["npx", "vitest", "run", "-t", name_substr,
              "--reporter=json", f"--outputFile={tmp}"],
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
+            workspace_path=workspace_path,
             timeout=120,
         )
         if tmp.exists():

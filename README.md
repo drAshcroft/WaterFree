@@ -159,7 +159,7 @@ The AI and human are tightly coupled at every step — which is exactly what bre
 
 1. Install the extension
 2. Run `WaterFree: Setup` and enter your Anthropic API key when prompted
-3. Optional: run `.\install.ps1` from the repo root if you want the WaterFree MCP servers registered in Codex, Claude Code, or Kilo Code
+3. Optional: use `.\deploy.ps1` only as a developer helper for local MCP registration while the production installer is being built. See [docs/16_CUSTOMER_INSTALLER_PLAN.md](docs/16_CUSTOMER_INSTALLER_PLAN.md).
 4. Open a workspace and run **WaterFree: Start Session** from the command palette (`Ctrl+Shift+P`)
 
 
@@ -243,7 +243,7 @@ WaterFree detects these on save and adds them to the active session's backlog au
 - All session data is stored locally in `.waterfree/` inside your workspace (add to `.gitignore`)
 - The codebase index, call graph, and session history never leave your machine except as context sent to the Anthropic API
 - `WaterFree: Setup` stores the Anthropic API key in VS Code secure secret storage instead of plain settings
-- `install.ps1` stores MCP-side provider secrets in a user-scoped Windows DPAPI store at `~/.waterfree/secrets.json`
+- the current developer deployment scripts store MCP-side provider secrets in a user-scoped Windows DPAPI store at `~/.waterfree/secrets.json`
 - No telemetry is collected by WaterFree itself
 
 
@@ -266,6 +266,7 @@ WaterFree detects these on save and adds them to the active session's backlog au
 
 - [docs/11_DEEP_AGENTS_RUNTIME.md](docs/11_DEEP_AGENTS_RUNTIME.md) — proposed multi-provider runtime with Deep Agents, first-class skills, subagents, checkpointing, and an Ollama lane for local knowledge work
 - [docs/12_PYTHON_BRIDGE_MCP_SKILLS.md](docs/12_PYTHON_BRIDGE_MCP_SKILLS.md) — proposed bridge contract for MCP discovery, skill loading, subagent delegation, filesystem harnessing, and optional web-search/retrieval MCPs
+- [docs/16_CUSTOMER_INSTALLER_PLAN.md](docs/16_CUSTOMER_INSTALLER_PLAN.md) — production installer plan for Windows packaging, Claude/Codex MCP registration, verification, repair, and uninstall
 
 
 ---

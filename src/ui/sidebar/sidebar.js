@@ -24,6 +24,46 @@ const WIZARDS = [
   { id: "clean_code_review",    icon: "Lint", title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
 ];
 
+const PROVIDER_LABELS = {
+  claude: "Claude",
+  openai: "OpenAI / Codex",
+  ollama: "Ollama",
+  huggingface: "Hugging Face",
+  mock: "Mock (no API calls)",
+};
+
+const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", ollama: "OLL", huggingface: "HF", mock: "OFF" };
+
+const PROVIDER_MODELS = {
+  claude: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
+  ollama: ["llama3.2", "codestral", "qwen2.5-coder", "mistral"],
+  huggingface: [],
+  mock: [],
+};
+
+const PERSONA_USE_WITH = [
+  { id: "all", label: "All sessions" },
+  { id: "architect", label: "Architect" },
+  { id: "pattern_expert", label: "Design Pattern Expert" },
+  { id: "debug_detective", label: "Debug Detective" },
+  { id: "yolo", label: "YOLO" },
+  { id: "socratic", label: "Socratic Coach" },
+  { id: "stub_wireframer", label: "Stub / Wireframer" },
+  { id: "indexing", label: "Indexing only" },
+];
+
+const MENU_ITEMS = [
+  { id: "providers", icon: "API", label: "Providers" },
+  { id: "mcp",       icon: "MCP", label: "MCP Servers" },
+  { id: "skills",    icon: "SKL", label: "Skills" },
+  { id: "personas",  icon: "PSN", label: "Personas" },
+  { id: "usage",     icon: "USG", label: "Usage" },
+  { id: "todos",     icon: "TDO", label: "Todos" },
+  { id: "index",     icon: "IDX", label: "Index" },
+  { id: "knowledge", icon: "KNW", label: "Knowledge Explorer" },
+];
+
 let state = {
   plan: null,
   backlogSummary: { nextTask: null, readyTasks: [], totalReady: 0 },
@@ -36,6 +76,11 @@ let state = {
   draftDebugReason: typeof savedState.draftDebugReason === "string" ? savedState.draftDebugReason : "bug investigation",
   selectedPersona: typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect",
   expandedWizard: typeof savedState.expandedWizard === "string" ? savedState.expandedWizard : null,
+  // settings state (not persisted)
+  settingsOpen: false,
+  settingsPage: null,   // null = menu, "providers", "mcp", "skills", "personas", "usage", "todos", "index", "knowledge"
+  settingsData: { providers: [] },
+  providerForm: null,  // {mode:"add"|"edit", id, type, name, apiKey, baseUrl, models, modes, useWith, enabled}
 };
 
 function escapeHtml(value) {
@@ -324,8 +369,249 @@ function renderBacklog(backlogSummary) {
   ].join("");
 }
 
+function renderHeader() {
+  const active = state.settingsOpen ? ' gear-btn--active' : '';
+  return [
+    '<div class="sidebar-header">',
+    '<button type="button" class="gear-btn' + active + '" data-action="openSettings" title="Settings">',
+    '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">',
+    '<path d="M8 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm0 5a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/>',
+    '<path d="M8 0a1 1 0 0 1 .95.68l.54 1.62a5.98 5.98 0 0 1 1.32.77l1.65-.54a1 1 0 0 1 1.18.46l1 1.73a1 1 0 0 1-.18 1.24l-1.24 1.1c.03.27.03.55 0 .82l1.24 1.1a1 1 0 0 1 .18 1.24l-1 1.73a1 1 0 0 1-1.18.46l-1.65-.54a5.98 5.98 0 0 1-1.32.77L8.95 15.32A1 1 0 0 1 8 16a1 1 0 0 1-.95-.68l-.54-1.62a5.98 5.98 0 0 1-1.32-.77l-1.65.54a1 1 0 0 1-1.18-.46l-1-1.73a1 1 0 0 1 .18-1.24l1.24-1.1a5.98 5.98 0 0 1 0-.82l-1.24-1.1a1 1 0 0 1-.18-1.24l1-1.73a1 1 0 0 1 1.18-.46l1.65.54a5.98 5.98 0 0 1 1.32-.77L7.05.68A1 1 0 0 1 8 0z"/>',
+    '</svg>',
+    '</button>',
+    '</div>',
+  ].join("");
+}
+
+/* ── Settings Overlay ────────────────────────────────────────── */
+
+function renderSettingsOverlay() {
+  const isMenu      = !state.settingsPage;
+  const isProvForm  = Boolean(state.providerForm);
+  const menuItem    = MENU_ITEMS.find(function(m) { return m.id === state.settingsPage; });
+
+  let title = "Settings";
+  if (isProvForm) { title = state.providerForm.mode === "add" ? "Add Provider" : "Edit Provider"; }
+  else if (menuItem) { title = menuItem.label; }
+
+  const backAction  = isMenu ? "closeSettings" : isProvForm ? "cancelProvider" : "settingsBack";
+  const backBtn = isMenu
+    ? '<span style="width:28px;display:inline-block"></span>'
+    : '<button type="button" class="settings-nav-btn" data-action="' + backAction + '">&#x2190;</button>';
+
+  let bodyHtml;
+  if (isProvForm)                          { bodyHtml = renderProviderForm(); }
+  else if (state.settingsPage === "providers") { bodyHtml = renderProvidersPage(); }
+  else if (state.settingsPage)             { bodyHtml = renderSettingsStub(state.settingsPage); }
+  else                                     { bodyHtml = renderSettingsMenu(); }
+
+  return [
+    '<div class="settings-overlay">',
+    '<div class="settings-dialog">',
+    '<div class="settings-dialog-header">',
+    backBtn,
+    '<span class="settings-title">' + escapeHtml(title) + '</span>',
+    '<button type="button" class="settings-nav-btn" data-action="closeSettings">&#x2715;</button>',
+    '</div>',
+    '<div class="settings-body">',
+    bodyHtml,
+    '</div>',
+    '</div>',
+    '</div>',
+  ].join("");
+}
+
+function renderSettingsMenu() {
+  const items = MENU_ITEMS.map(function(m) {
+    const provCount = m.id === "providers" ? state.settingsData.providers.length : 0;
+    const badge = provCount > 0 ? ' <span class="menu-count">' + provCount + '</span>' : '';
+    return [
+      '<div class="menu-item" data-action="settingsNav" data-page="' + m.id + '">',
+      '<span class="menu-icon">' + m.icon + '</span>',
+      '<span class="menu-label">' + escapeHtml(m.label) + badge + '</span>',
+      '<span class="menu-arrow">&#x203A;</span>',
+      '</div>',
+    ].join("");
+  }).join("");
+  return '<div class="settings-menu">' + items + '</div>';
+}
+
+function renderProvidersPage() {
+  const providers = state.settingsData.providers;
+  const cards = providers.length === 0
+    ? '<p class="empty" style="margin-bottom:10px">No providers configured.</p>'
+    : providers.map(function(p) {
+        const icon = PROVIDER_ICONS[p.type] || "???";
+        const label = PROVIDER_LABELS[p.type] || p.type;
+        const credHtml = p.type === "mock"
+          ? '<span class="key-badge mock">Mock</span>'
+          : p.hasKey
+            ? '<span class="key-badge set">' + escapeHtml(p.maskedKey) + '</span>'
+            : '<span class="key-badge unset">No key</span>';
+        const modePills = (p.modes || []).map(function(m) {
+          return '<span class="mode-pill">' + escapeHtml(m) + '</span>';
+        }).join("");
+        const enabledClass = p.enabled ? " provider-card--on" : " provider-card--off";
+        return [
+          '<div class="provider-card' + enabledClass + '">',
+          '<div class="provider-card-header">',
+          '<span class="provider-icon">' + icon + '</span>',
+          '<div class="provider-card-info">',
+          '<span class="provider-name">' + escapeHtml(p.name) + '</span>',
+          '<span class="provider-type">' + escapeHtml(label) + '</span>',
+          '</div>',
+          '<button type="button" class="toggle-btn' + (p.enabled ? ' toggle-btn--on' : '') + '" data-action="toggleProvider" data-provider-id="' + escapeHtml(p.id) + '" title="' + (p.enabled ? "Disable" : "Enable") + '">',
+          p.enabled ? '&#x25CF;' : '&#x25CB;',
+          '</button>',
+          '</div>',
+          '<div class="provider-card-meta">',
+          credHtml,
+          modePills,
+          '</div>',
+          '<div class="button-row" style="margin-top:8px">',
+          '<button type="button" data-action="editProvider" data-provider-id="' + escapeHtml(p.id) + '">Edit</button>',
+          '<button type="button" class="danger-btn" data-action="removeProvider" data-provider-id="' + escapeHtml(p.id) + '">Remove</button>',
+          '</div>',
+          '</div>',
+        ].join("");
+      }).join("");
+
+  return [
+    cards,
+    '<button type="button" class="primary" data-action="showAddProvider" style="width:100%;margin-top:8px">+ Add Provider</button>',
+  ].join("");
+}
+
+function renderProviderForm() {
+  const f = state.providerForm;
+  const typeOptions = Object.keys(PROVIDER_LABELS).map(function(t) {
+    return '<option value="' + t + '"' + (f.type === t ? " selected" : "") + ">" + escapeHtml(PROVIDER_LABELS[t]) + "</option>";
+  }).join("");
+
+  const useWithOptions = PERSONA_USE_WITH.map(function(u) {
+    return '<option value="' + u.id + '"' + (f.useWith === u.id ? " selected" : "") + ">" + escapeHtml(u.label) + "</option>";
+  }).join("");
+
+  const needsKey = f.type !== "mock" && f.type !== "ollama";
+  const needsUrl = f.type === "ollama";
+  const knownModels = PROVIDER_MODELS[f.type] || [];
+  const hasFreeTextModels = f.type === "ollama" || f.type === "huggingface";
+
+  let modelsHtml = "";
+  if (knownModels.length > 0) {
+    modelsHtml = '<div class="checkbox-group">' + knownModels.map(function(m) {
+      const checked = f.models.includes(m) ? " checked" : "";
+      return '<label><input type="checkbox" data-model-check="' + escapeHtml(m) + '"' + checked + '> ' + escapeHtml(m) + '</label>';
+    }).join("") + '</div>';
+  } else if (hasFreeTextModels) {
+    modelsHtml = '<input type="text" id="pf-models-text" class="key-input" placeholder="model1, model2" value="' + escapeHtml((f.models || []).join(", ")) + '">';
+  }
+
+  return [
+    '<div class="provider-form">',
+    '<div class="field-group">',
+    '<label class="field-label" for="pf-type">Provider</label>',
+    '<select id="pf-type">' + typeOptions + '</select>',
+    '</div>',
+    '<div class="field-group">',
+    '<label class="field-label" for="pf-name">Name</label>',
+    '<input type="text" id="pf-name" class="key-input" value="' + escapeHtml(f.name) + '" placeholder="e.g. Claude Primary">',
+    '</div>',
+    needsKey ? [
+      '<div class="field-group">',
+      '<label class="field-label" for="pf-key">API Key' + (f.mode === "edit" ? " (leave blank to keep existing)" : "") + '</label>',
+      '<input type="password" id="pf-key" class="key-input" placeholder="sk-ant-..." autocomplete="off">',
+      '</div>',
+    ].join("") : "",
+    needsUrl ? [
+      '<div class="field-group">',
+      '<label class="field-label" for="pf-url">Base URL</label>',
+      '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || "http://localhost:11434") + '">',
+      '</div>',
+    ].join("") : "",
+    f.type !== "mock" && modelsHtml ? [
+      '<div class="field-group">',
+      '<label class="field-label">Models</label>',
+      modelsHtml,
+      '</div>',
+    ].join("") : "",
+    '<div class="field-group">',
+    '<label class="field-label">Use for</label>',
+    '<div class="checkbox-group">',
+    ['planning', 'execution', 'indexing'].map(function(mode) {
+      const checked = (f.modes || []).includes(mode) ? " checked" : "";
+      return '<label><input type="checkbox" data-mode-check="' + mode + '"' + checked + '> ' + mode.charAt(0).toUpperCase() + mode.slice(1) + '</label>';
+    }).join(""),
+    '</div>',
+    '</div>',
+    '<div class="field-group">',
+    '<label class="field-label" for="pf-usewith">Use with</label>',
+    '<select id="pf-usewith">' + useWithOptions + '</select>',
+    '</div>',
+    '<div class="button-row" style="margin-top:12px">',
+    '<button type="button" class="primary" data-action="submitProvider">Save</button>',
+    '<button type="button" data-action="cancelProvider">Cancel</button>',
+    '</div>',
+    '</div>',
+  ].join("");
+}
+
+function renderSettingsStub(page) {
+  const item = MENU_ITEMS.find(function(m) { return m.id === page; });
+  const label = item ? item.label : page;
+  return '<p class="empty" style="padding:8px 0">' + escapeHtml(label) + ' configuration coming soon.</p>';
+}
+
+function wireSettingsForms() {
+  // Provider type select — triggers re-render to show correct fields
+  const typeSelect = document.getElementById("pf-type");
+  if (typeSelect) {
+    typeSelect.addEventListener("change", function(e) {
+      const t = e.target.value;
+      const autoNames = Object.values(PROVIDER_LABELS);
+      if (!state.providerForm.name || autoNames.includes(state.providerForm.name)) {
+        state.providerForm.name = PROVIDER_LABELS[t] || t;
+      }
+      state.providerForm.type = t;
+      state.providerForm.models = [];
+      render();
+    });
+  }
+  const nameInput = document.getElementById("pf-name");
+  if (nameInput) { nameInput.addEventListener("input", function(e) { state.providerForm.name = e.target.value; }); }
+  const keyInput = document.getElementById("pf-key");
+  if (keyInput) { keyInput.addEventListener("input", function(e) { state.providerForm.apiKey = e.target.value; }); }
+  const urlInput = document.getElementById("pf-url");
+  if (urlInput) { urlInput.addEventListener("input", function(e) { state.providerForm.baseUrl = e.target.value; }); }
+  const modelsText = document.getElementById("pf-models-text");
+  if (modelsText) {
+    modelsText.addEventListener("input", function(e) {
+      state.providerForm.models = e.target.value.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+    });
+  }
+  document.querySelectorAll("[data-model-check]").forEach(function(cb) {
+    cb.addEventListener("change", function(e) {
+      const model = e.target.getAttribute("data-model-check");
+      if (e.target.checked) { if (!state.providerForm.models.includes(model)) { state.providerForm.models.push(model); } }
+      else { state.providerForm.models = state.providerForm.models.filter(function(m) { return m !== model; }); }
+    });
+  });
+  document.querySelectorAll("[data-mode-check]").forEach(function(cb) {
+    cb.addEventListener("change", function(e) {
+      const mode = e.target.getAttribute("data-mode-check");
+      if (e.target.checked) { if (!state.providerForm.modes.includes(mode)) { state.providerForm.modes.push(mode); } }
+      else { state.providerForm.modes = state.providerForm.modes.filter(function(m) { return m !== mode; }); }
+    });
+  });
+  const useWithSelect = document.getElementById("pf-usewith");
+  if (useWithSelect) { useWithSelect.addEventListener("change", function(e) { state.providerForm.useWith = e.target.value; }); }
+}
+
 function render() {
+  const overlayHtml = state.settingsOpen ? renderSettingsOverlay() : "";
+
   root.innerHTML = [
+    renderHeader(),
     '<div class="stack">',
     renderQuickJobs(),
     renderWizards(),
@@ -333,6 +619,7 @@ function render() {
     renderPlan(state.plan),
     renderBacklog(state.backlogSummary),
     "</div>",
+    overlayHtml,
   ].join("");
 
   const goalInput = document.getElementById("goal-input");
@@ -351,6 +638,9 @@ function render() {
   if (debugReasonSelect) {
     debugReasonSelect.addEventListener("change", function(e) { state.draftDebugReason = e.target.value; persistState(); });
   }
+  if (state.settingsOpen && state.providerForm) {
+    wireSettingsForms();
+  }
 }
 
 root.addEventListener("click", function(event) {
@@ -358,6 +648,126 @@ root.addEventListener("click", function(event) {
   if (!el) { return; }
   const action = el.getAttribute("data-action");
   if (!action) { return; }
+
+  if (action === "openSettings") {
+    state.settingsOpen = true;
+    state.settingsPage = null;
+    state.providerForm = null;
+    vscode.postMessage({ type: "requestSettings" });
+    render();
+    return;
+  }
+
+  if (action === "closeSettings") {
+    state.settingsOpen = false;
+    state.settingsPage = null;
+    state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "settingsBack") {
+    if (state.providerForm) {
+      state.providerForm = null;
+    } else {
+      state.settingsPage = null;
+    }
+    render();
+    return;
+  }
+
+  if (action === "settingsNav") {
+    const page = el.getAttribute("data-page");
+    if (page === "todos") {
+      state.settingsOpen = false;
+      state.settingsPage = null;
+      state.providerForm = null;
+      vscode.postMessage({ type: "openTodoBoard" });
+      render();
+      return;
+    }
+    state.settingsPage = page;
+    state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "showAddProvider") {
+    state.providerForm = {
+      mode: "add", id: null,
+      type: "claude",
+      name: PROVIDER_LABELS["claude"],
+      apiKey: "", baseUrl: "",
+      models: ["claude-opus-4-6", "claude-sonnet-4-6"],
+      modes: ["planning", "execution"],
+      useWith: "all",
+      enabled: true,
+    };
+    render();
+    return;
+  }
+
+  if (action === "editProvider") {
+    const providerId = el.getAttribute("data-provider-id");
+    const provider = state.settingsData.providers.find(function(p) { return p.id === providerId; });
+    if (provider) {
+      state.providerForm = {
+        mode: "edit",
+        id: provider.id,
+        type: provider.type,
+        name: provider.name,
+        apiKey: "",
+        baseUrl: provider.baseUrl || "",
+        models: (provider.models || []).slice(),
+        modes: (provider.modes || []).slice(),
+        useWith: provider.useWith || "all",
+        enabled: provider.enabled,
+      };
+      render();
+    }
+    return;
+  }
+
+  if (action === "cancelProvider") {
+    state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "submitProvider") {
+    const f = state.providerForm;
+    if (!f) { return; }
+    const msg = {
+      providerType: f.type,
+      name: f.name || PROVIDER_LABELS[f.type] || f.type,
+      apiKey: f.apiKey || "",
+      baseUrl: f.baseUrl || "",
+      models: f.models || [],
+      modes: f.modes || [],
+      useWith: f.useWith || "all",
+      enabled: f.enabled !== false,
+    };
+    if (f.mode === "add") {
+      vscode.postMessage(Object.assign({ type: "addProvider" }, msg));
+    } else {
+      vscode.postMessage(Object.assign({ type: "updateProvider", id: f.id }, msg));
+    }
+    state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "removeProvider") {
+    const providerId = el.getAttribute("data-provider-id");
+    if (providerId) { vscode.postMessage({ type: "removeProvider", id: providerId }); }
+    return;
+  }
+
+  if (action === "toggleProvider") {
+    const providerId = el.getAttribute("data-provider-id");
+    if (providerId) { vscode.postMessage({ type: "toggleProvider", id: providerId }); }
+    return;
+  }
 
   if (action === "toggleWizard") {
     const wizardId = el.getAttribute("data-wizard-id");
@@ -454,6 +864,11 @@ root.addEventListener("click", function(event) {
 
 window.addEventListener("message", function(event) {
   const message = event.data || {};
+  if (message.type === "settings") {
+    state.settingsData = Object.assign({ providers: [] }, message.data || {});
+    if (state.settingsOpen) { render(); }
+    return;
+  }
   if (message.type === "state") {
     state = { ...state, ...message.state };
     render();

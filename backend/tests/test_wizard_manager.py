@@ -3,7 +3,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from backend.session.models import CodeCoord, TaskPriority, TaskType
+from backend.session.models import CodeCoord, TaskDependency, TaskPriority, TaskType
 from backend.session.session_manager import SessionManager
 from backend.todo.store import TaskStore
 from backend.wizard.definitions import CODING_TEMPLATE
@@ -32,12 +32,39 @@ class _FakeRuntime:
             ],
             "todos": [],
             "subsystems": [],
+            "designArtifacts": {},
             "externalResearchPrompt": "",
             "questions": [],
         }
 
         if stage_kind == "architect_review":
             payload["subsystems"] = ["API Layer", "Data Layer"]
+            payload["designArtifacts"] = {
+                "subsystems": [{"name": "API Layer"}, {"name": "Data Layer"}],
+                "patternChoices": [{"name": "Subsystem-first breakdown"}],
+            }
+        if stage_kind == "design_pattern_agent":
+            subsystem_name = kwargs.get("metadata", {}).get("subsystemName", "API Layer")
+            payload["designArtifacts"] = {
+                "subsystems": [{"name": subsystem_name, "owner": "pattern_expert"}],
+                "interfaces": [{"name": f"{subsystem_name}Contract", "owner": subsystem_name}],
+                "interfaceMethods": [{"name": "handle", "interface": f"{subsystem_name}Contract"}],
+                "dataContracts": [{"name": f"{subsystem_name}Payload"}],
+                "patternChoices": [{"name": "Explicit interface ownership"}],
+                "integrationPolicies": [{"name": "Translate vendor failures at the boundary"}],
+            }
+            payload["todos"] = [
+                {
+                    "id": f"{subsystem_name}-policy",
+                    "title": f"Define {subsystem_name} policy",
+                    "description": f"Document contracts for {subsystem_name}.",
+                    "rationale": "Policy should be accepted before implementation.",
+                    "priority": "P1",
+                    "taskType": "spike",
+                    "estimatedMinutes": 25,
+                    "aiNotes": "Confidence medium until integration details are confirmed.",
+                }
+            ]
         return payload
 
 
@@ -179,6 +206,106 @@ class WizardManagerTests(unittest.TestCase):
         self.assertEqual(len(session["tasks"]), 2)
         self.assertEqual(len(backlog.tasks), 2)
         self.assertTrue(result["wizard"]["linkedSessionId"])
+
+    def test_design_stage_persists_structured_design_artifacts(self) -> None:
+        workspace = self.make_workspace()
+        manager = WizardManager(str(workspace))
+        runtime = _FakeRuntime()
+        run = manager.create_or_resume_run(
+            goal="Neighborhood flood alert app",
+            wizard_id="bring_idea_to_life",
+            persona="architect",
+        )
+
+        manager.run_stage(run_id=run.id, stage_id="market_research", runtime=runtime)
+        run = manager.load_run(run.id)
+        for chunk in run.get_stage("market_research").chunks:
+            manager.accept_chunk(run_id=run.id, stage_id="market_research", chunk_id=chunk.id)
+        manager.accept_stage(run_id=run.id, stage_id="market_research")
+
+        manager.run_stage(run_id=run.id, stage_id="architect_review", runtime=runtime)
+        run = manager.load_run(run.id)
+        for chunk in run.get_stage("architect_review").chunks:
+            manager.accept_chunk(run_id=run.id, stage_id="architect_review", chunk_id=chunk.id)
+        manager.accept_stage(run_id=run.id, stage_id="architect_review")
+
+        manager.run_stage(run_id=run.id, stage_id="design:api-layer", runtime=runtime)
+        refreshed = manager.load_run(run.id)
+        design_stage = refreshed.get_stage("design:api-layer")
+
+        self.assertIn("designArtifacts", design_stage.derived_artifacts)
+        self.assertEqual(
+            design_stage.derived_artifacts["designArtifacts"]["interfaces"][0]["name"],
+            "API LayerContract",
+        )
+        self.assertEqual(
+            design_stage.derived_artifacts["designArtifacts"]["todos"][0]["title"],
+            "Define API Layer policy",
+        )
+
+    def test_promoted_and_session_tasks_preserve_rich_fields_and_dependency_edges(self) -> None:
+        workspace = self.make_workspace()
+        manager = WizardManager(str(workspace))
+        run = manager.create_or_resume_run(
+            goal="Neighborhood flood alert app",
+            wizard_id="bring_idea_to_life",
+            persona="architect",
+        )
+        coding_stage = manager._ensure_static_stage(run, CODING_TEMPLATE)  # noqa: SLF001
+        coding_stage.status = WizardStageStatus.ACCEPTED
+        first = WizardTodoExport(
+            stage_id=coding_stage.id,
+            title="Define alert contract",
+            description="Document the alert payload contract.",
+            rationale="Contracts should be stable before handler implementation.",
+            phase=coding_stage.title,
+            priority=TaskPriority.P1,
+            task_type=TaskType.IMPL,
+            target_coord=CodeCoord(file="docs/alerts.md"),
+            estimated_minutes=15,
+            ai_notes="Confidence medium until the UI payload is confirmed.",
+        )
+        second = WizardTodoExport(
+            stage_id=coding_stage.id,
+            title="Build alert handler",
+            description="Implement the alert handler behind the accepted contract.",
+            rationale="Implementation should follow the contract task.",
+            phase=coding_stage.title,
+            priority=TaskPriority.P1,
+            task_type=TaskType.IMPL,
+            target_coord=CodeCoord(file="src/api/flood.ts"),
+            context_coords=[CodeCoord(file="docs/alerts.md", line=1)],
+            estimated_minutes=45,
+            ai_notes="Keep the vendor payload behind a local adapter.",
+        )
+        second.depends_on = [TaskDependency(task_id=first.id)]
+        coding_stage.todo_exports = [first, second]
+        manager.save_run(run)
+
+        session_manager = SessionManager(str(workspace))
+        task_store = TaskStore(str(workspace))
+        sessions = {}
+
+        result = manager.start_coding(
+            run_id=run.id,
+            session_manager=session_manager,
+            sessions=sessions,
+            task_store=task_store,
+        )
+
+        backlog = task_store.load()
+        self.assertEqual(len(backlog.tasks), 2)
+        first_backlog = next(task for task in backlog.tasks if task.title == "Define alert contract")
+        second_backlog = next(task for task in backlog.tasks if task.title == "Build alert handler")
+        self.assertEqual(first_backlog.rationale, first.rationale)
+        self.assertEqual(first_backlog.estimated_minutes, 15)
+        self.assertEqual(second_backlog.ai_notes, second.ai_notes)
+        self.assertEqual(second_backlog.depends_on[0].task_id, first_backlog.id)
+
+        session_tasks = result["session"]["tasks"]
+        first_session = next(task for task in session_tasks if task["title"] == "Build alert handler")
+        self.assertEqual(first_session["contextCoords"][0]["file"], "docs/alerts.md")
+        self.assertEqual(len(first_session["dependsOn"]), 1)
 
 
 if __name__ == "__main__":

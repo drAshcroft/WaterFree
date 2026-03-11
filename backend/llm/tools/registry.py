@@ -17,8 +17,20 @@ from .filesystem_tools import filesystem_tool_descriptors
 from .graph_tools import graph_tool_descriptors
 from .knowledge_tools import knowledge_tool_descriptors
 from .task_tools import task_tool_descriptors
+from .testing_tools import testing_tool_descriptors
 from .types import ToolDescriptor
 from .web_tools import web_tool_descriptors
+
+_PERSONA_TOOL_CATEGORIES: dict[str, set[str]] = {
+    "architect": {"graph", "knowledge", "backlog"},
+    "pattern_expert": {"graph", "knowledge", "backlog"},
+    "stub_wireframer": {"graph", "backlog", "filesystem", "testing"},
+    "debug_detective": {"graph", "knowledge"},
+    "market_researcher": {"graph", "knowledge", "web"},
+    "bdd_test_designer": {"backlog", "testing"},
+    "coding_agent": {"graph", "knowledge", "backlog", "filesystem", "testing"},
+    "reviewer": {"graph", "knowledge", "backlog", "testing"},
+}
 
 
 class ToolRegistry:
@@ -41,6 +53,26 @@ class ToolRegistry:
         if include_optional:
             return descriptors
         return [descriptor for descriptor in descriptors if not descriptor.policy.optional]
+
+    def select_descriptors(
+        self,
+        *,
+        persona: str = "",
+        stage: str = "",
+        preferred_categories: Optional[list[str]] = None,
+        include_optional: bool = True,
+    ) -> list[ToolDescriptor]:
+        descriptors = self.list_descriptors(include_optional=include_optional)
+        allowed_categories = _allowed_categories(persona, preferred_categories)
+        stage_key = stage.strip().lower()
+        selected: list[ToolDescriptor] = []
+        for descriptor in descriptors:
+            if allowed_categories is not None and descriptor.policy.category not in allowed_categories:
+                continue
+            if not _stage_allows_descriptor(stage_key, descriptor):
+                continue
+            selected.append(descriptor)
+        return selected
 
     def policy_inventory(self, include_optional: bool = True) -> list[dict[str, Any]]:
         return [
@@ -67,5 +99,37 @@ def build_default_tool_registry(
     descriptors.extend(task_tool_descriptors(task_store_factory))
     descriptors.extend(knowledge_tool_descriptors(knowledge_store_factory))
     descriptors.extend(filesystem_tool_descriptors())
+    descriptors.extend(testing_tool_descriptors())
     descriptors.extend(web_tool_descriptors(enabled=enable_optional_web_tools))
     return ToolRegistry(descriptors=descriptors)
+
+
+def _allowed_categories(persona: str, preferred_categories: Optional[list[str]]) -> Optional[set[str]]:
+    categories = _PERSONA_TOOL_CATEGORIES.get(persona.strip().lower())
+    if categories is None:
+        if preferred_categories:
+            return set(preferred_categories)
+        return None
+    merged = set(categories)
+    merged.update(preferred_categories or [])
+    return merged
+
+
+def _stage_allows_descriptor(stage: str, descriptor: ToolDescriptor) -> bool:
+    if stage == "execution":
+        return True
+    if descriptor.policy.category == "filesystem":
+        return descriptor.policy.read_only
+    if descriptor.policy.category == "testing":
+        return descriptor.policy.read_only and stage in {
+            "annotation",
+            "alter_annotation",
+            "question_answer",
+            "live_debug",
+            "ripple_detection",
+        }
+    if descriptor.policy.category == "backlog":
+        if descriptor.name == "delete_task":
+            return False
+        return True
+    return descriptor.policy.read_only

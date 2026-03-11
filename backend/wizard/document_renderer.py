@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from backend.wizard.definitions import MARKET_RESEARCH_TEMPLATE
+from backend.wizard.design_artifacts import normalize_design_artifacts
 from backend.wizard.models import WizardChunkState, WizardChunkStatus, WizardStageState, WizardRun
 
 if TYPE_CHECKING:
@@ -16,6 +17,11 @@ _FRONTMATTER_RE = re.compile(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?", re.DOTALL)
 _INITIAL_MARKET_RESEARCH_TITLE = "What is the idea?"
 _INITIAL_MARKET_RESEARCH_GUIDANCE = "Describe the software idea, problem you want to solve or frustration in plain language."
 _UNRESOLVED_SEPARATOR = "======================================== Unresolved ========================================"
+
+
+def _format_artifact_label(field: str) -> str:
+    label = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", field)
+    return label.replace("_", " ").strip().capitalize()
 
 
 def render_frontmatter(values: dict[str, str]) -> str:
@@ -92,6 +98,14 @@ class DocumentRenderer:
                 stage.summary.strip(),
                 "",
             ])
+
+        design_artifacts = normalize_design_artifacts(stage.derived_artifacts)
+        if any(design_artifacts.get(key) for key in design_artifacts):
+            sections.extend([
+                "## Structured Design Artifacts",
+                "",
+            ])
+            sections.extend(self._render_design_artifacts(design_artifacts))
 
         if stage.questions:
             sections.extend([
@@ -248,6 +262,63 @@ class DocumentRenderer:
             except ValueError:
                 continue
         return doc_path.name
+
+    def _render_design_artifacts(self, design_artifacts: dict[str, list[dict]]) -> list[str]:
+        sections: list[str] = []
+        for key, title in (
+            ("subsystems", "Subsystems"),
+            ("interfaces", "Interfaces"),
+            ("interfaceMethods", "Interface Methods"),
+            ("dataContracts", "Data Contracts"),
+            ("apiCatalog", "API Catalog"),
+            ("patternChoices", "Pattern Choices"),
+            ("antiPatterns", "Anti-Patterns"),
+            ("integrationPolicies", "Integration Policies"),
+            ("todos", "Structured Todo Summary"),
+        ):
+            items = design_artifacts.get(key, [])
+            if not items:
+                continue
+            sections.extend([f"### {title}", ""])
+            for item in items:
+                name = str(item.get("name", "") or item.get("title", "")).strip()
+                if name:
+                    sections.append(f"- **{name}**")
+                for field in (
+                    "purpose",
+                    "boundaries",
+                    "owner",
+                    "consumers",
+                    "invariants",
+                    "interface",
+                    "inputs",
+                    "outputs",
+                    "sideEffects",
+                    "errorModes",
+                    "provider",
+                    "auth",
+                    "rateLimit",
+                    "retry",
+                    "confidence",
+                    "failureModes",
+                    "description",
+                    "type",
+                    "priority",
+                    "targetFile",
+                ):
+                    value = item.get(field)
+                    if value in (None, "", [], {}):
+                        continue
+                    label = _format_artifact_label(field)
+                    if isinstance(value, list):
+                        joined = ", ".join(str(entry) for entry in value if str(entry).strip())
+                        if joined:
+                            sections.append(f"  {label}: {joined}")
+                    else:
+                        sections.append(f"  {label}: {value}")
+                if len(sections) >= 2 and sections[-1] != "":
+                    sections.append("")
+        return sections
 
     # ------------------------------------------------------------------
     # Notes extraction from on-disk documents

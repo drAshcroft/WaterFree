@@ -81,10 +81,26 @@ CODING_TEMPLATE = StageTemplate(
     persona="coding_agent",
     relative_doc_path="coding-handoff.md",
     chunks=(
-        ChunkDef("implementation_scope", "Implementation Scope", "Summarize the accepted implementation boundaries."),
-        ChunkDef("execution_order", "Execution Order", "Explain the task order the coding lane should follow."),
-        ChunkDef("build_tasks", "Build Tasks", "List the concrete coding tasks that will enter the session."),
-        ChunkDef("testing_handoff", "Testing Handoff", "State how BDD outputs map onto implementation and verification."),
+        ChunkDef(
+            "implementation_scope",
+            "Implementation Scope",
+            "Summarize the accepted implementation boundaries, the interfaces that are considered stable, and any upstream assumptions that already look vague, risky, or impossible.",
+        ),
+        ChunkDef(
+            "execution_order",
+            "Execution Order",
+            "Explain the dependency-aware build order the coding lane should follow, including when to pause and route issues back to design or review personas.",
+        ),
+        ChunkDef(
+            "build_tasks",
+            "Build Tasks",
+            "List the concrete coding tasks that will enter the session. Break them down by file, class, procedure, adapter, and test target so the backlog reflects real implementation work instead of one generic build item.",
+        ),
+        ChunkDef(
+            "testing_handoff",
+            "Testing Handoff",
+            "State how BDD outputs map onto implementation and verification, including which tests prove interface correctness and which failures should be reported back upstream.",
+        ),
     ),
 )
 

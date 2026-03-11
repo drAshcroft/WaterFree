@@ -21,6 +21,15 @@ def handle_list_tasks(server, params: dict) -> dict:
     return payload
 
 
+def handle_get_task_board(server, params: dict) -> dict:
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    store = server._get_task_store(workspace_path)
+    data = store.load()
+    payload = data.to_dict()
+    payload["path"] = store.path
+    return payload
+
+
 def handle_search_tasks(server, params: dict) -> dict:
     workspace_path = os.path.abspath(params.get("workspacePath", "."))
     store = server._get_task_store(workspace_path)
@@ -61,6 +70,18 @@ def handle_delete_task(server, params: dict) -> dict:
         raise ValueError("taskId is required")
     deleted = store.delete_task(task_id)
     return {"ok": True, "deleted": deleted, "taskId": task_id, "path": store.path}
+
+
+def handle_save_task_board(server, params: dict) -> dict:
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    store = server._get_task_store(workspace_path)
+    data = store.save_task_board(
+        layout=list(params.get("tasks", [])),
+        phases=[str(phase) for phase in params.get("phases", [])],
+    )
+    payload = data.to_dict()
+    payload["path"] = store.path
+    return payload
 
 
 def handle_what_next(server, params: dict) -> dict:

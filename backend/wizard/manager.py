@@ -17,6 +17,11 @@ from backend.wizard.definitions import (
     StageTemplate,
     wizard_root,
 )
+from backend.wizard.design_artifacts import (
+    artifact_subsystem_names,
+    normalize_design_artifacts,
+    serialize_todo_summaries,
+)
 from backend.wizard.document_renderer import DocumentRenderer
 from backend.wizard.models import (
     WizardChunkState,
@@ -260,11 +265,46 @@ class WizardManager:
                 continue
             for todo in stage.todo_exports:
                 if todo.promoted_task_id:
+                    run.derived_task_ids[todo.id] = todo.promoted_task_id
                     continue
                 created = task_store.add_task(self._exporter.todo_to_task_input(stage, todo))
                 todo.promoted_task_id = created.id
                 run.derived_task_ids[todo.id] = created.id
                 promoted_ids.append(created.id)
+        for stage in run.stages:
+            if stage.status != WizardStageStatus.ACCEPTED:
+                continue
+            for todo in stage.todo_exports:
+                if not todo.promoted_task_id:
+                    continue
+                resolved_deps = [
+                    {
+                        "taskId": run.derived_task_ids.get(dep.task_id, dep.task_id),
+                        "type": dep.type.value,
+                    }
+                    for dep in todo.depends_on
+                    if run.derived_task_ids.get(dep.task_id, dep.task_id)
+                ]
+                task_store.update_task(
+                    todo.promoted_task_id,
+                    {
+                        "title": todo.title,
+                        "description": todo.description or todo.prompt or todo.title,
+                        "rationale": todo.rationale,
+                        "phase": todo.phase or stage.title,
+                        "priority": todo.priority.value,
+                        "taskType": todo.task_type.value,
+                        "owner": {
+                            "type": todo.owner_type.value,
+                            "name": todo.owner_name,
+                        },
+                        "targetCoord": todo.target_coord.to_dict(),
+                        "contextCoords": [coord.to_dict() for coord in todo.context_coords],
+                        "dependsOn": resolved_deps,
+                        "estimatedMinutes": todo.estimated_minutes,
+                        "aiNotes": todo.ai_notes,
+                    },
+                )
         self.save_run(run)
         open_stage = run.get_stage(run.current_stage_id) or run.stages[0]
         return {
@@ -457,14 +497,27 @@ class WizardManager:
         stage.summary = str(payload.get("stageSummary", "")).strip()
         stage.questions = [str(item).strip() for item in payload.get("questions", []) if str(item).strip()]
         stage.external_research_prompt = str(payload.get("externalResearchPrompt", "")).strip()
+        stage.todo_exports = self._exporter.merge_todo_exports(stage, payload.get("todos", []))
 
-        if "subsystems" in payload:
-            stage.derived_artifacts["subsystems"] = [
+        design_artifacts = normalize_design_artifacts(
+            payload,
+            fallback_subsystems=[
                 str(item).strip()
                 for item in payload.get("subsystems", [])
                 if str(item).strip()
-            ]
-        stage.todo_exports = self._exporter.merge_todo_exports(stage, payload.get("todos", []))
+            ],
+        )
+        if stage.todo_exports:
+            design_artifacts["todos"] = serialize_todo_summaries(stage.todo_exports)
+        subsystem_names = artifact_subsystem_names(design_artifacts)
+        if subsystem_names:
+            stage.derived_artifacts["subsystems"] = subsystem_names
+        else:
+            stage.derived_artifacts.pop("subsystems", None)
+        if any(design_artifacts.get(key) for key in design_artifacts):
+            stage.derived_artifacts["designArtifacts"] = design_artifacts
+        else:
+            stage.derived_artifacts.pop("designArtifacts", None)
 
     def _load_or_create_linked_session(self, run: WizardRun, session_manager: SessionManager) -> PlanDocument:
         current = session_manager.load_session()

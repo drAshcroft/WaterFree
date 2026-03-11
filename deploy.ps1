@@ -29,7 +29,6 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = $PSScriptRoot
 $SkillsDir = Join-Path $ScriptDir "skills"
 $VsixPath = Join-Path $ScriptDir "waterfree.vsix"
-$McpLauncherPath = Join-Path $ScriptDir "scripts\start_mcp_server.ps1"
 
 $CodeCmd = @(
     "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
@@ -65,21 +64,9 @@ function Write-Ok([string]$Message) {
 
 function New-McpEntry([string]$Module) {
     return [ordered]@{
-        command = "powershell"
-        args = @(
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            $McpLauncherPath,
-            "-Module",
-            $Module,
-            "-PythonPath",
-            $PythonPath,
-            "-WorkingDirectory",
-            $ScriptDir
-        )
-        cwd = $ScriptDir
+        command = $PythonPath
+        args    = @("-m", $Module)
+        env     = [ordered]@{ PYTHONPATH = $ScriptDir }
     }
 }
 
@@ -187,76 +174,9 @@ function Merge-JsonMcpConfig([string]$ConfigPath) {
     Write-Ok "Config written: $ConfigPath"
 }
 
-function Remove-WaterFreeYamlBlocks([string[]]$Lines) {
-    $result = New-Object System.Collections.Generic.List[string]
-    $skipping = $false
-    foreach ($line in $Lines) {
-        if ($line -match '^\s*mcp_servers:\s*-\s+name:\s+') {
-            continue
-        }
 
-        if ($line -match '^\s*-\s+name:\s+(waterfree-|pairprogram-)') {
-            $skipping = $true
-            continue
-        }
 
-        if ($skipping) {
-            if ($line -match '^\s*-\s+name:\s+' -or $line -match '^[A-Za-z0-9_]+\s*:') {
-                $skipping = $false
-            } else {
-                continue
-            }
-        }
 
-        $result.Add($line)
-    }
-    return $result.ToArray()
-}
-
-function Merge-YamlMcpConfig([string]$ConfigPath) {
-    $rawContent = if (Test-Path $ConfigPath) { Get-Content $ConfigPath -Raw } else { "" }
-    $lines = if ($rawContent) { @($rawContent -split "`r?`n") } else { @() }
-    $lines = @(Remove-WaterFreeYamlBlocks -Lines $lines)
-
-    $output = New-Object System.Collections.Generic.List[string]
-    $inserted = $false
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = $lines[$i]
-        $output.Add($line)
-        if (-not $inserted -and $line -match '^mcp_servers:\s*$') {
-            foreach ($server in $McpServers) {
-                $entry = New-McpEntry -Module $server.module
-                $output.Add("  - name: $($server.name)")
-                $output.Add('    command: "powershell"')
-                $argsYaml = ($entry.args | ForEach-Object { '"' + ($_ -replace '\\', '/') + '"' }) -join ", "
-                $output.Add("    args: [$argsYaml]")
-                $output.Add('    cwd: "' + ($entry.cwd -replace '\\', '/') + '"')
-                Write-Host "    Registered $($server.name)"
-            }
-            $inserted = $true
-        }
-    }
-
-    if (-not $inserted) {
-        $output.Add("mcp_servers:")
-        foreach ($server in $McpServers) {
-            $entry = New-McpEntry -Module $server.module
-            $output.Add("  - name: $($server.name)")
-            $output.Add('    command: "powershell"')
-            $argsYaml = ($entry.args | ForEach-Object { '"' + ($_ -replace '\\', '/') + '"' }) -join ", "
-            $output.Add("    args: [$argsYaml]")
-            $output.Add('    cwd: "' + ($entry.cwd -replace '\\', '/') + '"')
-            Write-Host "    Registered $($server.name)"
-        }
-    }
-
-    $dir = Split-Path $ConfigPath -Parent
-    if ($dir) {
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    }
-    $output | Set-Content -Path $ConfigPath -Encoding UTF8
-    Write-Ok "Config written: $ConfigPath"
-}
 
 function Deploy-Local {
     Write-Step "Building extension..."
@@ -294,18 +214,62 @@ function Deploy-Claude {
     Write-Step "Installing skills for Claude Code..."
     & (Join-Path $SkillsDir "install_claude.ps1")
 
-    Write-Step "Registering MCP servers in Claude Code (~/.claude/claude.json)..."
-    Merge-JsonMcpConfig -ConfigPath (Join-Path $HOME ".claude\claude.json")
+    Write-Step "Registering MCP servers in Claude Code (--scope user)..."
 
-    Write-Ok "Restart Claude Code to activate MCP servers."
+    foreach ($legacyName in $LegacyMcpServerNames) {
+        $out = claude mcp remove --scope user $legacyName 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    Removed legacy $legacyName"
+        }
+    }
+
+    foreach ($server in $McpServers) {
+        # Remove first so re-running is idempotent
+        claude mcp remove --scope user $server.name 2>&1 | Out-Null
+
+        $addArgs = @('mcp', 'add', '-s', 'user', '-e', "PYTHONPATH=$ScriptDir", '--', $server.name, $PythonPath, '-m', $server.module)
+        $out = & claude @addArgs 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    Registered $($server.name)"
+        } else {
+            Write-Warning "    Failed to register $($server.name): $out"
+        }
+    }
+
+    Write-Ok "Reload the VSCode window (Developer: Reload Window) to activate MCP servers."
 }
 
 function Deploy-Codex {
     Write-Step "Installing skills for Codex..."
     & (Join-Path $SkillsDir "install_codex.ps1")
 
-    Write-Step "Registering MCP servers in Codex (~/.codex/config.yaml)..."
-    Merge-YamlMcpConfig -ConfigPath (Join-Path $HOME ".codex\config.yaml")
+    Write-Step "Registering MCP servers in Codex (~/.codex/config.toml via codex mcp)..."
+
+    foreach ($legacyName in $LegacyMcpServerNames) {
+        $out = & codex mcp remove $legacyName 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    Removed legacy $legacyName"
+        }
+    }
+
+    foreach ($server in $McpServers) {
+        # Remove first so re-running is idempotent.
+        & codex mcp remove $server.name 2>&1 | Out-Null
+
+        $addArgs = @('mcp', 'add', $server.name, '--env', "PYTHONPATH=$ScriptDir", '--', $PythonPath, '-m', $server.module)
+        $out = & codex @addArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "    Failed to register $($server.name): $out"
+            continue
+        }
+
+        $verifyOut = & codex mcp get $server.name --json 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    Registered $($server.name)"
+        } else {
+            Write-Warning "    Registered $($server.name), but verification failed: $verifyOut"
+        }
+    }
 
     Write-Ok "Restart Codex to activate MCP servers."
 }

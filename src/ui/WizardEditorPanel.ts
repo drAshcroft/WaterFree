@@ -20,14 +20,27 @@ export type WizardEditorAction =
       type: "refine";
       context: WizardDocContext;
       body: string;
+    }
+  | {
+      type: "reopenChunk";
+      context: WizardDocContext;
+      chunkId: string;
     };
+
+type AcceptedChunkSummary = {
+  id: string;
+  title: string;
+  body: string;
+};
 
 type WizardEditorViewModel = {
   context: WizardDocContext;
   chunkTitle: string;
   guidance: string;
   body: string;
+  chunkStatus: string;
   questions: string[];
+  acceptedChunks: AcceptedChunkSummary[];
 };
 
 export class WizardEditorPanel implements vscode.Disposable {
@@ -153,6 +166,14 @@ export class WizardEditorPanel implements vscode.Disposable {
       });
       return;
     }
+    if (message.type === "reopenChunk" && typeof message.chunkId === "string") {
+      this._actionEmitter.fire({
+        type: "reopenChunk",
+        context: this._viewModel.context,
+        chunkId: message.chunkId,
+      });
+      return;
+    }
   }
 
   private _buildViewModel(wizard: WizardRunData, _docPath: string): WizardEditorViewModel | null {
@@ -165,6 +186,14 @@ export class WizardEditorPanel implements vscode.Disposable {
       return null;
     }
 
+    const acceptedChunks: AcceptedChunkSummary[] = stage.chunks
+      .filter((c) => c.status === "accepted" && c.id !== chunk.id)
+      .map((c) => ({
+        id: c.id,
+        title: c.title ?? "",
+        body: this._chunkBody(c),
+      }));
+
     return {
       context: {
         runId: wizard.id,
@@ -175,7 +204,9 @@ export class WizardEditorPanel implements vscode.Disposable {
       chunkTitle: chunk.title,
       guidance: chunk.guidance?.trim() ?? "",
       body: this._chunkBody(chunk),
+      chunkStatus: chunk.status ?? "draft",
       questions: stage.questions ?? [],
+      acceptedChunks,
     };
   }
 

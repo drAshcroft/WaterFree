@@ -177,6 +177,8 @@ export class PythonBridge implements vscode.Disposable {
     const pythonPath: string = config.get("pythonPath") ?? "python";
     const apiKey = this._anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
     const graphBinary: string = config.get<string>("graphBinaryPath") || "codebase-memory-mcp";
+    const webSearchProvider: string = config.get<string>("webSearch.provider") ?? "none";
+    const webSearchApiKey: string = config.get<string>("webSearch.apiKey") ?? "";
 
     if (apiKey) {
       const masked = `${apiKey.slice(0, 7)}…${apiKey.slice(-4)}`;
@@ -188,12 +190,19 @@ export class PythonBridge implements vscode.Disposable {
       );
     }
 
+    const webSearchEnabled = webSearchProvider && webSearchProvider !== "none";
+    const resolvedWebKey = webSearchApiKey || process.env.WATERFREE_WEB_SEARCH_API_KEY || "";
     const env = {
       ...process.env,
       WATERFREE_BACKEND_LOG_FILE: this._backendLogFilePath,
       WATERFREE_EXTENSION_LOG_FILE: this._logger.logFilePath,
       WATERFREE_GRAPH_BINARY: graphBinary,
       ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+      ...(webSearchEnabled ? {
+        WATERFREE_ENABLE_WEB_TOOLS: "1",
+        WATERFREE_WEB_SEARCH_PROVIDER: webSearchProvider,
+        ...(resolvedWebKey ? { WATERFREE_WEB_SEARCH_API_KEY: resolvedWebKey } : {}),
+      } : {}),
     };
 
     fs.mkdirSync(path.dirname(this._backendLogFilePath), { recursive: true });

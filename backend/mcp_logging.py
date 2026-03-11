@@ -10,6 +10,7 @@ from typing import Any, Callable, TypeVar
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _MAX_LOG_VALUE_CHARS = 1500
+_PROJECT_MARKERS = (".git", ".waterfree", "package.json", "pyproject.toml")
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -19,16 +20,23 @@ def resolve_mcp_log_dir() -> Path:
     if explicit:
         return Path(explicit).expanduser()
 
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / "WaterFree" / "logs" / "mcp"
+    return resolve_project_root() / ".waterfree" / "logs" / "mcp"
 
-    return Path.home() / ".waterfree" / "logs" / "mcp"
+
+def resolve_project_root(start_path: Path | None = None) -> Path:
+    try:
+        current = (start_path or Path.cwd()).resolve()
+    except OSError:
+        return Path.cwd()
+
+    for candidate in (current, *current.parents):
+        if any((candidate / marker).exists() for marker in _PROJECT_MARKERS):
+            return candidate
+    return current
 
 
 def configure_mcp_logger(server_name: str) -> tuple[logging.Logger, Path]:
     log_dir = resolve_mcp_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{server_name}.log"
 
     logger = logging.getLogger(f"waterfree.mcp.{server_name}")
@@ -40,13 +48,19 @@ def configure_mcp_logger(server_name: str) -> tuple[logging.Logger, Path]:
 
     formatter = logging.Formatter(_LOG_FORMAT)
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
     stream_handler = logging.StreamHandler(sys.stderr)
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
+
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("MCP file logging unavailable for %s: %s", log_file, exc)
+        return logger, log_file
+
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     logger.info("MCP logging initialized: %s", log_file)
     return logger, log_file
@@ -66,19 +80,33 @@ def log_tool_error(logger: logging.Logger, tool_name: str, exc: Exception) -> No
 
 def instrument_tool(logger: logging.Logger, tool_name: str, fn: F) -> F:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        log_tool_call(logger, tool_name, **kwargs)
+        _safe_log(log_tool_call, logger, tool_name, **kwargs)
         try:
             result = fn(*args, **kwargs)
         except Exception as exc:
-            log_tool_error(logger, tool_name, exc)
-            raise
-        log_tool_result(logger, tool_name, result)
+            _safe_log(log_tool_error, logger, tool_name, exc)
+            return json.dumps(
+                {
+                    "error": str(exc),
+                    "errorType": exc.__class__.__name__,
+                    "tool": tool_name,
+                },
+                indent=2,
+            )
+        _safe_log(log_tool_result, logger, tool_name, result)
         return result
 
-    wrapper.__name__ = fn.__name__
+    wrapper.__name__ = tool_name
     wrapper.__doc__ = fn.__doc__
     wrapper.__signature__ = inspect.signature(fn)
     return wrapper  # type: ignore[return-value]
+
+
+def _safe_log(fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+    try:
+        fn(*args, **kwargs)
+    except Exception:
+        pass
 
 
 def _compact_json(value: Any) -> str:

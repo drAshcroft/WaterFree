@@ -85,6 +85,17 @@ class TaskType(str, Enum):
     SPIKE = "spike"
     REVIEW = "review"
     REFACTOR = "refactor"
+    PROTOCOL = "protocol"
+    BUG_FIX = "bug_fix"
+    FEATURE = "feature"
+    TASK = "task"
+
+
+# ── Task Timing ───────────────────────────────────────────────────────────────
+
+class TaskTiming(str, Enum):
+    ONE_TIME = "one_time"
+    RECURRING = "recurring"
 
 
 # ── Task Status ───────────────────────────────────────────────────────────────
@@ -132,6 +143,11 @@ class Task:
     annotations: list = field(default_factory=list)  # list[IntentAnnotation] — avoid circular import
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+    # Extended classification
+    acceptance_criteria: Optional[str] = None
+    trigger: Optional[str] = None
+    timing: TaskTiming = TaskTiming.ONE_TIME
 
     @property
     def target_file(self) -> str:
@@ -187,6 +203,9 @@ class Task:
             "annotations": [a.to_dict() for a in self.annotations],
             "startedAt": self.started_at,
             "completedAt": self.completed_at,
+            "acceptanceCriteria": self.acceptance_criteria,
+            "trigger": self.trigger,
+            "timing": self.timing.value,
         }
 
     @classmethod
@@ -213,4 +232,7 @@ class Task:
             annotations=[IntentAnnotation.from_dict(a) for a in d.get("annotations", [])],
             started_at=d.get("startedAt"),
             completed_at=d.get("completedAt"),
+            acceptance_criteria=d.get("acceptanceCriteria"),
+            trigger=d.get("trigger"),
+            timing=TaskTiming(d.get("timing", TaskTiming.ONE_TIME.value)),
         )

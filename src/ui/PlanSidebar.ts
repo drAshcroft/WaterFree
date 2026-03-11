@@ -93,7 +93,13 @@ export type SidebarAction =
   | { type: "buildKnowledge" }
   | { type: "addKnowledgeRepo" }
   | { type: "snippetizeSymbol"; symbol: string; context: string }
-  | { type: "pushDebugToAgent"; intent: string; stopReason: string };
+  | { type: "pushDebugToAgent"; intent: string; stopReason: string }
+  | { type: "openTodoBoard" }
+  | { type: "requestSettings" }
+  | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
+  | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
+  | { type: "removeProvider"; id: string }
+  | { type: "toggleProvider"; id: string };
 
 type SidebarViewState = {
   plan: PlanData | null;
@@ -203,6 +209,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   prefillSnippetize(symbol: string): void {
     void this._view?.webview.postMessage({ type: "prefillSnippetize", symbol });
+  }
+
+  sendSettings(data: unknown): void {
+    void this._view?.webview.postMessage({ type: "settings", data });
   }
 
   dispose(): void {
@@ -327,6 +337,51 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             intent: message.intent.trim(),
             stopReason: typeof message.stopReason === "string" ? message.stopReason : "other",
           });
+        }
+        return;
+      case "openTodoBoard":
+        this._actionEmitter.fire({ type: "openTodoBoard" });
+        return;
+      case "requestSettings":
+        this._actionEmitter.fire({ type: "requestSettings" });
+        return;
+      case "addProvider":
+        this._actionEmitter.fire({
+          type: "addProvider",
+          providerType: String(message.providerType ?? "claude"),
+          name: String(message.name ?? ""),
+          apiKey: String(message.apiKey ?? ""),
+          baseUrl: String(message.baseUrl ?? ""),
+          models: Array.isArray(message.models) ? message.models.map(String) : [],
+          modes: Array.isArray(message.modes) ? message.modes.map(String) : [],
+          useWith: String(message.useWith ?? "all"),
+          enabled: Boolean(message.enabled ?? true),
+        });
+        return;
+      case "updateProvider":
+        if (typeof message.id === "string") {
+          this._actionEmitter.fire({
+            type: "updateProvider",
+            id: message.id,
+            providerType: String(message.providerType ?? "claude"),
+            name: String(message.name ?? ""),
+            apiKey: String(message.apiKey ?? ""),
+            baseUrl: String(message.baseUrl ?? ""),
+            models: Array.isArray(message.models) ? message.models.map(String) : [],
+            modes: Array.isArray(message.modes) ? message.modes.map(String) : [],
+            useWith: String(message.useWith ?? "all"),
+            enabled: Boolean(message.enabled ?? true),
+          });
+        }
+        return;
+      case "removeProvider":
+        if (typeof message.id === "string") {
+          this._actionEmitter.fire({ type: "removeProvider", id: message.id });
+        }
+        return;
+      case "toggleProvider":
+        if (typeof message.id === "string") {
+          this._actionEmitter.fire({ type: "toggleProvider", id: message.id });
         }
         return;
     }

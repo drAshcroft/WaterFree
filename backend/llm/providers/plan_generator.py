@@ -13,10 +13,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.llm.structural_support import (
+    apply_task_dependencies,
+    route_structural_persona,
+    task_from_raw,
+)
 from backend.session.models import AnnotationStatus, CodeCoord, IntentAnnotation, Task
 from backend.llm.providers.task_executor import (
     TaskExecutor,
-    _coerce_priority,
     _normalize_persona,
 )
 
@@ -39,35 +43,26 @@ class PlanGenerator:
         workspace_path: str = "",
         persona: str = "default",
     ) -> tuple[list[Task], list[str]]:
+        effective_persona = route_structural_persona(persona, "planning", goal, context)
         bundle = self._skill_adapter.select(
-            persona=_normalize_persona(persona), stage="planning"
+            persona=_normalize_persona(effective_persona), stage="planning"
         )
         prompt = (
             "Return JSON only with shape: "
-            '{"tasks":[{"title":"","description":"","targetFile":"","targetFunction":"","priority":"P0|P1|P2|P3|spike"}],"questions":[]}\n\n'
+            '{"tasks":[{"id":"","title":"","description":"","rationale":"","targetFile":"","targetFunction":"","priority":"P0|P1|P2|P3|spike","phase":"","taskType":"impl|test|spike|review|refactor","contextCoords":[{"file":"","class":"","method":"","line":0,"anchorType":"modify"}],"dependsOn":[{"taskId":"","title":"","type":"blocks|informs|shares-file"}],"owner":{"type":"human|agent|unassigned","name":""},"estimatedMinutes":0,"aiNotes":""}],"designArtifacts":{"subsystems":[],"interfaces":[],"interfaceMethods":[],"dataContracts":[],"apiCatalog":[],"patternChoices":[],"antiPatterns":[],"integrationPolicies":[],"todos":[]},"questions":[]}\n\n'
             f"GOAL:\n{goal}\n\nCONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
         payload = self._executor._run_deepagents_structured(
             stage="PLANNING",
             prompt=prompt,
             workspace_path=workspace_path,
-            persona=persona,
+            persona=effective_persona,
         )
         if payload is None:
             return ([], [])
-        tasks: list[Task] = []
-        for raw in payload.get("tasks", []):
-            tasks.append(
-                Task(
-                    title=str(raw.get("title", "")),
-                    description=str(raw.get("description", "")),
-                    target_coord=CodeCoord(
-                        file=str(raw.get("targetFile", "")),
-                        method=str(raw.get("targetFunction", "")) or None,
-                    ),
-                    priority=_coerce_priority(raw.get("priority", "P2")),
-                )
-            )
+        raw_tasks = [item for item in payload.get("tasks", []) if isinstance(item, dict)]
+        tasks = [task_from_raw(raw) for raw in raw_tasks]
+        apply_task_dependencies(tasks, raw_tasks)
         return tasks, list(payload.get("questions", []))
 
     def generate_annotation(
@@ -77,8 +72,15 @@ class PlanGenerator:
         workspace_path: str = "",
         persona: str = "default",
     ) -> IntentAnnotation:
+        effective_persona = route_structural_persona(
+            persona,
+            "annotation",
+            task.title,
+            task.description,
+            context,
+        )
         bundle = self._skill_adapter.select(
-            persona=_normalize_persona(persona), stage="annotation"
+            persona=_normalize_persona(effective_persona), stage="annotation"
         )
         prompt = (
             "Return JSON only with shape: "
@@ -91,7 +93,7 @@ class PlanGenerator:
             stage="ANNOTATION",
             prompt=prompt,
             workspace_path=workspace_path,
-            persona=persona,
+            persona=effective_persona,
         )
         if payload is None:
             return IntentAnnotation(
@@ -159,8 +161,18 @@ class PlanGenerator:
         workspace_path: str = "",
         persona: str = "default",
     ) -> IntentAnnotation:
+        effective_persona = route_structural_persona(
+            persona,
+            "alter_annotation",
+            task.title,
+            task.description,
+            feedback,
+            old_annotation.summary,
+            old_annotation.detail,
+            context,
+        )
         bundle = self._skill_adapter.select(
-            persona=_normalize_persona(persona), stage="annotation"
+            persona=_normalize_persona(effective_persona), stage="annotation"
         )
         prompt = (
             "Return JSON only with shape: "
@@ -176,7 +188,7 @@ class PlanGenerator:
             stage="ALTER_ANNOTATION",
             prompt=prompt,
             workspace_path=workspace_path,
-            persona=persona,
+            persona=effective_persona,
         )
         if payload is None:
             return IntentAnnotation(
@@ -274,12 +286,18 @@ class PlanGenerator:
         workspace_path: str = "",
         persona: str = "default",
     ) -> dict:
+        effective_persona = route_structural_persona(
+            persona,
+            "question_answer",
+            question,
+            context,
+        )
         bundle = self._skill_adapter.select(
-            persona=_normalize_persona(persona), stage="question_answer"
+            persona=_normalize_persona(effective_persona), stage="question_answer"
         )
         prompt = (
             "Return JSON only with shape: "
-            '{"answer":"","shouldUpdatePlan":false,"followupTasks":[],"questions":[]}\n\n'
+            '{"answer":"","shouldUpdatePlan":false,"followupTasks":[],"designArtifacts":{"subsystems":[],"interfaces":[],"interfaceMethods":[],"dataContracts":[],"apiCatalog":[],"patternChoices":[],"antiPatterns":[],"integrationPolicies":[],"todos":[]},"questions":[]}\n\n'
             f"QUESTION: {question}\n\n"
             f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
@@ -287,14 +305,14 @@ class PlanGenerator:
             stage="QUESTION_ANSWER",
             prompt=prompt,
             workspace_path=workspace_path,
-            persona=persona,
+            persona=effective_persona,
         )
         if payload is None:
             text = self._executor._run_deepagents_text(
                 stage="QUESTION_ANSWER",
                 prompt=prompt,
                 workspace_path=workspace_path,
-                persona=persona,
+                persona=effective_persona,
             ).strip()
             return {
                 "answer": text,
@@ -306,6 +324,7 @@ class PlanGenerator:
             "answer": str(payload.get("answer", "")),
             "shouldUpdatePlan": bool(payload.get("shouldUpdatePlan", False)),
             "followupTasks": list(payload.get("followupTasks", [])),
+            "designArtifacts": dict(payload.get("designArtifacts", {})),
             "questions": list(payload.get("questions", [])),
         }
 

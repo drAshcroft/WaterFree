@@ -10,6 +10,9 @@
 <body>
   <main class="editor-shell">
     <article class="document">
+
+      <section id="accepted-chunks" class="accepted-history" hidden></section>
+
       <header class="document-header">
         <h2 class="chunk-title" id="chunk-title"></h2>
         <p class="guidance" id="guidance"></p>
@@ -34,12 +37,12 @@
       <footer class="document-footer">
         <div class="separator">
           <span class="separator-line"></span>
-          <span class="separator-label">Unresolved</span>
+          <span class="separator-label" id="separator-label">Draft</span>
           <span class="separator-line"></span>
         </div>
         <div class="actions">
-          <button id="refine" class="secondary" type="button">Refine</button>
-          <button id="submit" class="primary" type="button">Submit</button>
+          <button id="refine" class="secondary" type="button">Refine Prompt</button>
+          <button id="submit" class="primary" type="button">Accept and Continue</button>
         </div>
       </footer>
     </article>

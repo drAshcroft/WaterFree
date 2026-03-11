@@ -20,10 +20,12 @@ Methods:
   skipTask             {taskId, sessionId}                  → PlanDocument
   queueTodoInstruction {file, line, instruction, sessionId} → {queued, taskId}
   listTasks            {workspacePath, ...filters}          → {tasks, phases, updatedAt, path}
+  getTaskBoard         {workspacePath}                      → {tasks, phases, updatedAt, path}
   searchTasks          {workspacePath, query, limit}        → {tasks, count, path}
   addTask              {workspacePath, task}                → {task, path}
   updateTask           {workspacePath, taskId, patch}       → {task, path}
   deleteTask           {workspacePath, taskId}              → {ok, deleted}
+  saveTaskBoard        {workspacePath, tasks, phases}       → {tasks, phases, updatedAt, path}
   whatNext             {workspacePath, ownerName?}          → {task|null, path}
   liveDebug            {debugContext, sessionId?, workspacePath} → DebugAnalysis
   updateFile           {path, workspacePath}                → {ok}
@@ -119,10 +121,12 @@ from backend.handlers.task_handler import (
 )
 from backend.handlers.todo_handler import (
     handle_list_tasks,
+    handle_get_task_board,
     handle_search_tasks,
     handle_add_task,
     handle_update_task,
     handle_delete_task,
+    handle_save_task_board,
     handle_what_next,
 )
 from backend.handlers.wizard_handler import (
@@ -290,10 +294,12 @@ class Server:
         "skipTask":             handle_skip_task,
         "queueTodoInstruction": handle_queue_todo_instruction,
         "listTasks":            handle_list_tasks,
+        "getTaskBoard":         handle_get_task_board,
         "searchTasks":          handle_search_tasks,
         "addTask":              handle_add_task,
         "updateTask":           handle_update_task,
         "deleteTask":           handle_delete_task,
+        "saveTaskBoard":        handle_save_task_board,
         "whatNext":             handle_what_next,
         "liveDebug":            handle_live_debug,
         "updateFile":           handle_update_file,

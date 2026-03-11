@@ -26,7 +26,11 @@ class SkillAdapter:
         self._registry = registry
 
     def select(self, *, persona: str, stage: str, task_type: str = "") -> SkillBundle:
-        selected = self._registry.list_skills(persona=persona, stage=stage)
+        stage_keys = _expanded_stage_keys(persona=persona, stage=stage)
+        selected: list[SkillInfo] = []
+        for stage_key in stage_keys:
+            selected.extend(self._registry.list_skills(persona=persona, stage=stage_key))
+        selected = _dedupe_skills(selected)
         category_order: list[str] = []
         for skill in selected:
             sid = skill.id.lower()
@@ -83,3 +87,27 @@ def _unique_preserving_order(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
+
+
+def _dedupe_skills(skills: list[SkillInfo]) -> list[SkillInfo]:
+    ordered: list[SkillInfo] = []
+    seen: set[str] = set()
+    for skill in skills:
+        if skill.id in seen:
+            continue
+        seen.add(skill.id)
+        ordered.append(skill)
+    return ordered
+
+
+def _expanded_stage_keys(*, persona: str, stage: str) -> list[str]:
+    keys = [stage]
+    stage_key = stage.strip().lower()
+    persona_key = persona.strip().lower()
+    if stage_key in {"annotation", "alter_annotation", "question_answer"}:
+        keys.extend(["analysis", "architecture"])
+    if stage_key in {"planning", "annotation", "alter_annotation", "question_answer"}:
+        keys.append("planning")
+    if persona_key == "pattern_expert":
+        keys.extend(["analysis", "architecture", "planning", "research"])
+    return _unique_preserving_order([key for key in keys if key])

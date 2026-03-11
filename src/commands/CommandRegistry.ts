@@ -44,6 +44,7 @@ export class CommandRegistry {
     );
     register("waterfree.buildKnowledge", () => c.cmdBuildKnowledge());
     register("waterfree.addKnowledgeRepo", () => c.cmdAddKnowledgeRepo());
+    register("waterfree.openTodoBoard", () => c.cmdOpenTodoBoard());
     register("waterfree.extractProcedure", () => c.cmdExtractProcedure());
     register("waterfree.openWizard", (args?: unknown) => c.cmdOpenWizard(args));
     register("waterfree.runWizardStep", (ctx?: unknown) => c.cmdRunWizardStep(ctx));
@@ -58,5 +59,6 @@ export class CommandRegistry {
     register("waterfree.startWizardCoding", (ctx?: unknown) => c.cmdStartWizardCoding(ctx));
     register("waterfree.runWizardReview", (ctx?: unknown) => c.cmdRunWizardReview(ctx));
     register("waterfree.refineWizardIdea", (ctx?: unknown) => c.cmdRefineWizardIdea(ctx));
+    register("waterfree.openMonitorPanel", () => c.cmdOpenMonitorPanel());
   }
 }

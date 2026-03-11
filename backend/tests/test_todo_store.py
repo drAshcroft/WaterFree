@@ -84,6 +84,38 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(updated.owner.name, "codex")
         self.assertEqual(matches[0].id, created.id)
 
+    def test_save_task_board_reorders_tasks_and_preserves_phase_layout(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        first = store.add_task({
+            "title": "First task",
+            "phase": "Foundation",
+        })
+        second = store.add_task({
+            "title": "Second task",
+            "phase": "Polish",
+        })
+        third = store.add_task({
+            "title": "Third task",
+            "phase": None,
+        })
+
+        data = store.save_task_board(
+            layout=[
+                {"id": second.id, "phase": "Execution"},
+                {"id": third.id, "phase": "Execution"},
+                {"id": first.id, "phase": "Foundation"},
+            ],
+            phases=["Execution", "Foundation", "Wrap Up"],
+        )
+
+        self.assertEqual([task.id for task in data.tasks], [second.id, third.id, first.id])
+        self.assertEqual(data.tasks[0].phase, "Execution")
+        self.assertEqual(data.tasks[1].phase, "Execution")
+        self.assertEqual(data.tasks[2].phase, "Foundation")
+        self.assertEqual(data.phases, ["Execution", "Foundation", "Wrap Up"])
+
     def test_sql_backed_priority_phase_owner_and_blocked_queries(self) -> None:
         workspace = self.make_workspace()
         store = TaskStore(str(workspace))

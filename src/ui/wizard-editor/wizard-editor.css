@@ -9,6 +9,10 @@
   --button-secondary-bg: var(--vscode-button-secondaryBackground);
   --button-secondary-fg: var(--vscode-button-secondaryForeground);
   --question-bg: color-mix(in srgb, var(--vscode-editorWidget-background) 82%, var(--vscode-editor-background));
+  --accepted-bg: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-editor-foreground));
+  --accepted-border: color-mix(in srgb, var(--vscode-panel-border) 35%, transparent);
+  --accepted-fg: color-mix(in srgb, var(--vscode-editor-foreground) 55%, transparent);
+  --lock-color: color-mix(in srgb, var(--vscode-descriptionForeground) 70%, transparent);
 }
 
 * {
@@ -95,8 +99,44 @@ body {
   white-space: pre-wrap;
 }
 
-.question:last-child {
+.question-block {
+  margin-bottom: 14px;
+}
+
+.question-block:last-child {
   margin-bottom: 0;
+}
+
+.option-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.option-chip {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: 12px/1.1 var(--vscode-font-family);
+}
+
+.option-chip.selected {
+  background: var(--button-bg);
+  color: var(--button-fg);
+  border-color: transparent;
+}
+
+.clarification-note {
+  width: min(460px, 100%);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font: 13px/1.2 var(--vscode-font-family);
 }
 
 .document-footer {
@@ -145,4 +185,93 @@ button.primary {
 button.secondary {
   background: var(--button-secondary-bg);
   color: var(--button-secondary-fg);
+}
+
+/* ---- Accepted chunk history ---- */
+
+.accepted-history {
+  margin-bottom: 8px;
+}
+
+.accepted-chunk {
+  padding: 12px 16px 10px;
+  margin-bottom: 2px;
+  border-left: 2px solid var(--accepted-border);
+  background: var(--accepted-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.accepted-chunk-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.accepted-chunk-title {
+  font: 600 12px/1.2 var(--vscode-editor-font-family, Consolas, monospace);
+  color: var(--lock-color);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.accepted-chunk-title::before {
+  content: "✓ ";
+}
+
+.accepted-edit-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: 11px/1 var(--vscode-font-family);
+  color: var(--lock-color);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  opacity: 0.7;
+}
+
+.accepted-edit-btn:hover {
+  opacity: 1;
+}
+
+.accepted-chunk-body {
+  font: 13px/1.6 var(--vscode-editor-font-family, Consolas, monospace);
+  color: var(--accepted-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.8em; /* ~3 lines */
+  overflow: hidden;
+  position: relative;
+}
+
+.accepted-chunk-body.expanded {
+  max-height: none;
+}
+
+.accepted-chunk-body::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1.6em;
+  background: linear-gradient(transparent, var(--accepted-bg));
+  pointer-events: none;
+}
+
+.accepted-chunk-body.expanded::after {
+  display: none;
+}
+
+/* Body locked state (when current chunk has been submitted and is processing) */
+.body-editor[aria-readonly="true"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.body-editor[aria-readonly="true"]::after {
+  content: "";
 }

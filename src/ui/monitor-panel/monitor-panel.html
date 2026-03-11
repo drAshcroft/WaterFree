@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{STYLE_URI}}">
+  <title>WaterFree Monitor</title>
+</head>
+<body>
+  <main class="monitor-shell">
+
+    <header class="monitor-header">
+      <h1 class="monitor-title">LLM Monitor</h1>
+      <div class="capture-meta" id="capture-meta" hidden>
+        <span class="badge" id="badge-stage"></span>
+        <span class="badge badge-persona" id="badge-persona"></span>
+        <span class="capture-id" id="capture-id"></span>
+      </div>
+    </header>
+
+    <section class="empty-state" id="empty-state">
+      <p>Waiting for a prompt capture&hellip;</p>
+      <p class="hint">Set your runtime to <code>monitor</code> and trigger any LLM operation.</p>
+    </section>
+
+    <section class="capture-view" id="capture-view" hidden>
+
+      <div class="prompt-section">
+        <label class="section-label">System Prompt</label>
+        <pre class="prompt-block" id="system-prompt"></pre>
+      </div>
+
+      <div class="prompt-section">
+        <label class="section-label">User Prompt</label>
+        <pre class="prompt-block" id="user-prompt"></pre>
+      </div>
+
+      <div class="response-section">
+        <label class="section-label" for="response-input">Response</label>
+        <textarea
+          id="response-input"
+          class="response-textarea"
+          placeholder="Paste or type the LLM response here (plain text or JSON)…"
+          rows="12"
+          spellcheck="false"
+        ></textarea>
+      </div>
+
+      <footer class="monitor-footer">
+        <button id="btn-submit" class="primary" type="button">Submit Response</button>
+        <button id="btn-discard" class="secondary" type="button">Discard</button>
+      </footer>
+
+    </section>
+
+    <section class="queue-bar" id="queue-bar" hidden>
+      <span class="queue-label">Pending:</span>
+      <span class="queue-count" id="queue-count"></span>
+    </section>
+
+  </main>
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

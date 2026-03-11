@@ -20,7 +20,7 @@ import uuid
 from backend.session.coord_models import CoordAnchorType, CodeCoord
 from backend.session.task_models import (
     TaskPriority, DependencyType, TaskDependency,
-    OwnerType, TaskOwner, TaskType, TaskStatus, Task,
+    OwnerType, TaskOwner, TaskType, TaskTiming, TaskStatus, Task,
 )
 from backend.session.annotation_models import AnnotationStatus, IntentAnnotation
 
@@ -29,7 +29,7 @@ __all__ = [
     "CoordAnchorType", "CodeCoord",
     # task
     "TaskPriority", "DependencyType", "TaskDependency",
-    "OwnerType", "TaskOwner", "TaskType", "TaskStatus", "Task",
+    "OwnerType", "TaskOwner", "TaskType", "TaskTiming", "TaskStatus", "Task",
     # annotation
     "AnnotationStatus", "IntentAnnotation",
     # session

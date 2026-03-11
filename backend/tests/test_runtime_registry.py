@@ -58,12 +58,15 @@ class RuntimeRegistryTests(unittest.TestCase):
 
     def test_deep_agents_runtime_exposes_wizard_subagents(self) -> None:
         runtime = DeepAgentsRuntime(workspace_path="c:/repo")
-        ids = {item["id"] for item in runtime.list_subagents()}
+        subagents = {item["id"]: item for item in runtime.list_subagents()}
+        ids = set(subagents)
 
         self.assertIn("market_researcher", ids)
         self.assertIn("bdd_test_designer", ids)
         self.assertIn("coding_agent", ids)
         self.assertIn("reviewer", ids)
+        self.assertIn("waterfree-testing", subagents["stub_wireframer"]["skills"])
+        self.assertIn("waterfree-knowledge", subagents["coding_agent"]["skills"])
 
 
 if __name__ == "__main__":

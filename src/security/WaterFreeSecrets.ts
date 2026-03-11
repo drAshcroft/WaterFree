@@ -4,9 +4,11 @@ import * as vscode from "vscode";
 
 const ANTHROPIC_SECRET_KEY = "waterfree.anthropicApiKey";
 const INSTALLER_PROMPT_STATE_KEY = "waterfree.setupPromptShown";
+const MOCK_MODE_STATE_KEY = "waterfree.mockMode";
 
 export class WaterFreeSecrets {
   private _anthropicApiKey = "";
+  private _isMock = false;
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -15,10 +17,43 @@ export class WaterFreeSecrets {
 
   async initialize(): Promise<void> {
     this._anthropicApiKey = await this._loadAnthropicApiKey();
+    this._isMock = this._context.globalState.get<boolean>(MOCK_MODE_STATE_KEY, false);
   }
 
   get anthropicApiKey(): string {
+    return this._isMock ? "" : this._anthropicApiKey;
+  }
+
+  get isMock(): boolean {
+    return this._isMock;
+  }
+
+  get hasRealKey(): boolean {
+    return Boolean(this._anthropicApiKey);
+  }
+
+  /** Raw stored key regardless of mock mode — for provider migration */
+  get storedKey(): string {
     return this._anthropicApiKey;
+  }
+
+  getMaskedKey(): string {
+    if (!this._anthropicApiKey) { return ""; }
+    const k = this._anthropicApiKey;
+    if (k.length <= 14) { return "•".repeat(k.length); }
+    return k.slice(0, 10) + "…" + k.slice(-4);
+  }
+
+  async removeAnthropicApiKey(): Promise<void> {
+    await this._context.secrets.delete(ANTHROPIC_SECRET_KEY);
+    this._anthropicApiKey = "";
+    this._isMock = false;
+    await this._context.globalState.update(MOCK_MODE_STATE_KEY, false);
+  }
+
+  async setMockMode(enabled: boolean): Promise<void> {
+    this._isMock = enabled;
+    await this._context.globalState.update(MOCK_MODE_STATE_KEY, enabled);
   }
 
   async promptForSetupIfNeeded(): Promise<boolean> {

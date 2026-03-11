@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from backend.wizard.definitions import MARKET_RESEARCH_TEMPLATE
+from backend.wizard.design_artifacts import normalize_design_artifacts
 from backend.wizard.models import (
     WizardChunkStatus,
     WizardRun,
@@ -87,6 +89,13 @@ class StageExecutor:
             for chunk in accepted_chunks:
                 parts.append(f"### {chunk.title}")
                 parts.append(chunk.accepted_text.strip())
+                parts.append("")
+            design_artifacts = normalize_design_artifacts(other.derived_artifacts)
+            if any(design_artifacts.get(key) for key in design_artifacts):
+                parts.append("### Structured Design Artifacts")
+                parts.append("```json")
+                parts.append(json.dumps(design_artifacts, indent=2, ensure_ascii=True))
+                parts.append("```")
                 parts.append("")
         if extra_context.strip():
             parts.extend(["EXTRA CONTEXT:", extra_context.strip(), ""])
@@ -195,14 +204,41 @@ class StageExecutor:
             external_prompt = _external_market_research_prompt(run.goal)
 
         subsystems: list[str] = []
+        design_artifacts: dict = {}
         if stage.kind == "architect_review":
             subsystems = ["Core Application", "API Layer", "Data Layer"]
+            design_artifacts = normalize_design_artifacts(
+                {"designArtifacts": {"subsystems": [{"name": name} for name in subsystems]}},
+                fallback_subsystems=subsystems,
+            )
+        elif stage.kind == "design_pattern_agent":
+            subsystem_name = stage.subsystem_name or stage.title
+            design_artifacts = normalize_design_artifacts(
+                {
+                    "designArtifacts": {
+                        "subsystems": [{
+                            "name": subsystem_name,
+                            "purpose": f"Own the {subsystem_name} responsibilities.",
+                            "boundaries": "Keep a clear subsystem boundary and explicit dependency ownership.",
+                            "failureModes": "Degrade safely when upstream dependencies fail.",
+                        }],
+                        "interfaces": [{"name": f"{subsystem_name} interface", "owner": subsystem_name}],
+                        "interfaceMethods": [{"name": "execute", "interface": f"{subsystem_name} interface"}],
+                        "dataContracts": [{"name": f"{subsystem_name} payload"}],
+                        "apiCatalog": [],
+                        "patternChoices": [{"name": "Explicit subsystem boundary"}],
+                        "antiPatterns": [{"name": "Leaky abstraction"}],
+                        "integrationPolicies": [{"name": "Translate external errors at the boundary"}],
+                    }
+                },
+            )
 
         return {
             "stageSummary": f"{stage.title} drafted for {run.goal}.",
             "chunks": chunks,
             "todos": todos,
             "subsystems": subsystems,
+            "designArtifacts": design_artifacts,
             "externalResearchPrompt": external_prompt,
             "questions": [],
         }

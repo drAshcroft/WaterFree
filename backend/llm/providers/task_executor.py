@@ -269,7 +269,12 @@ class TaskExecutor:
         system_prompt = build_system_prompt(stage.upper(), persona)
         bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage=stage.lower())
         system_prompt = self._skill_adapter.augment_system_prompt(system_prompt, bundle)
-        tools = self._build_langchain_tools(workspace_path=workspace_path)
+        tools = self._build_langchain_tools(
+            workspace_path=workspace_path,
+            persona=persona,
+            stage=stage,
+            bundle=bundle,
+        )
         model_name = _model_name_for_lane(self._provider_lane)
         kwargs: dict[str, Any] = {
             "model": model_name,
@@ -282,11 +287,17 @@ class TaskExecutor:
             kwargs["backend"] = self._filesystem_backend_factory(root_dir=workspace_path or self._workspace_path)
         return self._deepagents_factory(**kwargs)
 
-    def _build_langchain_tools(self, *, workspace_path: str) -> list[Any]:
+    def _build_langchain_tools(self, *, workspace_path: str, persona: str, stage: str, bundle) -> list[Any]:
         if not self._structured_tool_cls or not self._create_model_fn or not self._field_cls:
             return []
         tools: list[Any] = []
-        for descriptor in self._tool_registry.list_descriptors(include_optional=False):
+        descriptors = self._tool_registry.select_descriptors(
+            persona=_normalize_persona(persona),
+            stage=stage.lower(),
+            preferred_categories=getattr(bundle, "preferred_tool_categories", []),
+            include_optional=False,
+        )
+        for descriptor in descriptors:
             if descriptor.policy.optional:
                 continue
             args_schema = _schema_to_pydantic_model(
