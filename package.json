@@ -104,6 +104,11 @@
         "icon": "$(list-tree)"
       },
       {
+        "command": "waterfree.openKnowledge",
+        "title": "WaterFree: Open Knowledge Explorer",
+        "icon": "$(book)"
+      },
+      {
         "command": "waterfree.extractProcedure",
         "title": "WaterFree Snippetize: Snippetize Procedure",
         "icon": "$(symbol-method)"

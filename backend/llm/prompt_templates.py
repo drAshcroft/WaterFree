@@ -60,12 +60,14 @@ Preferred workspace services:
 - `update_task`: assign, reprioritize, or change status on backlog tasks
 - `delete_task`: remove stale backlog items
 - `what_next`: ask the task service for the highest-priority ready task
+- `browse_knowledge_index`: traverse the knowledge taxonomy for broad or category-first topics
 - `search_knowledge`: search the global snippet store for reusable patterns
 - `list_knowledge_sources`: inspect which snippetized sources are available
 
 Service policy:
 - Prefer the task service for durable follow-up work instead of burying TODOs in prose.
 - Prefer the snippet store when looking for reusable implementation patterns across projects.
+- Use the hierarchy index first when the topic is broad, exploratory, or maps cleanly to a stable category.
 - Search before adding so you do not create duplicate backlog items.
 """
 

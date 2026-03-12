@@ -1,21 +1,40 @@
 """
 Task execution engine for the Deep Agents runtime.
 
-Owns: deepagents library loading, agent creation, tool-loop invocation,
+Owns: deepagents library loading, channel wiring, tool-loop invocation,
 structured/text response extraction, and the execute_task protocol method.
-Also houses shared module-level helpers used across the providers package.
+
+Agent creation and session persistence are now delegated to DeepAgentsChannel
+(backend.llm.channels.deepagents_channel).  TaskExecutor's job is to:
+  1. Load the deepagents library once.
+  2. Create a DeepAgentsChannel (via ChannelRegistry) with all the deps it needs.
+  3. Call channel.run() for every structured or text request.
+  4. Parse the response text into the shape callers expect.
+
+The proxy methods _run_deepagents_structured and _run_deepagents_text are kept
+on the facade so that existing tests can patch them via patch.object(runtime, …).
+All business-logic methods call these proxies (not the channel directly),
+ensuring patches intercept correctly.
 """
 
 from __future__ import annotations
 
 import json
-import os
+import logging
 import re
 from typing import Any, Callable, Optional
 
+log = logging.getLogger(__name__)
+
+from backend.llm.channels.registry import ChannelRegistry
+from backend.llm.channels.deepagents_channel import DeepAgentsChannel
+from backend.llm.provider_profiles import (
+    ProviderProfileDocument,
+    default_provider_profile_document,
+    normalize_provider_profile,
+)
 from backend.llm.prompt_templates import build_system_prompt
 from backend.llm.personas import DEFAULT_PERSONA, PERSONAS
-from backend.llm.tools import build_default_tool_registry
 from backend.session.models import Task, TaskPriority
 
 
@@ -44,17 +63,6 @@ def _coerce_priority(raw_priority: Any) -> TaskPriority:
             3: TaskPriority.P3,
         }.get(raw_priority, TaskPriority.P2)
     return TaskPriority.P2
-
-
-def _model_name_for_lane(provider_lane: str) -> str:
-    lane = provider_lane.strip().lower()
-    if lane == "openai":
-        return os.environ.get("WATERFREE_OPENAI_MODEL", "openai:o3-mini")
-    if lane == "ollama":
-        return os.environ.get("WATERFREE_OLLAMA_MODEL", "ollama:qwen2.5-coder:14b")
-    if lane == "anthropic":
-        return os.environ.get("WATERFREE_ANTHROPIC_MODEL", "anthropic:claude-sonnet-4-20250514")
-    return os.environ.get("WATERFREE_DEEPAGENTS_MODEL", "anthropic:claude-sonnet-4-20250514")
 
 
 def _extract_response_text(result: Any) -> str:
@@ -102,10 +110,7 @@ def _schema_to_pydantic_model(name: str, schema: dict, create_model_fn, field_cl
     fields = {}
     for key, prop in props.items():
         py_type = _json_schema_type(prop)
-        if key in required:
-            default = ...
-        else:
-            default = None
+        default = ... if key in required else None
         description = str(prop.get("description", ""))
         fields[key] = (py_type, field_cls(default=default, description=description))
     if not fields:
@@ -138,32 +143,55 @@ def _json_schema_type(prop: dict) -> Any:
 # ---------------------------------------------------------------------------
 
 class TaskExecutor:
-    """Owns deepagents library loading, agent creation, and task execution."""
+    """
+    Owns deepagents library loading, channel wiring, and task execution.
+
+    Agent sessions are maintained by the injected DeepAgentsChannel, which
+    keeps one persistent agent per (workspace_path, stage, persona) so that
+    system-prompt caching and conversation history accumulate across calls.
+    """
 
     def __init__(
         self,
         *,
         workspace_path: str,
         provider_lane: str,
+        provider_profile_document: Optional[ProviderProfileDocument],
         tool_registry,
         skill_adapter,
         interrupt_config_fn: Callable[[], dict],
         subagents_fn: Callable[[], list[dict[str, Any]]],
+        channel_registry: Optional[ChannelRegistry] = None,
     ) -> None:
         self._workspace_path = workspace_path
         self._provider_lane = provider_lane
+        self._provider_profiles = provider_profile_document or default_provider_profile_document(provider_lane)
         self._tool_registry = tool_registry
         self._skill_adapter = skill_adapter
         self._interrupt_config_fn = interrupt_config_fn
         self._subagents_fn = subagents_fn
 
-        self._deepagents_factory: Optional[Callable[..., Any]] = None
         self._filesystem_backend_factory: Optional[Callable[..., Any]] = None
         self._structured_tool_cls: Optional[type] = None
         self._field_cls: Optional[type] = None
         self._create_model_fn: Optional[Callable[..., Any]] = None
+        self._deepagents_factory: Optional[Callable[..., Any]] = None
         self._deepagents_import_error: Optional[str] = None
         self._load_deepagents()
+
+        # Wire the channel — uses a registry so channels survive across calls.
+        self._channel_registry = channel_registry or ChannelRegistry(workspace_path)
+        self._channel: Optional[DeepAgentsChannel] = self._channel_registry.get(
+            provider_lane,
+            provider_profile_document=self._provider_profiles,
+            deepagents_factory=self._deepagents_factory,
+            filesystem_backend_factory=self._filesystem_backend_factory,
+            skill_adapter=skill_adapter,
+            build_system_prompt_fn=build_system_prompt,
+            build_tools_fn=self._build_langchain_tools,
+            subagents_fn=subagents_fn,
+            interrupt_config_fn=interrupt_config_fn,
+        )
 
     # ------------------------------------------------------------------
     # AgentRuntime protocol method
@@ -174,7 +202,7 @@ class TaskExecutor:
         task: Task,
         context: str,
         workspace_path: str = "",
-        on_chunk=None,  # noqa: ARG002 — streaming not used by this runtime
+        on_chunk=None,  # noqa: ARG002
         persona: str = "default",
     ) -> list[dict]:
         bundle = self._skill_adapter.select(
@@ -194,13 +222,77 @@ class TaskExecutor:
             prompt=prompt,
             workspace_path=workspace_path,
             persona=persona,
+            session_key=task.id or workspace_path,
         )
         if payload is None:
             return []
         return list(payload.get("edits", []))
 
     # ------------------------------------------------------------------
-    # Internal deepagents plumbing
+    # Proxy methods — kept so tests can patch runtime._run_deepagents_*
+    # ------------------------------------------------------------------
+
+    def _run_deepagents_structured(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        workspace_path: str,
+        persona: str,
+        session_key: str = "",
+    ) -> Optional[dict[str, Any]]:
+        response_text = self._run_deepagents_text(
+            stage=stage,
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=persona,
+            session_key=session_key,
+        )
+        if response_text:
+            parsed = _extract_json_object(response_text)
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def _run_deepagents_text(
+        self,
+        *,
+        stage: str,
+        prompt: str,
+        workspace_path: str,
+        persona: str,
+        session_key: str = "",
+    ) -> str:
+        """
+        Execute one agent turn via the persistent DeepAgentsChannel.
+
+        session_key is optional; when provided the channel will maintain a
+        persistent conversation thread for that key so that provider-side
+        caching accumulates across calls.  Defaults to workspace_path so
+        that each workspace has its own implicit session.
+        """
+        if self._channel is None:
+            return ""
+        result = self._channel.run(
+            stage=stage,
+            prompt=prompt,
+            persona=persona,
+            workspace_path=workspace_path,
+            session_key=self._resolve_session_key(
+                stage=stage,
+                workspace_path=workspace_path,
+                persona=persona,
+                session_key=session_key,
+            ),
+        )
+        return result.text
+
+    def flush_session(self, session_key: str) -> None:
+        if self._channel is not None:
+            self._channel.flush(session_key)
+
+    # ------------------------------------------------------------------
+    # Internal deepagents library loading
     # ------------------------------------------------------------------
 
     def _load_deepagents(self) -> None:
@@ -224,70 +316,9 @@ class TaskExecutor:
             self._create_model_fn = None
             self._deepagents_import_error = str(exc)
 
-    def _run_deepagents_structured(
-        self,
-        *,
-        stage: str,
-        prompt: str,
-        workspace_path: str,
-        persona: str,
-    ) -> Optional[dict[str, Any]]:
-        response_text = self._run_deepagents_text(
-            stage=stage,
-            prompt=prompt,
-            workspace_path=workspace_path,
-            persona=persona,
-        )
-        if response_text:
-            parsed = _extract_json_object(response_text)
-            if isinstance(parsed, dict):
-                return parsed
-        return None
-
-    def _run_deepagents_text(
-        self,
-        *,
-        stage: str,
-        prompt: str,
-        workspace_path: str,
-        persona: str,
-    ) -> str:
-        if not self._deepagents_factory:
-            return ""
-        agent = self._create_agent(stage=stage, workspace_path=workspace_path, persona=persona)
-        if agent is None:
-            return ""
-        try:
-            result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
-            return _extract_response_text(result)
-        except Exception:
-            return ""
-
-    def _create_agent(self, *, stage: str, workspace_path: str, persona: str):
-        if not self._deepagents_factory:
-            return None
-        system_prompt = build_system_prompt(stage.upper(), persona)
-        bundle = self._skill_adapter.select(persona=_normalize_persona(persona), stage=stage.lower())
-        system_prompt = self._skill_adapter.augment_system_prompt(system_prompt, bundle)
-        tools = self._build_langchain_tools(
-            workspace_path=workspace_path,
-            persona=persona,
-            stage=stage,
-            bundle=bundle,
-        )
-        model_name = _model_name_for_lane(self._provider_lane)
-        kwargs: dict[str, Any] = {
-            "model": model_name,
-            "tools": tools,
-            "system_prompt": system_prompt,
-            "subagents": self._subagents_fn(),
-            "interrupt_on": self._interrupt_config_fn(),
-        }
-        if self._filesystem_backend_factory:
-            kwargs["backend"] = self._filesystem_backend_factory(root_dir=workspace_path or self._workspace_path)
-        return self._deepagents_factory(**kwargs)
-
-    def _build_langchain_tools(self, *, workspace_path: str, persona: str, stage: str, bundle) -> list[Any]:
+    def _build_langchain_tools(
+        self, workspace_path: str, persona: str, stage: str, bundle: Any
+    ) -> list[Any]:
         if not self._structured_tool_cls or not self._create_model_fn or not self._field_cls:
             return []
         tools: list[Any] = []
@@ -309,8 +340,12 @@ class TaskExecutor:
 
             def make_runner(name: str):
                 def _runner(**kwargs) -> str:
-                    result = self._tool_registry.invoke(name, kwargs, workspace_path)
-                    return json.dumps(result, ensure_ascii=True)
+                    try:
+                        result = self._tool_registry.invoke(name, kwargs, workspace_path)
+                        return json.dumps(result, ensure_ascii=True)
+                    except Exception as exc:
+                        log.warning("Tool %r raised during invocation: %s", name, exc)
+                        return json.dumps({"error": f"Tool {name!r} failed: {exc}"}, ensure_ascii=True)
 
                 _runner.__name__ = name
                 return _runner
@@ -324,3 +359,23 @@ class TaskExecutor:
                 )
             )
         return tools
+
+    def _resolve_session_key(
+        self,
+        *,
+        stage: str,
+        workspace_path: str,
+        persona: str,
+        session_key: str,
+    ) -> str:
+        strategy = self._provider_profiles.policies.session_key_strategy
+        stage_key = stage.strip().upper()
+        persona_key = persona.strip().lower() or DEFAULT_PERSONA
+        base_key = session_key.strip()
+        if strategy == "workspace":
+            return workspace_path
+        if strategy == "workspace_stage":
+            return f"{workspace_path}::{stage_key}"
+        if strategy == "session_stage_persona_provider":
+            return "::".join(part for part in [base_key or workspace_path, stage_key, persona_key, self._provider_lane] if part)
+        return "::".join(part for part in [workspace_path, stage_key, persona_key, self._provider_lane] if part)

@@ -86,9 +86,15 @@ from backend.graph.client import GraphClient
 from backend.graph.index_state_store import IndexStateStore
 from backend.knowledge.store import KnowledgeStore
 from backend.llm.context_lifecycle import ContextLifecycleManager
+from backend.llm.provider_profiles import (
+    ProviderProfileDocument,
+    default_provider_profile_document,
+    load_provider_profile,
+    normalize_provider_profile,
+)
+from backend.llm.provider_resolver import resolve_provider
 from backend.llm.runtime import AgentRuntime
 from backend.llm.runtime_registry import (
-    choose_runtime_for_stage,
     create_runtime,
     resolve_runtime_name,
 )
@@ -107,6 +113,8 @@ from backend.handlers.session_handler import (
     handle_create_session,
     handle_get_session,
     handle_save_session,
+    handle_list_archived_sessions,
+    handle_restore_session,
 )
 from backend.handlers.task_handler import (
     handle_generate_plan,
@@ -144,6 +152,7 @@ from backend.handlers.runtime_handler import (
     handle_list_runtimes,
     handle_get_active_runtime,
     handle_set_active_runtime,
+    handle_sync_provider_profile,
     handle_list_skills,
     handle_reload_skills,
     handle_get_skill_detail,
@@ -152,6 +161,7 @@ from backend.handlers.runtime_handler import (
     handle_discard_checkpoint,
     handle_list_subagents,
     handle_delegate_to_subagent,
+    handle_get_usage_stats,
 )
 from backend.handlers.graph_handler import (
     handle_get_adr,
@@ -172,8 +182,11 @@ from backend.handlers.memory_handler import (
     handle_add_knowledge_repo,
     handle_search_knowledge,
     handle_list_knowledge_sources,
+    handle_browse_knowledge_index,
     handle_extract_procedure,
     handle_remove_knowledge_source,
+    handle_add_knowledge_entry,
+    handle_delete_knowledge_entry,
 )
 
 
@@ -186,32 +199,49 @@ class Server:
         self._index_state_stores: dict[str, IndexStateStore] = {}  # path -> index state
         self._task_stores: dict[str, TaskStore] = {}  # path -> workspace task store
         self._wizard_managers: dict[str, WizardManager] = {}  # path -> wizard artifact manager
-        self._runtime: Optional[AgentRuntime] = None
+        self._runtime_cache: dict[tuple[str, str, str], AgentRuntime] = {}
         self._knowledge_store: Optional[KnowledgeStore] = None
         self._context_lifecycle = ContextLifecycleManager()
         self._runtime_name = resolve_runtime_name()
+        self._provider_profiles: dict[str, ProviderProfileDocument] = {}
 
     def _get_runtime(self, workspace_path: str = ".") -> AgentRuntime:
-        runtime = getattr(self, "_runtime", None)
-        if not runtime:
+        workspace = os.path.abspath(workspace_path)
+        profile = self._get_provider_profile(workspace)
+        runtime_name = getattr(self, "_runtime_name", "deep_agents")
+        cache_key = (workspace, runtime_name, profile.profile_hash)
+        if not hasattr(self, "_runtime_cache"):
+            self._runtime_cache = {}
+        runtime = self._runtime_cache.get(cache_key)
+        if runtime is None:
             runtime = create_runtime(
-                runtime_name=self._runtime_name,
+                runtime_name=runtime_name,
                 graph=self._graph,
                 knowledge_store=self._knowledge_store,
                 task_store_factory=self._get_task_store,
-                workspace_path=workspace_path,
+                workspace_path=workspace,
+                provider_profile_document=profile,
             )
-            self._runtime = runtime
+            self._runtime_cache[cache_key] = runtime
         return runtime
 
     def _get_runtime_for_stage(self, workspace_path: str, *, stage: str, workload: str = "") -> AgentRuntime:
-        runtime_name = choose_runtime_for_stage(stage=stage, workload=workload)
+        workspace = os.path.abspath(workspace_path)
+        profile = self._get_provider_profile(workspace)
+        resolved = resolve_provider(
+            profile,
+            stage=stage,
+            persona="default",
+            preferred_runtime="ollama" if "knowledge" in workload.strip().lower() or stage.strip().lower() in {"snippetize", "knowledge"} else "",
+        )
+        runtime_name = resolved.runtime_name if resolved is not None else self._runtime_name
         return create_runtime(
             runtime_name=runtime_name,
             graph=self._graph,
             knowledge_store=self._knowledge_store,
             task_store_factory=self._get_task_store,
-            workspace_path=workspace_path,
+            workspace_path=workspace,
+            provider_profile_document=profile,
         )
 
     def _get_knowledge_store(self) -> KnowledgeStore:
@@ -248,6 +278,41 @@ class Server:
     def _get_session(self, session_id: str) -> Optional[PlanDocument]:
         return self._sessions.get(session_id)
 
+    def _get_provider_profile(self, workspace_path: str) -> ProviderProfileDocument:
+        path = os.path.abspath(workspace_path)
+        if not hasattr(self, "_provider_profiles"):
+            self._provider_profiles = {}
+        profile = self._provider_profiles.get(path)
+        if profile is None:
+            profile = load_provider_profile(path)
+            if not profile.catalog:
+                runtime_name = getattr(self, "_runtime_name", "deep_agents")
+                default_type = "openai" if runtime_name == "openai" else "ollama" if runtime_name == "ollama" else "claude"
+                profile = default_provider_profile_document(default_type)
+            self._provider_profiles[path] = profile
+        return profile
+
+    def _set_provider_profile(self, workspace_path: str, profile: ProviderProfileDocument) -> str:
+        path = os.path.abspath(workspace_path)
+        if not hasattr(self, "_provider_profiles"):
+            self._provider_profiles = {}
+        normalized = normalize_provider_profile(profile.to_dict())
+        self._provider_profiles[path] = normalized
+        self._clear_runtime_cache(workspace_path=path)
+        return normalized.profile_hash
+
+    def _clear_runtime_cache(self, workspace_path: str | None = None) -> None:
+        if not hasattr(self, "_runtime_cache"):
+            self._runtime_cache = {}
+        if workspace_path is None:
+            self._runtime_cache.clear()
+            return
+        abs_path = os.path.abspath(workspace_path)
+        self._runtime_cache = {
+            key: value for key, value in self._runtime_cache.items()
+            if key[0] != abs_path
+        }
+
     def _require_session(self, session_id: str) -> PlanDocument:
         doc = self._sessions.get(session_id)
         if not doc:
@@ -275,6 +340,8 @@ class Server:
         "indexWorkspace":       handle_index_workspace,
         "createSession":        handle_create_session,
         "getSession":           handle_get_session,
+        "listArchivedSessions": handle_list_archived_sessions,
+        "restoreSession":       handle_restore_session,
         "createWizardSession":  handle_create_wizard_session,
         "getWizardSession":     handle_get_wizard_session,
         "runWizardStep":        handle_run_wizard_step,
@@ -308,12 +375,14 @@ class Server:
         "listRuntimes":         handle_list_runtimes,
         "getActiveRuntime":     handle_get_active_runtime,
         "setActiveRuntime":     handle_set_active_runtime,
+        "syncProviderProfile":  handle_sync_provider_profile,
         "listSkills":           handle_list_skills,
         "reloadSkills":         handle_reload_skills,
         "getSkillDetail":       handle_get_skill_detail,
         "listCheckpoints":      handle_list_checkpoints,
         "resumeCheckpoint":     handle_resume_checkpoint,
         "discardCheckpoint":    handle_discard_checkpoint,
+        "getUsageStats":        handle_get_usage_stats,
         "listSubagents":        handle_list_subagents,
         "delegateToSubagent":   handle_delegate_to_subagent,
         # ADR management
@@ -338,7 +407,10 @@ class Server:
         "extractProcedure":         handle_extract_procedure,
         "searchKnowledge":          handle_search_knowledge,
         "listKnowledgeSources":     handle_list_knowledge_sources,
+        "browseKnowledgeIndex":     handle_browse_knowledge_index,
         "removeKnowledgeSource":    handle_remove_knowledge_source,
+        "addKnowledgeEntry":        handle_add_knowledge_entry,
+        "deleteKnowledgeEntry":     handle_delete_knowledge_entry,
     }
 
     def dispatch(self, request: dict) -> dict:

@@ -43,6 +43,8 @@ import {
 } from "./ui/TodoBoardPanel.js";
 import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPanel.js";
 import { MonitorPanel } from "./ui/MonitorPanel.js";
+import { MockPanel } from "./ui/MockPanel.js";
+import { KnowledgePanel, type KnowledgePanelAction } from "./ui/KnowledgePanel.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
@@ -109,11 +111,14 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _wizardLenses: WizardCodeLensProvider;
   private readonly _wizardEditor: WizardEditorPanel;
   private readonly _todoBoard: TodoBoardPanel;
+  private readonly _knowledgePanel: KnowledgePanel;
   private readonly _monitorPanel: MonitorPanel;
+  private readonly _mockPanel: MockPanel;
   private readonly _fileWatcher: FileWatcher;
   private readonly _todoWatcher: TodoWatcher;
   private readonly _liveDebug: LiveDebugCapture;
   private readonly _disposables: vscode.Disposable[] = [];
+  private _providerWatcher: vscode.Disposable | null = null;
 
   private _sessionId: string | null = null;
   private _plan: PlanData | null = null;
@@ -128,7 +133,7 @@ export class WaterFreeController implements vscode.Disposable {
 
     // Core subsystems
     this._secrets = new WaterFreeSecrets(context, context.extensionUri.fsPath);
-    this._providers = new WaterFreeProviders(context);
+    this._providers = new WaterFreeProviders(context, _workspacePath);
     this._bridge = new PythonBridge(_workspacePath, context.extensionUri.fsPath, this._logger);
     this._statusBar = new StatusBarManager();
     this._sidebarProvider = new PlanSidebarProvider(context.extensionUri);
@@ -137,8 +142,11 @@ export class WaterFreeController implements vscode.Disposable {
     this._wizardLenses = new WizardCodeLensProvider();
     this._wizardEditor = new WizardEditorPanel(context.extensionUri);
     this._todoBoard = new TodoBoardPanel(context.extensionUri);
+    this._knowledgePanel = new KnowledgePanel(context.extensionUri);
     this._monitorPanel = new MonitorPanel(context.extensionUri, _workspacePath);
     this._monitorPanel.attach(context);
+    this._mockPanel = new MockPanel(context.extensionUri, _workspacePath);
+    this._mockPanel.attach(context);
     this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
     this._todoWatcher = new TodoWatcher();
     this._liveDebug = new LiveDebugCapture();
@@ -151,7 +159,9 @@ export class WaterFreeController implements vscode.Disposable {
       this._wizardLenses,
       this._wizardEditor,
       this._todoBoard,
+      this._knowledgePanel,
       this._monitorPanel,
+      this._mockPanel,
       this._fileWatcher,
       this._todoWatcher,
       this._liveDebug,
@@ -187,6 +197,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._todoBoard.onDidTriggerAction((action) => {
         void this._onTodoBoardAction(action);
+      }),
+      this._knowledgePanel.onDidTriggerAction((action) => {
+        void this._onKnowledgePanelAction(action);
       }),
       this._wizardEditor.onDidTriggerAction((action) => {
         void this._onWizardEditorAction(action);
@@ -228,6 +241,10 @@ export class WaterFreeController implements vscode.Disposable {
 
   getQuickActions(): QuickActionsProvider {
     return this._quickActions;
+  }
+
+  async cmdOpenKnowledgePanel(): Promise<void> {
+    this._knowledgePanel.show();
   }
 
   async cmdOpenTodoBoard(): Promise<void> {
@@ -981,8 +998,11 @@ export class WaterFreeController implements vscode.Disposable {
       await this._secrets.initialize();
       await this._providers.initialize(this._secrets.storedKey);
       await this._secrets.promptForSetupIfNeeded();
-      const primaryKey = await this._providers.getPrimaryKey("claude");
-      this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+      await this._syncProviderProfile({ restartBackend: false });
+      this._providerWatcher = this._providers.watch((profile) => {
+        void this._syncProviderProfile({ profile, restartBackend: true });
+      });
+      this._disposables.push(this._providerWatcher);
       this._bridge.start();
       await this._autoIndex();
       await this._tryResumeSession();
@@ -1441,6 +1461,27 @@ export class WaterFreeController implements vscode.Disposable {
       case "openTodoBoard":
         await this.cmdOpenTodoBoard();
         return;
+      case "openKnowledge":
+        await this.cmdOpenKnowledgePanel();
+        return;
+      case "requestHistory": {
+        const result = await this._bridge.request<{ sessions: unknown[] }>("listArchivedSessions", {
+          workspacePath: this._workspacePath,
+        });
+        this._sidebarProvider.sendHistory(result?.sessions ?? []);
+        return;
+      }
+      case "restoreSession": {
+        const restored = await this._bridge.request<PlanData | null>("restoreSession", {
+          workspacePath: this._workspacePath,
+          file: action.file,
+        });
+        if (restored) {
+          this._sessionId = restored.id;
+          this._sidebarProvider.update(restored);
+        }
+        return;
+      }
       case "requestSettings": {
         const statuses = await this._providers.getStatuses();
         this._sidebarProvider.sendSettings({ providers: statuses });
@@ -1456,9 +1497,7 @@ export class WaterFreeController implements vscode.Disposable {
           useWith: action.useWith,
           enabled: action.enabled,
         }, action.apiKey);
-        const primaryKey = await this._providers.getPrimaryKey("claude");
-        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
-        this._bridge.restart();
+        await this._syncProviderProfile({ restartBackend: true });
         const statuses = await this._providers.getStatuses();
         this._sidebarProvider.sendSettings({ providers: statuses });
         return;
@@ -1473,31 +1512,111 @@ export class WaterFreeController implements vscode.Disposable {
           useWith: action.useWith,
           enabled: action.enabled,
         }, action.apiKey);
-        const primaryKey = await this._providers.getPrimaryKey("claude");
-        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
-        this._bridge.restart();
+        await this._syncProviderProfile({ restartBackend: true });
         const statuses = await this._providers.getStatuses();
         this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
       case "removeProvider": {
         await this._providers.remove(action.id);
-        const primaryKey = await this._providers.getPrimaryKey("claude");
-        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
-        this._bridge.restart();
+        await this._syncProviderProfile({ restartBackend: true });
         const statuses = await this._providers.getStatuses();
         this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
       case "toggleProvider": {
         await this._providers.toggle(action.id);
-        const primaryKey = await this._providers.getPrimaryKey("claude");
-        this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
-        this._bridge.restart();
+        await this._syncProviderProfile({ restartBackend: true });
         const statuses = await this._providers.getStatuses();
         this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
+    }
+  }
+
+  private async _onKnowledgePanelAction(action: KnowledgePanelAction): Promise<void> {
+    try {
+      switch (action.type) {
+        case "search": {
+          const result = await this._bridge.request<{ entries: unknown[]; count: number; total: number }>(
+            "searchKnowledge",
+            { query: action.query, limit: action.limit },
+          );
+          await this._knowledgePanel.postMessage({ type: "searchResult", entries: result.entries, total: result.total });
+          return;
+        }
+        case "browse": {
+          const result = await this._bridge.request<Record<string, unknown>>(
+            "browseKnowledgeIndex",
+            { path: action.path, depth: action.depth, includeEntries: action.includeEntries, entryLimit: action.entryLimit },
+          );
+          await this._knowledgePanel.postMessage({
+            type: "browseResult",
+            nodes: result["nodes"] ?? [],
+            entries: result["entries"] ?? [],
+            path: result["path"] ?? action.path,
+            totalEntries: result["total_entries"] ?? 0,
+          });
+          return;
+        }
+        case "loadSources": {
+          const result = await this._bridge.request<{ repos: unknown[]; totalEntries: number }>(
+            "listKnowledgeSources",
+            {},
+          );
+          await this._knowledgePanel.postMessage({ type: "sourcesResult", repos: result.repos });
+          return;
+        }
+        case "addEntry": {
+          const result = await this._bridge.request<{ id: string; added: boolean }>(
+            "addKnowledgeEntry",
+            {
+              title: action.title,
+              description: action.description,
+              code: action.code,
+              snippet_type: action.snippet_type,
+              source_repo: action.source_repo,
+              source_file: action.source_file,
+              tags: action.tags,
+              hierarchy_path: action.hierarchy_path,
+              context: action.context,
+            },
+          );
+          await this._knowledgePanel.postMessage({ type: "entryAdded", id: result.id, added: result.added });
+          return;
+        }
+        case "deleteEntry": {
+          const result = await this._bridge.request<{ id: string; deleted: boolean }>(
+            "deleteKnowledgeEntry",
+            { id: action.id },
+          );
+          await this._knowledgePanel.postMessage({ type: "entryDeleted", id: result.id });
+          return;
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await this._knowledgePanel.postMessage({ type: "error", message });
+    }
+  }
+
+  private async _syncProviderProfile(options: {
+    profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>;
+    restartBackend: boolean;
+  }): Promise<void> {
+    const profile = options.profile ?? await this._providers.getProfile();
+    const backendProfile = await this._providers.exportBackendConfig();
+    const primaryKey = await this._providers.getPrimaryKey("claude");
+    this._bridge.setAnthropicApiKey(primaryKey || this._secrets.anthropicApiKey);
+    this._bridge.setProviderProfile(backendProfile);
+    if (options.restartBackend) {
+      this._bridge.restart();
+    } else if (this._bridge.isRunning) {
+      await this._bridge.syncProviderProfile(backendProfile);
+    }
+    if (profile) {
+      const statuses = await this._providers.getStatuses();
+      this._sidebarProvider.sendSettings({ providers: statuses });
     }
   }
 

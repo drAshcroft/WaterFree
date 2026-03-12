@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from backend.knowledge.models import KnowledgeEntry, KnowledgeRepo
+from backend.knowledge.models import KnowledgeEntry, KnowledgeRepo, normalize_hierarchy_path
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ class KnowledgeStore:
                 content_hash TEXT NOT NULL UNIQUE,
                 created_at   TEXT NOT NULL,
                 source_repo_url TEXT NOT NULL DEFAULT '',
-                context      TEXT NOT NULL DEFAULT ''
+                context      TEXT NOT NULL DEFAULT '',
+                hierarchy_path TEXT NOT NULL DEFAULT ''
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
@@ -96,7 +97,11 @@ class KnowledgeStore:
             self._conn.execute(
                 "ALTER TABLE knowledge_entries ADD COLUMN context TEXT NOT NULL DEFAULT ''"
             )
-            self._conn.commit()
+        if "hierarchy_path" not in cols:
+            self._conn.execute(
+                "ALTER TABLE knowledge_entries ADD COLUMN hierarchy_path TEXT NOT NULL DEFAULT ''"
+            )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Write
@@ -109,8 +114,8 @@ class KnowledgeStore:
                 """
                 INSERT INTO knowledge_entries
                     (id, source_repo, source_file, snippet_type, title, description,
-                     code, tags, content_hash, created_at, source_repo_url, context)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     code, tags, content_hash, created_at, source_repo_url, context, hierarchy_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.id,
@@ -125,6 +130,7 @@ class KnowledgeStore:
                     entry.created_at,
                     entry.source_repo_url,
                     entry.context,
+                    normalize_hierarchy_path(entry.hierarchy_path),
                 ),
             )
             self._conn.commit()
@@ -237,8 +243,43 @@ class KnowledgeStore:
         row = self._conn.execute("SELECT COUNT(*) FROM knowledge_entries").fetchone()
         return row[0] if row else 0
 
+    def browse_hierarchy(
+        self,
+        path: str = "",
+        depth: int = 2,
+        include_entries: bool = False,
+        entry_limit: int = 10,
+    ) -> dict:
+        normalized_path = normalize_hierarchy_path(path)
+        root_segments = [segment for segment in normalized_path.split("/") if segment]
+        entries = self._all_entries()
+        subtree_entries = [
+            entry for entry in entries
+            if _is_in_subtree(entry.effective_hierarchy_segments(), root_segments)
+        ]
+        direct_entry_count = sum(
+            1 for entry in subtree_entries if entry.effective_hierarchy_segments() == root_segments
+        )
+        result = {
+            "path": normalized_path,
+            "depth": max(0, depth),
+            "entry_count": len(subtree_entries),
+            "direct_entry_count": direct_entry_count,
+            "total_entries": len(entries),
+            "nodes": _build_hierarchy_nodes(subtree_entries, root_segments, max(0, depth)),
+        }
+        if include_entries:
+            result["entries"] = [entry.to_dict() for entry in subtree_entries[:max(0, entry_limit)]]
+        return result
+
     def close(self) -> None:
         self._conn.close()
+
+    def _all_entries(self) -> list[KnowledgeEntry]:
+        rows = self._conn.execute(
+            "SELECT * FROM knowledge_entries ORDER BY created_at DESC"
+        ).fetchall()
+        return [_row_to_entry(r) for r in rows]
 
 
 # ------------------------------------------------------------------
@@ -265,6 +306,9 @@ def _row_to_entry(row: sqlite3.Row) -> KnowledgeEntry:
         created_at=row["created_at"],
         source_repo_url=row["source_repo_url"] or "",
         context=row["context"] if "context" in row.keys() else "",
+        hierarchy_path=normalize_hierarchy_path(
+            row["hierarchy_path"] if "hierarchy_path" in row.keys() else ""
+        ),
     )
 
 
@@ -276,3 +320,64 @@ def _escape_fts_query(query: str) -> str:
     tokens = query.strip().split()
     escaped = [f'"{t.replace(chr(34), "")}"' for t in tokens if t]
     return " OR ".join(escaped) if escaped else '""'
+
+
+def _is_in_subtree(path_segments: list[str], root_segments: list[str]) -> bool:
+    if len(root_segments) > len(path_segments):
+        return False
+    return path_segments[:len(root_segments)] == root_segments
+
+
+def _build_hierarchy_nodes(
+    entries: list[KnowledgeEntry],
+    root_segments: list[str],
+    depth: int,
+) -> list[dict]:
+    if depth <= 0:
+        return []
+
+    children: dict[str, dict] = {}
+    for entry in entries:
+        rel_segments = entry.effective_hierarchy_segments()[len(root_segments):]
+        if not rel_segments:
+            continue
+
+        current_children = children
+        traversed = list(root_segments)
+        for idx, segment in enumerate(rel_segments[:depth]):
+            traversed.append(segment)
+            node = current_children.setdefault(
+                segment,
+                {
+                    "name": segment,
+                    "path": "/".join(traversed),
+                    "entry_count": 0,
+                    "direct_entry_count": 0,
+                    "children": {},
+                },
+            )
+            node["entry_count"] += 1
+            if idx == len(rel_segments) - 1:
+                node["direct_entry_count"] += 1
+            current_children = node["children"]
+
+    return _finalize_hierarchy_nodes(children)
+
+
+def _finalize_hierarchy_nodes(children: dict[str, dict]) -> list[dict]:
+    nodes = sorted(
+        children.values(),
+        key=lambda node: (-node["entry_count"], node["name"]),
+    )
+    finalized: list[dict] = []
+    for node in nodes:
+        finalized.append(
+            {
+                "name": node["name"],
+                "path": node["path"],
+                "entry_count": node["entry_count"],
+                "direct_entry_count": node["direct_entry_count"],
+                "children": _finalize_hierarchy_nodes(node["children"]),
+            }
+        )
+    return finalized

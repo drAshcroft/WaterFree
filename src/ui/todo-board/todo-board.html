@@ -5,30 +5,59 @@
   <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{{STYLE_URI}}">
-  <title>WaterFree Todo Board</title>
+  <title>WaterFree Todo Tree</title>
 </head>
 <body>
   <div class="app-shell">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Project Flow</p>
-        <h1>Todo Board</h1>
-        <p class="hero-copy">Reorder the backlog, reshape phases, and edit tasks without leaving the editor surface.</p>
+    <header class="page-header">
+      <div class="page-copy">
+        <p class="eyebrow">Backlog</p>
+        <h1 class="page-title">Todo Tree</h1>
+        <p class="page-subtitle">Collapse the noise, inspect the interesting work, and edit selected tasks in place.</p>
       </div>
-      <div class="hero-actions">
-        <button type="button" class="ghost-btn" data-action="newPhase">New Phase</button>
-        <button type="button" class="ghost-btn" data-action="refresh">Refresh</button>
+      <div class="page-actions">
+        <button type="button" data-action="startNewTask">New Task</button>
+        <button type="button" data-action="refresh">Refresh</button>
       </div>
     </header>
-    <section id="overview" class="overview"></section>
+
+    <section class="toolbar card">
+      <div class="card-body toolbar-body">
+        <div class="section-accent" aria-hidden="true"></div>
+        <div class="toolbar-grid">
+          <div class="field-group">
+            <label class="field-label" for="search-input">Search Tasks</label>
+            <input id="search-input" type="search" placeholder="Title, notes, owner, file, trigger">
+          </div>
+          <div class="field-group field-group--compact">
+            <label class="field-label" for="tree-mode">Tree Mode</label>
+            <select id="tree-mode">
+              <option value="priority">Priority</option>
+              <option value="dependencies">Dependencies</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="summary" class="summary-grid"></section>
+
     <main class="workspace">
-      <section class="board-panel">
-        <div id="board" class="board"></div>
+      <section class="card tree-panel">
+        <div class="card-body tree-panel-body">
+          <div class="section-accent section-accent--muted" aria-hidden="true"></div>
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Tree</p>
+              <h2 class="panel-title">Backlog Structure</h2>
+            </div>
+            <span id="tree-count" class="badge">0 Tasks</span>
+          </div>
+          <div id="tree" class="tree"></div>
+        </div>
       </section>
-      <aside class="detail-panel">
-        <div id="composer" class="detail-card"></div>
-        <div id="detail" class="detail-card"></div>
-      </aside>
+
+      <aside id="editor" class="editor-panel"></aside>
     </main>
   </div>
   <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>

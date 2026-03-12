@@ -58,6 +58,13 @@ export type SubagentInfo = {
   skills: string[];
 };
 
+export type BackendProviderProfile = {
+  version: number;
+  activeProviderId: string;
+  catalog: Array<{ id?: string; type?: string }>;
+  policies: unknown;
+};
+
 export type WizardChunkData = {
   id: string;
   title: string;
@@ -146,6 +153,7 @@ export class PythonBridge implements vscode.Disposable {
   private _nextId = 1;
   private _disposed = false;
   private _anthropicApiKey = "";
+  private _providerProfile: BackendProviderProfile | null = null;
   private readonly _logger: PairLoggerLike;
   private readonly _backendLogFilePath: string;
 
@@ -180,10 +188,11 @@ export class PythonBridge implements vscode.Disposable {
     const webSearchProvider: string = config.get<string>("webSearch.provider") ?? "none";
     const webSearchApiKey: string = config.get<string>("webSearch.apiKey") ?? "";
 
+    const activeProviderType = this._resolveActiveProviderType();
     if (apiKey) {
       const masked = `${apiKey.slice(0, 7)}…${apiKey.slice(-4)}`;
       this._log(`Anthropic API key found (${masked}) — will pass to backend`);
-    } else {
+    } else if (!activeProviderType || activeProviderType === "claude" || activeProviderType === "anthropic") {
       this._log("WARNING: No Anthropic API key configured. Run WaterFree: Setup or set ANTHROPIC_API_KEY.");
       vscode.window.showWarningMessage(
         "WaterFree: No Anthropic API key found. Run WaterFree: Setup or set ANTHROPIC_API_KEY.",
@@ -255,6 +264,12 @@ export class PythonBridge implements vscode.Disposable {
         `WaterFree: Could not start Python backend — ${err.message}. Check waterfree.pythonPath.`,
       );
     });
+
+    if (this._providerProfile) {
+      void this.syncProviderProfile(this._providerProfile).catch((err: Error) => {
+        this._log(`syncProviderProfile failed: ${err.message}`);
+      });
+    }
   }
 
   dispose(): void {
@@ -273,6 +288,10 @@ export class PythonBridge implements vscode.Disposable {
 
   setAnthropicApiKey(apiKey: string): void {
     this._anthropicApiKey = apiKey.trim();
+  }
+
+  setProviderProfile(profile: BackendProviderProfile): void {
+    this._providerProfile = profile;
   }
 
   restart(): void {
@@ -345,6 +364,11 @@ export class PythonBridge implements vscode.Disposable {
 
   setActiveRuntime(runtimeId: string): Promise<{ ok: boolean; runtimeId: string }> {
     return this.request("setActiveRuntime", { runtimeId });
+  }
+
+  syncProviderProfile(profile: BackendProviderProfile): Promise<{ ok: boolean; profileHash: string }> {
+    this._providerProfile = profile;
+    return this.request("syncProviderProfile", { profile, workspacePath: this._workspacePath });
   }
 
   listSkills(params: { persona?: string; stage?: string } = {}): Promise<{ skills: SkillInfo[] }> {
@@ -558,5 +582,15 @@ export class PythonBridge implements vscode.Disposable {
     } catch {
       // Process already exited.
     }
+  }
+
+  private _resolveActiveProviderType(): string {
+    if (!this._providerProfile) {
+      return "";
+    }
+    const activeId = String(this._providerProfile.activeProviderId ?? "");
+    const active = this._providerProfile.catalog.find((entry) => String(entry.id ?? "") === activeId)
+      ?? this._providerProfile.catalog[0];
+    return String(active?.type ?? "");
   }
 }

@@ -86,7 +86,7 @@ export class TodoBoardPanel implements vscode.Disposable {
   async show(state: TodoBoardState): Promise<void> {
     this._state = state;
     const panel = this._ensurePanel();
-    panel.title = "WaterFree Todo Board";
+    panel.title = "WaterFree Todo Tree";
     await panel.webview.postMessage({ type: "state", state });
     panel.reveal(vscode.ViewColumn.Active, false);
   }
@@ -119,7 +119,7 @@ export class TodoBoardPanel implements vscode.Disposable {
 
     const panel = vscode.window.createWebviewPanel(
       "waterfreeTodoBoard",
-      "WaterFree Todo Board",
+      "WaterFree Todo Tree",
       vscode.ViewColumn.Active,
       {
         enableScripts: true,

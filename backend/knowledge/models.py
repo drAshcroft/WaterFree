@@ -6,7 +6,29 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Sequence
+
+
+def _normalize_hierarchy_segment(segment: object) -> str:
+    text = " ".join(str(segment).replace("\\", "/").strip().split())
+    return text.casefold()
+
+
+def normalize_hierarchy_path(path: str | Sequence[object] | None) -> str:
+    if path is None:
+        return ""
+
+    if isinstance(path, str):
+        raw_segments = path.replace("\\", "/").split("/")
+    else:
+        raw_segments = list(path)
+
+    segments: list[str] = []
+    for segment in raw_segments:
+        normalized = _normalize_hierarchy_segment(segment)
+        if normalized and normalized != ".":
+            segments.append(normalized)
+    return "/".join(segments)
 
 
 @dataclass
@@ -25,6 +47,7 @@ class KnowledgeEntry:
     created_at: str            # ISO-8601 timestamp
     source_repo_url: str = ""  # git remote URL (optional)
     context: str = ""          # caveats, dependencies, related files, when NOT to use
+    hierarchy_path: str = ""   # explicit taxonomy path, e.g. "backend/auth/jwt"
 
     @classmethod
     def create(
@@ -38,6 +61,7 @@ class KnowledgeEntry:
         tags: list[str],
         source_repo_url: str = "",
         context: str = "",
+        hierarchy_path: str | Sequence[object] | None = None,
     ) -> "KnowledgeEntry":
         return cls(
             id=str(uuid.uuid4()),
@@ -52,7 +76,36 @@ class KnowledgeEntry:
             created_at=datetime.now(timezone.utc).isoformat(),
             source_repo_url=source_repo_url,
             context=context,
+            hierarchy_path=normalize_hierarchy_path(hierarchy_path),
         )
+
+    def hierarchy_segments(self) -> list[str]:
+        return [segment for segment in self.hierarchy_path.split("/") if segment]
+
+    def effective_hierarchy_segments(self) -> list[str]:
+        explicit = self.hierarchy_segments()
+        if explicit:
+            return explicit
+
+        derived: list[str] = []
+        snippet_segment = _normalize_hierarchy_segment(self.snippet_type)
+        if snippet_segment:
+            derived.append(snippet_segment)
+
+        for tag in self.tags:
+            tag_segment = _normalize_hierarchy_segment(tag)
+            if tag_segment and tag_segment not in derived:
+                derived.append(tag_segment)
+            if len(derived) >= 4:
+                break
+
+        return derived
+
+    def effective_hierarchy_path(self) -> str:
+        return "/".join(self.effective_hierarchy_segments())
+
+    def hierarchy_source(self) -> str:
+        return "explicit" if self.hierarchy_path else "derived"
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +121,9 @@ class KnowledgeEntry:
             "createdAt": self.created_at,
             "sourceRepoUrl": self.source_repo_url,
             "context": self.context,
+            "hierarchyPath": self.effective_hierarchy_path(),
+            "hierarchySegments": self.effective_hierarchy_segments(),
+            "hierarchySource": self.hierarchy_source(),
         }
 
 

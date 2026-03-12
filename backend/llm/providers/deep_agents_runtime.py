@@ -19,6 +19,11 @@ from typing import Any, Callable, Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.provider_profiles import (
+    ProviderProfileDocument,
+    default_provider_profile_document,
+    normalize_provider_profile,
+)
 from backend.llm.prompt_templates import build_system_prompt
 from backend.llm.personas import DEFAULT_PERSONA, PERSONAS
 from backend.llm.structural_support import (
@@ -38,6 +43,7 @@ from backend.session.models import (
 )
 from backend.todo.store import TaskStore
 
+from backend.llm.channels.registry import ChannelRegistry
 from backend.llm.providers.task_executor import TaskExecutor
 from backend.llm.providers.plan_generator import PlanGenerator
 from backend.llm.providers.wizard_stage_runner import WizardStageRunner
@@ -49,6 +55,7 @@ class DeepAgentsRuntime:
         *,
         workspace_path: str = ".",
         provider_lane: str = "deep_agents",
+        provider_profile_document: Optional[ProviderProfileDocument] = None,
         graph: Optional[GraphClient] = None,
         knowledge_store: Optional[KnowledgeStore] = None,
         task_store_factory: Optional[Callable[[str], TaskStore]] = None,
@@ -62,6 +69,7 @@ class DeepAgentsRuntime:
         self._knowledge_store = knowledge_store
         self._workspace_path = workspace_path
         self._provider_lane = provider_lane
+        self._provider_profiles = provider_profile_document or default_provider_profile_document(provider_lane)
 
         self._skill_registry = SkillRegistry(workspace_path)
         self._skill_adapter = SkillAdapter(self._skill_registry)
@@ -72,13 +80,16 @@ class DeepAgentsRuntime:
             enable_optional_web_tools=bool(os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip()),
         )
 
+        self._channel_registry = ChannelRegistry(workspace_path)
         self._executor = TaskExecutor(
             workspace_path=workspace_path,
             provider_lane=provider_lane,
+            provider_profile_document=self._provider_profiles,
             tool_registry=self._tool_registry,
             skill_adapter=self._skill_adapter,
             interrupt_config_fn=self._interrupt_config,
             subagents_fn=self._deepagents_subagents,
+            channel_registry=self._channel_registry,
         )
         self._plan_generator = PlanGenerator(
             executor=self._executor,
@@ -110,12 +121,14 @@ class DeepAgentsRuntime:
         prompt: str,
         workspace_path: str,
         persona: str,
+        session_key: str = "",
     ) -> Optional[dict[str, Any]]:
         return self._executor._run_deepagents_structured(
             stage=stage,
             prompt=prompt,
             workspace_path=workspace_path,
             persona=persona,
+            session_key=session_key,
         )
 
     def _run_deepagents_text(
@@ -125,12 +138,14 @@ class DeepAgentsRuntime:
         prompt: str,
         workspace_path: str,
         persona: str,
+        session_key: str = "",
     ) -> str:
         return self._executor._run_deepagents_text(
             stage=stage,
             prompt=prompt,
             workspace_path=workspace_path,
             persona=persona,
+            session_key=session_key,
         )
 
     # ------------------------------------------------------------------
@@ -501,6 +516,17 @@ class DeepAgentsRuntime:
             },
         )
         return {"checkpointId": cp["id"], "result": None}
+
+    # ------------------------------------------------------------------
+    # Usage stats
+    # ------------------------------------------------------------------
+
+    def get_usage_stats(self, workspace_path: str = "") -> list[dict]:
+        """Return cumulative token usage per provider for this workspace."""
+        return self._channel_registry.get_usage_stats()
+
+    def flush_session(self, session_key: str) -> None:
+        self._executor.flush_session(session_key)
 
     # ------------------------------------------------------------------
     # Skill management

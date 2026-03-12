@@ -186,6 +186,11 @@ def handle_finalize_execution(server, params: dict) -> dict:
         tm.finish()
     except InvalidTransitionError:
         tm.force(AIState.IDLE)
+    runtime = server._get_runtime(doc.workspace_path)
+    flush_session = getattr(runtime, "flush_session", None)
+    profile = server._get_provider_profile(doc.workspace_path)
+    if callable(flush_session) and profile.policies.flush_on_task_complete:
+        flush_session(task.id)
     sm.save_session(doc)
     return {
         "ok": True,

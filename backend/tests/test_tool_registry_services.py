@@ -30,6 +30,31 @@ class FakeKnowledgeStore:
     def search(self, query: str, limit: int = 10):
         return [FakeKnowledgeEntry(f"match:{query}")][:limit]
 
+    def browse_hierarchy(
+        self,
+        path: str = "",
+        depth: int = 2,
+        include_entries: bool = False,
+        entry_limit: int = 10,
+    ):
+        return {
+            "path": path,
+            "depth": depth,
+            "entry_count": 1,
+            "direct_entry_count": 0,
+            "total_entries": 1,
+            "nodes": [
+                {
+                    "name": "pattern",
+                    "path": "pattern",
+                    "entry_count": 1,
+                    "direct_entry_count": 0,
+                    "children": [],
+                }
+            ],
+            "entries": [{"title": "match:index"}] if include_entries else [],
+        }
+
     def list_repos(self):
         return [FakeKnowledgeRepo("demo-repo")]
 
@@ -96,9 +121,15 @@ class ToolRegistryServiceTests(unittest.TestCase):
             {},
             str(workspace),
         )
+        hierarchy = registry.invoke(
+            "browse_knowledge_index",
+            {"path": "pattern", "includeEntries": True},
+            str(workspace),
+        )
 
         self.assertEqual(result["entries"][0]["title"], "match:auth")
         self.assertEqual(sources["repos"][0]["name"], "demo-repo")
+        self.assertEqual(hierarchy["nodes"][0]["name"], "pattern")
 
     def test_testing_tools_are_registered(self) -> None:
         registry = self.make_registry()

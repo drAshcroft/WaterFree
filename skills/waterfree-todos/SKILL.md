@@ -6,6 +6,7 @@ description: Use the WaterFree task MCP tools to inspect the workspace backlog, 
 # WaterFree — Task / Todo Store Tools
 
 You have access to the workspace task backlog via the `waterfree-todos` MCP server.
+This is like a mini Jira board with hierarchical  todos, reoccuring checks, and search.
 Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite).
 
 ## When to Use
@@ -17,6 +18,7 @@ Use these tools when you need to:
 - Mark a task complete after finishing it — use `update_task` with `"status": "complete"`
 - Check what to work on next (highest-priority, no blockers) — use `get_next_task`
 - See only unblocked work — use `get_ready_tasks`
+- Build todos that need to be rechecked - use 
 
 ## Task Model
 

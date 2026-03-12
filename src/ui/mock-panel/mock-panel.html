@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{STYLE_URI}}">
+  <title>WaterFree Mock</title>
+</head>
+<body>
+  <main class="mock-shell">
+
+    <header class="mock-header">
+      <h1 class="mock-title">Mock Provider</h1>
+      <div class="capture-meta" id="capture-meta" hidden>
+        <span class="badge" id="badge-stage"></span>
+        <span class="capture-id" id="capture-id"></span>
+      </div>
+    </header>
+
+    <section class="empty-state" id="empty-state">
+      <p>Waiting for a mock prompt&hellip;</p>
+      <p class="hint">Set your runtime to <code>mock</code> and trigger any LLM operation.</p>
+    </section>
+
+    <section class="capture-view" id="capture-view" hidden>
+
+      <div class="prompt-section">
+        <label class="section-label">System Prompt</label>
+        <pre class="prompt-block" id="system-prompt"></pre>
+      </div>
+
+      <div class="prompt-section">
+        <label class="section-label">User Prompt</label>
+        <pre class="prompt-block" id="user-prompt"></pre>
+      </div>
+
+      <div class="response-section">
+        <label class="section-label" for="response-input">Response</label>
+        <textarea
+          id="response-input"
+          class="response-textarea"
+          placeholder="Type or paste the response (plain text or JSON)…"
+          rows="12"
+          spellcheck="false"
+        ></textarea>
+      </div>
+
+      <footer class="mock-footer">
+        <button id="btn-submit" class="primary" type="button">Return Response</button>
+        <button id="btn-discard" class="secondary" type="button">Discard (empty)</button>
+      </footer>
+
+    </section>
+
+    <section class="queue-bar" id="queue-bar" hidden>
+      <span class="queue-label">Pending:</span>
+      <span class="queue-count" id="queue-count"></span>
+    </section>
+
+  </main>
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

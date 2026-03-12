@@ -45,6 +45,7 @@ export class CommandRegistry {
     register("waterfree.buildKnowledge", () => c.cmdBuildKnowledge());
     register("waterfree.addKnowledgeRepo", () => c.cmdAddKnowledgeRepo());
     register("waterfree.openTodoBoard", () => c.cmdOpenTodoBoard());
+    register("waterfree.openKnowledge", () => c.cmdOpenKnowledgePanel());
     register("waterfree.extractProcedure", () => c.cmdExtractProcedure());
     register("waterfree.openWizard", (args?: unknown) => c.cmdOpenWizard(args));
     register("waterfree.runWizardStep", (ctx?: unknown) => c.cmdRunWizardStep(ctx));

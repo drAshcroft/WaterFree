@@ -1,788 +1,649 @@
 const vscode = acquireVsCodeApi();
 const savedState = vscode.getState() || {};
 
-const INBOX_PHASE = "__waterfree_inbox__";
-const DEFAULT_TASK = {
-  title: "",
-  description: "",
-  phase: INBOX_PHASE,
-  priority: "P2",
-  status: "pending",
-  ownerType: "unassigned",
-  ownerName: "",
-  taskType: "impl",
-  timing: "one_time",
-  targetFile: "",
-  targetLine: "",
-  blockedReason: "",
-  humanNotes: "",
-  acceptanceCriteria: "",
-  trigger: "",
+const PRIORITIES = ["P0", "P1", "P2", "P3", "spike"];
+const STATUSES = ["pending", "annotating", "negotiating", "executing", "complete", "skipped"];
+const DEP_TYPES = ["blocks", "informs", "shares-file"];
+const DEFAULT_DRAFT = {
+  title: "", description: "", rationale: "", phase: "", priority: "P2", status: "pending",
+  taskType: "impl", timing: "one_time", ownerType: "unassigned", ownerName: "", ownerAssignedAt: "",
+  targetFile: "", targetClass: "", targetMethod: "", targetLine: "", anchorType: "modify",
+  blockedReason: "", trigger: "", acceptanceCriteria: "", humanNotes: "", aiNotes: "",
+  estimatedMinutes: "", actualMinutes: "", startedAt: "", completedAt: "",
 };
 
 const state = {
   board: normalizeBoard({ tasks: [], phases: [] }),
   selectionId: typeof savedState.selectionId === "string" ? savedState.selectionId : null,
-  composer: { ...DEFAULT_TASK, ...(savedState.composer || {}) },
-  dragTaskId: null,
-  dragPhaseKey: null,
+  editorMode: savedState.editorMode === "new" ? "new" : "task",
+  draftTask: { ...DEFAULT_DRAFT, ...(savedState.draftTask || {}) },
+  searchQuery: typeof savedState.searchQuery === "string" ? savedState.searchQuery : "",
+  treeMode: savedState.treeMode === "dependencies" ? "dependencies" : "priority",
+  collapsedGroups: isRecord(savedState.collapsedGroups) ? savedState.collapsedGroups : {},
 };
 
-const overviewEl = document.getElementById("overview");
-const boardEl = document.getElementById("board");
-const composerEl = document.getElementById("composer");
-const detailEl = document.getElementById("detail");
+const summaryEl = document.getElementById("summary");
+const treeEl = document.getElementById("tree");
+const editorEl = document.getElementById("editor");
+const treeCountEl = document.getElementById("tree-count");
+const searchInput = document.getElementById("search-input");
+const treeModeSelect = document.getElementById("tree-mode");
 
 window.addEventListener("message", (event) => {
   const message = event.data || {};
-  if (message.type !== "state") {
-    return;
-  }
+  if (message.type !== "state") { return; }
   state.board = normalizeBoard(message.state || {});
   if (!state.selectionId || !state.board.tasksById[state.selectionId]) {
-    state.selectionId = firstTaskId();
+    state.selectionId = orderedTasks()[0]?.id || null;
   }
-  if (!state.board.phaseOrder.includes(state.composer.phase)) {
-    state.composer.phase = firstPhaseKey();
+  if (!state.board.phaseOptions.includes(state.draftTask.phase || "")) {
+    state.draftTask.phase = "";
   }
   persist();
   render();
 });
 
 document.addEventListener("click", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const target = event.target.closest("[data-action]");
-  if (!target) {
-    return;
-  }
-  const action = target.getAttribute("data-action");
-  if (!action) {
-    return;
-  }
+  if (!(event.target instanceof Element)) { return; }
+  const el = event.target.closest("[data-action]");
+  if (!el) { return; }
+  const action = el.getAttribute("data-action");
+  if (!action) { return; }
 
-  if (action === "refresh") {
-    vscode.postMessage({ type: "refresh" });
+  if (action === "refresh") { vscode.postMessage({ type: "refresh" }); return; }
+  if (action === "startNewTask") {
+    state.editorMode = "new";
+    state.draftTask = { ...DEFAULT_DRAFT, phase: state.board.phaseOptions[0] || "" };
+    persist();
+    renderEditor();
     return;
   }
-  if (action === "newPhase") {
-    const name = window.prompt("New phase name");
-    if (name) {
-      addPhase(name);
-    }
-    return;
-  }
-  if (action === "renamePhase") {
-    const phaseKey = target.getAttribute("data-phase-key") || INBOX_PHASE;
-    if (phaseKey !== INBOX_PHASE) {
-      const current = displayPhaseName(phaseKey);
-      const name = window.prompt("Rename phase", current);
-      if (name) {
-        renamePhase(phaseKey, name);
-      }
-    }
+  if (action === "cancelNewTask") { state.editorMode = "task"; persist(); renderEditor(); return; }
+  if (action === "toggleGroup") {
+    const groupId = el.getAttribute("data-group-id") || "";
+    state.collapsedGroups[groupId] = !groupOpen(groupId);
+    persist();
+    renderTree();
     return;
   }
   if (action === "selectTask") {
-    const taskId = target.getAttribute("data-task-id");
+    const taskId = el.getAttribute("data-task-id");
     if (taskId && state.board.tasksById[taskId]) {
       state.selectionId = taskId;
+      state.editorMode = "task";
       persist();
-      renderBoard();
-      renderDetail();
+      renderTree();
+      renderEditor();
     }
     return;
   }
   if (action === "openTask") {
-    const taskId = target.getAttribute("data-task-id");
+    const taskId = el.getAttribute("data-task-id") || state.selectionId;
     const task = taskId ? state.board.tasksById[taskId] : null;
     if (task) {
-      vscode.postMessage({
-        type: "openTask",
-        file: task.targetCoord.file || "",
-        line: typeof task.targetCoord.line === "number" ? task.targetCoord.line : undefined,
-      });
+      vscode.postMessage({ type: "openTask", file: task.targetCoord.file || "", line: task.targetCoord.line ?? undefined });
     }
     return;
   }
-  if (action === "saveTask") {
-    saveSelectedTask();
-    return;
-  }
+  if (action === "createTask") { createTask(); return; }
+  if (action === "saveTask") { saveSelectedTask(); return; }
   if (action === "deleteTask") {
-    const taskId = target.getAttribute("data-task-id") || state.selectionId;
+    const taskId = el.getAttribute("data-task-id") || state.selectionId;
     const task = taskId ? state.board.tasksById[taskId] : null;
     if (task && window.confirm(`Delete "${task.title || "Untitled task"}"?`)) {
       vscode.postMessage({ type: "deleteTask", taskId });
     }
+  }
+});
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) { return; }
+  if (target.id === "search-input") {
+    state.searchQuery = target.value;
+    persist();
+    renderSummary();
+    renderTree();
     return;
   }
-  if (action === "createTask") {
-    createTask();
-  }
+  const draftField = target.getAttribute("data-draft-field");
+  if (draftField) { state.draftTask[draftField] = target.value; persist(); }
 });
 
 document.addEventListener("change", (event) => {
   const target = event.target;
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) { return; }
+  if (target.id === "tree-mode") {
+    state.treeMode = target.value === "dependencies" ? "dependencies" : "priority";
+    persist();
+    renderTree();
     return;
   }
-  if (!target.hasAttribute("data-composer-field")) {
-    return;
-  }
-  const field = target.getAttribute("data-composer-field");
-  if (!field) {
-    return;
-  }
-  state.composer[field] = target.value;
-  persist();
-});
-
-document.addEventListener("dragstart", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const target = event.target.closest("[data-draggable-task], [data-draggable-phase]");
-  if (!target || !event.dataTransfer) {
-    return;
-  }
-  if (target.hasAttribute("data-draggable-task")) {
-    state.dragTaskId = target.getAttribute("data-task-id");
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", state.dragTaskId || "");
-    return;
-  }
-  state.dragPhaseKey = target.getAttribute("data-phase-key");
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", state.dragPhaseKey || "");
-});
-
-document.addEventListener("dragover", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const dropZone = event.target.closest("[data-drop-phase], [data-drop-before-task-id], [data-drop-phase-card], [data-drop-before-phase-key]");
-  if (!dropZone) {
-    return;
-  }
-  event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = "move";
-  }
-});
-
-document.addEventListener("dragenter", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const dropZone = event.target.closest("[data-drop-phase], [data-drop-before-task-id], [data-drop-phase-card], [data-drop-before-phase-key]");
-  if (dropZone) {
-    dropZone.classList.add("drag-target");
-  }
-});
-
-document.addEventListener("dragleave", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const dropZone = event.target.closest(".drag-target");
-  if (dropZone && !dropZone.contains(event.relatedTarget)) {
-    dropZone.classList.remove("drag-target");
-  }
-});
-
-document.addEventListener("drop", (event) => {
-  if (!(event.target instanceof Element)) {
-    return;
-  }
-  const taskDrop = event.target.closest("[data-drop-phase], [data-drop-before-task-id], [data-drop-phase-card]");
-  const phaseDrop = event.target.closest("[data-drop-before-phase-key]");
-  clearDragTargets();
-
-  if (state.dragTaskId && taskDrop) {
-    event.preventDefault();
-    const phaseKey = taskDrop.getAttribute("data-drop-phase")
-      || taskDrop.getAttribute("data-drop-phase-card")
-      || INBOX_PHASE;
-    const beforeTaskId = taskDrop.getAttribute("data-drop-before-task-id");
-    moveTask(state.dragTaskId, phaseKey, beforeTaskId || null);
-    state.dragTaskId = null;
-    return;
-  }
-
-  if (state.dragPhaseKey && phaseDrop) {
-    event.preventDefault();
-    const beforePhaseKey = phaseDrop.getAttribute("data-drop-before-phase-key");
-    if (beforePhaseKey) {
-      movePhase(state.dragPhaseKey, beforePhaseKey);
-    }
-  }
-
-  state.dragTaskId = null;
-  state.dragPhaseKey = null;
+  const draftField = target.getAttribute("data-draft-field");
+  if (draftField) { state.draftTask[draftField] = target.value; persist(); }
 });
 
 function render() {
-  renderOverview();
-  renderBoard();
-  renderComposer();
-  renderDetail();
+  if (searchInput) { searchInput.value = state.searchQuery; }
+  if (treeModeSelect) { treeModeSelect.value = state.treeMode; }
+  renderSummary();
+  renderTree();
+  renderEditor();
 }
 
-function renderOverview() {
-  const tasks = orderedTasks();
-  const total = tasks.length;
-  const complete = tasks.filter((task) => task.status === "complete").length;
-  const active = tasks.filter((task) => task.status === "executing").length;
-  const blocked = tasks.filter((task) => (task.dependsOn || []).length > 0 && task.status !== "complete").length;
-  const progress = total === 0 ? 0 : Math.round((complete / total) * 100);
-  const phases = state.board.phaseOrder.filter((phase) => phase !== INBOX_PHASE).length;
-
-  overviewEl.innerHTML = [
-    statCard("Tasks", total),
-    statCard("Completed", complete),
-    statCard("Active", active),
-    statCard("Blocked", blocked),
-    statCard("Progress", `${progress}%`, `${phases} phase${phases === 1 ? "" : "s"}`),
+function renderSummary() {
+  const all = orderedTasks();
+  const visible = filteredTasks();
+  const blocked = all.filter((task) => task.dependsOn.length && task.status !== "complete").length;
+  const recurring = all.filter((task) => task.timing === "recurring").length;
+  const active = all.filter((task) => task.status === "executing").length;
+  const tracked = all.filter((task) => task.estimatedMinutes || task.actualMinutes).length;
+  summaryEl.innerHTML = [
+    summaryCard("Tasks", all.length, `${visible.length} visible`),
+    summaryCard("Active", active, "Executing now"),
+    summaryCard("Blocked", blocked, "Depends on other work"),
+    summaryCard("Recurring", recurring, "Cycles back into backlog"),
+    summaryCard("Tracked", tracked, "Has timing data"),
   ].join("");
 }
 
-function renderBoard() {
-  const markup = state.board.phaseOrder.map((phaseKey) => renderPhase(phaseKey)).join("");
-  boardEl.innerHTML = markup || '<div class="empty-state">No tasks yet. Start by creating one or queueing a `[wf] TODO`.</div>';
+function renderTree() {
+  const visible = filteredTasks();
+  const total = orderedTasks().length;
+  if (treeCountEl) { treeCountEl.textContent = state.searchQuery ? `${visible.length} of ${total} Tasks` : `${visible.length} Tasks`; }
+  const groups = state.treeMode === "dependencies" ? dependencyGroups(visible) : priorityGroups(visible);
+  treeEl.innerHTML = groups.length ? groups.map(renderGroup).join("") : '<div class="empty-state">No tasks match the current search.</div>';
 }
 
-function renderPhase(phaseKey) {
-  const taskIds = state.board.phaseTasks[phaseKey] || [];
-  const tasks = taskIds.map((taskId) => state.board.tasksById[taskId]).filter(Boolean);
-  const complete = tasks.filter((task) => task.status === "complete").length;
-  const progress = tasks.length === 0 ? 0 : Math.round((complete / tasks.length) * 100);
-
-  return [
-    `<section class="phase-card" data-drop-phase-card="${escapeHtml(phaseKey)}">`,
-    `<div class="phase-header" draggable="true" data-draggable-phase="true" data-phase-key="${escapeHtml(phaseKey)}" data-drop-before-phase-key="${escapeHtml(phaseKey)}">`,
-    '<div>',
-    '<div class="phase-title-row">',
-    `<h2 class="phase-title">${escapeHtml(displayPhaseName(phaseKey))}</h2>`,
-    `<span class="meta-pill">${tasks.length} task${tasks.length === 1 ? "" : "s"}</span>`,
-    '</div>',
-    `<div class="phase-meta"><div class="phase-progress"><div class="phase-progress-bar" style="width:${progress}%"></div></div><span class="muted">${progress}% shipped</span></div>`,
-    '</div>',
-    '<div class="phase-actions">',
-    phaseKey === INBOX_PHASE ? "" : `<button type="button" class="icon-btn" data-action="renamePhase" data-phase-key="${escapeHtml(phaseKey)}">Edit</button>`,
-    '</div>',
-    '</div>',
-    `<div class="phase-body" data-drop-phase="${escapeHtml(phaseKey)}">`,
-    tasks.length ? `<div class="task-stack">${tasks.map((task) => renderTask(task, phaseKey)).join("")}</div>` : '<div class="empty-state">Drop tasks here to reshape the flow.</div>',
-    '</div>',
-    '</section>',
-  ].join("");
-}
-
-function renderTask(task, phaseKey) {
-  const deps = (task.dependsOn || []).map((dep) => state.board.tasksById[dep.taskId]?.title).filter(Boolean);
-  const ownerName = task.owner && task.owner.name ? task.owner.name : task.owner?.type || "unassigned";
-  const depth = taskDepth(task, phaseKey);
-  const selected = state.selectionId === task.id ? " selected" : "";
-
-  return [
-    `<article class="task-card priority-${escapeHtml(task.priority)}${selected}" data-depth="${depth}" draggable="true" data-draggable-task="true" data-task-id="${escapeHtml(task.id)}" data-drop-phase="${escapeHtml(phaseKey)}" data-drop-before-task-id="${escapeHtml(task.id)}">`,
-    `<div class="task-topline"><div><h3 class="task-title">${escapeHtml(task.title || "Untitled task")}</h3><p class="task-description">${escapeHtml(task.description || "No description yet.")}</p></div>${statusPill(task.status)}</div>`,
-    '<div class="task-meta-row">',
-    `<span class="priority-pill priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span>`,
-    `<span class="task-owner"><strong>${escapeHtml(ownerName)}</strong></span>`,
-    '</div>',
-    `<div class="task-meta-row"><span class="task-location">${escapeHtml(formatCoord(task.targetCoord))}</span>${deps.length ? `<span class="task-deps"><strong>Depends on</strong> ${escapeHtml(deps.join(", "))}</span>` : ""}</div>`,
-    `<div class="button-row"><button type="button" class="ghost-btn" data-action="selectTask" data-task-id="${escapeHtml(task.id)}">Details</button><button type="button" class="ghost-btn" data-action="openTask" data-task-id="${escapeHtml(task.id)}">Open</button></div>`,
-    '</article>',
-  ].join("");
-}
-
-function renderComposer() {
-  composerEl.innerHTML = [
-    '<div class="detail-header"><div><h2 class="detail-title">Add Task</h2><p class="detail-subtitle">Capture work without leaving the board.</p></div></div>',
-    fieldText("Title", "composer-title", state.composer.title, true, "title"),
-    fieldTextarea("Description", "composer-description", state.composer.description, "description"),
-    '<div class="field-row">',
-    fieldSelect("Phase", "composer-phase", phaseOptions(), state.composer.phase, "phase"),
-    fieldSelect("Priority", "composer-priority", priorityOptions(), state.composer.priority, "priority"),
-    '</div>',
-    '<div class="field-row">',
-    fieldSelect("Status", "composer-status", statusOptions(), state.composer.status, "status"),
-    fieldSelect("Task Type", "composer-task-type", taskTypeOptions(), state.composer.taskType, "taskType"),
-    '</div>',
-    '<div class="field-row">',
-    fieldSelect("Timing", "composer-timing", timingOptions(), state.composer.timing, "timing"),
-    '</div>',
-    '<div class="button-row"><button type="button" class="primary-btn" data-action="createTask">Create Task</button></div>',
-  ].join("");
-}
-
-function renderDetail() {
+function renderEditor() {
+  if (state.editorMode === "new") { editorEl.innerHTML = renderNewEditor(); return; }
   const task = selectedTask();
   if (!task) {
-    detailEl.innerHTML = [
-      '<div class="detail-header"><div><h2 class="detail-title">Task Details</h2><p class="detail-subtitle">Select a task card to edit its scope and dependencies.</p></div></div>',
-      '<div class="empty-state">Choose a task to edit it here.</div>',
-    ].join("");
+    editorEl.innerHTML = '<section class="editor-card"><div class="editor-card-body"><div class="section-accent section-accent--muted"></div><div class="empty-state">Select a task from the tree or create a new one.</div><div class="button-row"><button type="button" class="primary" data-action="startNewTask">New Task</button></div></div></section>';
     return;
   }
-
-  const dependencyOptions = orderedTasks()
-    .filter((candidate) => candidate.id !== task.id)
-    .map((candidate) => {
-      const checked = (task.dependsOn || []).some((dep) => dep.taskId === candidate.id) ? " checked" : "";
-      return `<label class="dependency-option"><input type="checkbox" data-dependency-id="${escapeHtml(candidate.id)}"${checked}> <span>${escapeHtml(candidate.title || "Untitled task")} <span class="muted">(${escapeHtml(displayPhaseName(normalizePhase(candidate.phase)))})</span></span></label>`;
-    })
-    .join("");
-
-  detailEl.innerHTML = [
-    `<div class="detail-header"><div><h2 class="detail-title">${escapeHtml(task.title || "Untitled task")}</h2><p class="detail-subtitle">${escapeHtml(task.id)}</p></div>${statusPill(task.status)}</div>`,
-    fieldText("Title", "detail-title", task.title),
-    fieldTextarea("Description", "detail-description", task.description),
-    '<div class="field-row">',
-    fieldSelect("Phase", "detail-phase", phaseOptions(), normalizePhase(task.phase)),
-    fieldSelect("Priority", "detail-priority", priorityOptions(), task.priority),
-    '</div>',
-    '<div class="field-row">',
-    fieldSelect("Status", "detail-status", statusOptions(), task.status),
-    fieldSelect("Owner Type", "detail-owner-type", ownerTypeOptions(), task.owner?.type || "unassigned"),
-    '</div>',
-    '<div class="field-row">',
-    fieldText("Owner Name", "detail-owner-name", task.owner?.name || ""),
-    fieldSelect("Task Type", "detail-task-type", taskTypeOptions(), task.taskType || "impl"),
-    '</div>',
-    '<div class="field-row">',
-    fieldSelect("Timing", "detail-timing", timingOptions(), task.timing || "one_time"),
-    '</div>',
-    '<div class="field-row">',
-    fieldText("Target File", "detail-target-file", task.targetCoord?.file || ""),
-    fieldText("Target Line", "detail-target-line", task.targetCoord?.line ? String(task.targetCoord.line) : ""),
-    '</div>',
-    fieldText("Trigger", "detail-trigger", task.trigger || ""),
-    fieldTextarea("Acceptance Criteria", "detail-acceptance-criteria", task.acceptanceCriteria || ""),
-    fieldText("Blocked Reason", "detail-blocked-reason", task.blockedReason || ""),
-    fieldTextarea("Human Notes", "detail-human-notes", task.humanNotes || ""),
-    '<div class="field-group"><label class="field-label">Dependencies</label>',
-    dependencyOptions ? `<div class="dependency-grid">${dependencyOptions}</div>` : '<div class="empty-state">No other tasks available yet.</div>',
-    '</div>',
-    `<div class="button-row"><button type="button" class="primary-btn" data-action="saveTask">Save Changes</button><button type="button" class="ghost-btn" data-action="openTask" data-task-id="${escapeHtml(task.id)}">Open Target</button><button type="button" class="danger-btn" data-action="deleteTask" data-task-id="${escapeHtml(task.id)}">Delete</button></div>`,
-  ].join("");
+  editorEl.innerHTML = renderTaskEditor(task);
 }
 
 function createTask() {
-  const title = valueOf("composer-title").trim();
-  if (!title) {
-    window.alert("Task title is required.");
-    return;
-  }
-  const phase = valueOf("composer-phase");
-  const task = {
-    title,
-    description: valueOf("composer-description").trim(),
-    phase: phase === INBOX_PHASE ? null : phase,
-    priority: valueOf("composer-priority"),
-    status: valueOf("composer-status"),
-    taskType: valueOf("composer-task-type"),
-    timing: valueOf("composer-timing"),
-    owner: { type: "unassigned", name: "" },
-    targetCoord: { file: "", line: null, anchorType: "modify" },
-  };
-  vscode.postMessage({ type: "addTask", task });
-  state.composer = { ...DEFAULT_TASK, phase: firstPhaseKey() };
+  const title = valueOf("new-title").trim();
+  if (!title) { window.alert("Task title is required."); return; }
+  vscode.postMessage({ type: "addTask", task: collectForm("new") });
+  state.draftTask = { ...DEFAULT_DRAFT, phase: state.board.phaseOptions[0] || "" };
   persist();
-  renderComposer();
+  renderEditor();
 }
 
 function saveSelectedTask() {
   const task = selectedTask();
-  if (!task) {
-    return;
-  }
-  const dependsOn = Array.from(detailEl.querySelectorAll("[data-dependency-id]:checked"))
-    .map((input) => input.getAttribute("data-dependency-id"))
-    .filter(Boolean)
-    .map((taskId) => {
-      const existing = (task.dependsOn || []).find((dep) => dep.taskId === taskId);
-      return existing || { taskId, type: "blocks" };
-    });
-  const phase = valueOf("detail-phase");
-  const patch = {
-    title: valueOf("detail-title").trim(),
-    description: valueOf("detail-description").trim(),
-    phase: phase === INBOX_PHASE ? "" : phase,
-    priority: valueOf("detail-priority"),
-    status: valueOf("detail-status"),
-    taskType: valueOf("detail-task-type"),
-    timing: valueOf("detail-timing"),
-    trigger: valueOf("detail-trigger").trim() || null,
-    acceptanceCriteria: valueOf("detail-acceptance-criteria").trim() || null,
-    blockedReason: valueOf("detail-blocked-reason").trim(),
-    humanNotes: valueOf("detail-human-notes").trim(),
-    owner: {
-      type: valueOf("detail-owner-type"),
-      name: valueOf("detail-owner-name").trim(),
-    },
-    targetCoord: {
-      ...(task.targetCoord || { anchorType: "modify" }),
-      file: valueOf("detail-target-file").trim(),
-      line: parsePositiveInt(valueOf("detail-target-line")),
-    },
-    dependsOn,
-  };
+  if (!task) { return; }
+  const patch = collectForm("detail");
+  patch.dependsOn = Array.from(document.querySelectorAll("[data-dependency-checkbox]"))
+    .filter((input) => input instanceof HTMLInputElement && input.checked)
+    .map((input) => {
+      const taskId = input.getAttribute("data-dependency-checkbox") || "";
+      const select = document.querySelector(`[data-dependency-type="${cssEscape(taskId)}"]`);
+      return { taskId, type: select instanceof HTMLSelectElement ? select.value : "blocks" };
+    })
+    .filter((dep) => dep.taskId);
   vscode.postMessage({ type: "updateTask", taskId: task.id, patch });
 }
 
-function addPhase(name) {
-  const phaseName = String(name || "").trim();
-  if (!phaseName) {
-    return;
-  }
-  if (state.board.phaseOrder.some((phaseKey) => displayPhaseName(phaseKey).toLowerCase() === phaseName.toLowerCase())) {
-    return;
-  }
-  state.board.phaseOrder.push(phaseName);
-  state.board.phaseTasks[phaseName] = state.board.phaseTasks[phaseName] || [];
-  persist();
-  render();
-  saveBoard();
-}
-
-function renamePhase(phaseKey, nextName) {
-  const phaseName = String(nextName || "").trim();
-  if (!phaseName || phaseName === phaseKey) {
-    return;
-  }
-  if (state.board.phaseOrder.includes(phaseName)) {
-    return;
-  }
-  state.board.phaseOrder = state.board.phaseOrder.map((candidate) => candidate === phaseKey ? phaseName : candidate);
-  state.board.phaseTasks[phaseName] = state.board.phaseTasks[phaseKey] || [];
-  delete state.board.phaseTasks[phaseKey];
-  (state.board.phaseTasks[phaseName] || []).forEach((taskId) => {
-    if (state.board.tasksById[taskId]) {
-      state.board.tasksById[taskId].phase = phaseName;
-    }
-  });
-  if (state.composer.phase === phaseKey) {
-    state.composer.phase = phaseName;
-  }
-  persist();
-  render();
-  saveBoard();
-}
-
-function moveTask(taskId, targetPhaseKey, beforeTaskId) {
-  const task = state.board.tasksById[taskId];
-  if (!task) {
-    return;
-  }
-  if (beforeTaskId && beforeTaskId === taskId) {
-    return;
-  }
-  const currentPhaseKey = normalizePhase(task.phase);
-  state.board.phaseTasks[currentPhaseKey] = (state.board.phaseTasks[currentPhaseKey] || []).filter((id) => id !== taskId);
-  const nextIds = [...(state.board.phaseTasks[targetPhaseKey] || [])].filter((id) => id !== taskId);
-  const insertIndex = beforeTaskId ? nextIds.indexOf(beforeTaskId) : -1;
-  if (insertIndex >= 0) {
-    nextIds.splice(insertIndex, 0, taskId);
-  } else {
-    nextIds.push(taskId);
-  }
-  state.board.phaseTasks[targetPhaseKey] = nextIds;
-  task.phase = targetPhaseKey === INBOX_PHASE ? null : targetPhaseKey;
-  if (!state.board.phaseOrder.includes(targetPhaseKey)) {
-    state.board.phaseOrder.push(targetPhaseKey);
-  }
-  persist();
-  renderBoard();
-  renderDetail();
-  saveBoard();
-}
-
-function movePhase(phaseKey, beforePhaseKey) {
-  if (!phaseKey || !beforePhaseKey || phaseKey === beforePhaseKey) {
-    return;
-  }
-  const remaining = state.board.phaseOrder.filter((candidate) => candidate !== phaseKey);
-  const index = remaining.indexOf(beforePhaseKey);
-  remaining.splice(index >= 0 ? index : remaining.length, 0, phaseKey);
-  state.board.phaseOrder = remaining;
-  persist();
-  renderBoard();
-  saveBoard();
-}
-
-function saveBoard() {
-  const tasks = [];
-  for (const phaseKey of state.board.phaseOrder) {
-    for (const taskId of state.board.phaseTasks[phaseKey] || []) {
-      tasks.push({
-        id: taskId,
-        phase: phaseKey === INBOX_PHASE ? null : phaseKey,
-      });
-    }
-  }
-  vscode.postMessage({
-    type: "saveBoard",
-    tasks,
-    phases: state.board.phaseOrder.filter((phaseKey) => phaseKey !== INBOX_PHASE),
-  });
-}
-
-function normalizeBoard(raw) {
-  const tasks = Array.isArray(raw.tasks) ? raw.tasks.map((task) => normalizeTask(task)) : [];
-  const phaseOrder = [];
-  const phaseTasks = {};
-  const tasksById = {};
-  const phases = Array.isArray(raw.phases) ? raw.phases.map((phase) => String(phase || "").trim()).filter(Boolean) : [];
-  const hasInbox = tasks.some((task) => normalizePhase(task.phase) === INBOX_PHASE);
-
-  if (hasInbox) {
-    phaseOrder.push(INBOX_PHASE);
-    phaseTasks[INBOX_PHASE] = [];
-  }
-  for (const phase of phases) {
-    if (!phaseTasks[phase]) {
-      phaseOrder.push(phase);
-      phaseTasks[phase] = [];
-    }
-  }
-  for (const task of tasks) {
-    tasksById[task.id] = task;
-    const phaseKey = normalizePhase(task.phase);
-    if (!phaseTasks[phaseKey]) {
-      phaseOrder.push(phaseKey);
-      phaseTasks[phaseKey] = [];
-    }
-    phaseTasks[phaseKey].push(task.id);
-  }
-  if (phaseOrder.length === 0) {
-    phaseOrder.push(INBOX_PHASE);
-    phaseTasks[INBOX_PHASE] = [];
-  }
+function collectForm(prefix) {
   return {
-    updatedAt: raw.updatedAt || "",
-    path: raw.path || "",
-    tasksById,
-    phaseOrder,
-    phaseTasks,
+    title: valueOf(`${prefix}-title`).trim(),
+    description: valueOf(`${prefix}-description`).trim(),
+    rationale: valueOf(`${prefix}-rationale`).trim(),
+    phase: emptyToBlank(valueOf(`${prefix}-phase`)),
+    priority: valueOf(`${prefix}-priority`),
+    status: valueOf(`${prefix}-status`),
+    taskType: valueOf(`${prefix}-task-type`),
+    timing: valueOf(`${prefix}-timing`),
+    blockedReason: emptyToNull(valueOf(`${prefix}-blocked-reason`)),
+    owner: {
+      type: valueOf(`${prefix}-owner-type`),
+      name: valueOf(`${prefix}-owner-name`).trim(),
+      assignedAt: emptyToNull(valueOf(`${prefix}-owner-assigned-at`)),
+    },
+    targetCoord: {
+      file: valueOf(`${prefix}-target-file`).trim(),
+      class: emptyToNull(valueOf(`${prefix}-target-class`)),
+      method: emptyToNull(valueOf(`${prefix}-target-method`)),
+      line: parseNullableInt(valueOf(`${prefix}-target-line`)),
+      anchorType: valueOf(`${prefix}-anchor-type`) || "modify",
+    },
+    estimatedMinutes: parseNullableInt(valueOf(`${prefix}-estimated-minutes`)),
+    actualMinutes: parseNullableInt(valueOf(`${prefix}-actual-minutes`)),
+    humanNotes: emptyToNull(valueOf(`${prefix}-human-notes`)),
+    aiNotes: emptyToNull(valueOf(`${prefix}-ai-notes`)),
+    acceptanceCriteria: emptyToNull(valueOf(`${prefix}-acceptance-criteria`)),
+    trigger: emptyToNull(valueOf(`${prefix}-trigger`)),
+    startedAt: emptyToNull(valueOf(`${prefix}-started-at`)),
+    completedAt: emptyToNull(valueOf(`${prefix}-completed-at`)),
   };
 }
 
+function priorityGroups(tasks) {
+  return PRIORITIES.map((priority) => {
+    const items = tasks.filter((task) => task.priority === priority);
+    return {
+      id: `priority:${priority}`,
+      label: priority === "spike" ? "Spikes" : `${priority} Tasks`,
+      count: items.length,
+      content: items.map((task) => renderTreeTask(task, 0, `${depLabel(task)} . ${labelize(task.status)}`)).join(""),
+    };
+  }).filter((group) => group.count > 0);
+}
+
+function dependencyGroups(tasks) {
+  const order = {};
+  const visibleIds = new Set(tasks.map((task, index) => { order[task.id] = index; return task.id; }));
+  const children = {};
+  const parents = {};
+  tasks.forEach((task) => { children[task.id] = []; parents[task.id] = 0; });
+  tasks.forEach((task) => {
+    task.dependsOn.forEach((dep) => {
+      if (!visibleIds.has(dep.taskId)) { return; }
+      children[dep.taskId].push(task.id);
+      parents[task.id] += 1;
+    });
+  });
+  Object.keys(children).forEach((taskId) => children[taskId].sort((a, b) => (order[a] ?? 0) - (order[b] ?? 0)));
+  const rendered = new Set();
+  const roots = tasks.filter((task) => parents[task.id] === 0);
+  const forest = roots.map((task) => renderDepNode(task.id, 0, children, rendered, new Set())).join("");
+  const leftovers = tasks.filter((task) => !rendered.has(task.id));
+  const groups = [];
+  if (forest) { groups.push({ id: "dependencies:forest", label: "Dependency Forest", count: roots.length, content: forest }); }
+  if (leftovers.length) {
+    groups.push({ id: "dependencies:cycles", label: "Cycles Or Hidden Parents", count: leftovers.length, content: leftovers.map((task) => renderTreeTask(task, 0, depLabel(task))).join("") });
+  }
+  return groups.length ? groups : [{ id: "dependencies:forest", label: "Dependency Forest", count: 0, content: "" }];
+}
+
+function renderDepNode(taskId, depth, children, rendered, ancestry) {
+  if (rendered.has(taskId)) { return ""; }
+  if (ancestry.has(taskId)) { return ""; }
+  const task = state.board.tasksById[taskId];
+  if (!task) { return ""; }
+  rendered.add(taskId);
+  const next = new Set(ancestry);
+  next.add(taskId);
+  const childIds = children[taskId] || [];
+  const extra = childIds.length ? `${childIds.length} child${childIds.length === 1 ? "" : "ren"}` : depLabel(task);
+  return renderTreeTask(task, depth, extra) + childIds.map((childId) => renderDepNode(childId, depth + 1, children, rendered, next)).join("");
+}
+
+function renderGroup(group) {
+  const open = state.searchQuery ? true : groupOpen(group.id);
+  return [
+    '<section class="tree-group">',
+    `<button type="button" class="tree-group-header" data-action="toggleGroup" data-group-id="${esc(group.id)}">`,
+    '<div class="tree-group-title">',
+    `<span class="badge">${open ? "Hide" : "Show"}</span>`,
+    `<span class="tree-group-name">${esc(group.label)}</span>`,
+    '</div>',
+    `<span class="badge">${group.count}</span>`,
+    '</button>',
+    open ? `<div class="tree-group-body">${group.content || '<div class="tree-empty">No tasks here.</div>'}</div>` : "",
+    '</section>',
+  ].join("");
+}
+
+function renderTreeTask(task, depth, extra) {
+  const meta = [displayPhase(task.phase), labelize(task.taskType), compactCoord(task.targetCoord)];
+  if (task.estimatedMinutes) { meta.push(`${task.estimatedMinutes}m est`); }
+  if (extra) { meta.unshift(extra); }
+  return [
+    `<div class="tree-task depth-${Math.min(depth, 4)}">`,
+    `<button type="button" class="tree-task-row${state.selectionId === task.id && state.editorMode === "task" ? " selected" : ""}" data-action="selectTask" data-task-id="${esc(task.id)}">`,
+    '<div class="tree-task-main">',
+    `<div class="tree-task-title">${esc(task.title || "Untitled task")}</div>`,
+    `<div class="tree-task-meta">${esc(meta.filter(Boolean).join(" . "))}</div>`,
+    '</div>',
+    '<div class="tree-task-badges">',
+    `<span class="badge priority-badge priority-${esc(task.priority)}">${esc(task.priority)}</span>`,
+    `<span class="badge status-badge ${esc(task.status)}">${esc(labelize(task.status))}</span>`,
+    '</div>',
+    '</button>',
+    '</div>',
+  ].join("");
+}
+
+function renderTaskEditor(task) {
+  const form = taskForm(task);
+  const annoCount = task.annotations.length;
+  return [
+    '<section class="editor-card"><div class="editor-card-body">',
+    '<div class="section-accent section-accent--muted"></div>',
+    '<div class="editor-header"><div>',
+    '<p class="eyebrow">Editor</p>',
+    `<h2 class="editor-title">${esc(task.title || "Untitled task")}</h2>`,
+    `<p class="editor-subtitle mono">${esc(task.id)}</p>`,
+    '</div>',
+    `<span class="badge status-badge ${esc(task.status)}">${esc(labelize(task.status))}</span>`,
+    '</div>',
+    '<div class="editor-meta">',
+    `<span class="badge priority-badge priority-${esc(task.priority)}">${esc(task.priority)}</span>`,
+    `<span class="badge">${esc(labelize(task.timing))}</span>`,
+    `<span class="badge">${task.dependsOn.length} dep${task.dependsOn.length === 1 ? "" : "s"}</span>`,
+    `<span class="badge">${annoCount} annotation${annoCount === 1 ? "" : "s"}</span>`,
+    '</div>',
+    '<div class="editor-sections">',
+    section("Work", true, workFields("detail", form)),
+    section("Scheduling", true, schedulingFields("detail", form)),
+    section("Ownership And Target", false, ownershipFields("detail", form)),
+    section("Dependencies", false, dependencyFields(task)),
+    section("Notes And Lifecycle", false, notesFields("detail", form)),
+    '</div>',
+    '<div class="button-row"><button type="button" class="primary" data-action="saveTask">Save Changes</button>',
+    `<button type="button" data-action="openTask" data-task-id="${esc(task.id)}">Open Target</button>`,
+    `<button type="button" class="danger-btn" data-action="deleteTask" data-task-id="${esc(task.id)}">Delete</button></div>`,
+    '</div></section>',
+  ].join("");
+}
+
+function renderNewEditor() {
+  const form = { ...DEFAULT_DRAFT, ...state.draftTask };
+  return [
+    '<section class="editor-card"><div class="editor-card-body">',
+    '<div class="section-accent"></div>',
+    '<div class="editor-header"><div><p class="eyebrow">Create</p><h2 class="editor-title">New Task</h2><p class="editor-subtitle">Add work without opening every detail until it matters.</p></div>',
+    '<button type="button" data-action="cancelNewTask">Close</button></div>',
+    '<div class="editor-sections">',
+    section("Work", true, workFields("new", form, true)),
+    section("Scheduling", true, schedulingFields("new", form, true)),
+    section("Ownership And Target", false, ownershipFields("new", form, true)),
+    section("Notes And Lifecycle", false, notesFields("new", form, true)),
+    '</div>',
+    '<div class="button-row"><button type="button" class="primary" data-action="createTask">Create Task</button><button type="button" data-action="cancelNewTask">Cancel</button></div>',
+    '</div></section>',
+  ].join("");
+}
+
+function workFields(prefix, form, draft) {
+  return [
+    fieldText("Title", `${prefix}-title`, form.title, draft ? "title" : null, "Required"),
+    fieldTextarea("Description", `${prefix}-description`, form.description, draft ? "description" : null),
+    fieldTextarea("Rationale", `${prefix}-rationale`, form.rationale, draft ? "rationale" : null),
+    fieldTextarea("Acceptance Criteria", `${prefix}-acceptance-criteria`, form.acceptanceCriteria, draft ? "acceptanceCriteria" : null),
+  ].join("");
+}
+
+function schedulingFields(prefix, form, draft) {
+  return [
+    '<p class="section-hint">Keep the tree compact. Put the scheduling detail here.</p>',
+    '<div class="field-row">',
+    fieldSelect("Priority", `${prefix}-priority`, PRIORITIES.map((value) => ({ value, label: value === "spike" ? "Spike" : value })), form.priority, draft ? "priority" : null),
+    fieldSelect("Status", `${prefix}-status`, STATUSES.map((value) => ({ value, label: labelize(value) })), form.status, draft ? "status" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldSelect("Task Type", `${prefix}-task-type`, taskTypeOptions(), form.taskType, draft ? "taskType" : null),
+    fieldSelect("Timing", `${prefix}-timing`, [{ value: "one_time", label: "One Time" }, { value: "recurring", label: "Recurring" }], form.timing, draft ? "timing" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldSelect("Phase", `${prefix}-phase`, phaseOptions(), form.phase || "", draft ? "phase" : null),
+    fieldText("Trigger", `${prefix}-trigger`, form.trigger, draft ? "trigger" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldNumber("Estimated Minutes", `${prefix}-estimated-minutes`, form.estimatedMinutes, draft ? "estimatedMinutes" : null),
+    fieldNumber("Actual Minutes", `${prefix}-actual-minutes`, form.actualMinutes, draft ? "actualMinutes" : null),
+    '</div>',
+    fieldText("Blocked Reason", `${prefix}-blocked-reason`, form.blockedReason, draft ? "blockedReason" : null),
+  ].join("");
+}
+
+function ownershipFields(prefix, form, draft) {
+  return [
+    '<div class="field-row">',
+    fieldSelect("Owner Type", `${prefix}-owner-type`, [{ value: "unassigned", label: "Unassigned" }, { value: "human", label: "Human" }, { value: "agent", label: "Agent" }], form.ownerType, draft ? "ownerType" : null),
+    fieldText("Owner Name", `${prefix}-owner-name`, form.ownerName, draft ? "ownerName" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldText("Owner Assigned At", `${prefix}-owner-assigned-at`, form.ownerAssignedAt, draft ? "ownerAssignedAt" : null, "ISO-8601"),
+    fieldSelect("Anchor Type", `${prefix}-anchor-type`, anchorTypeOptions(), form.anchorType, draft ? "anchorType" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldText("Target File", `${prefix}-target-file`, form.targetFile, draft ? "targetFile" : null),
+    fieldNumber("Target Line", `${prefix}-target-line`, form.targetLine, draft ? "targetLine" : null),
+    '</div>',
+    '<div class="field-row">',
+    fieldText("Target Class", `${prefix}-target-class`, form.targetClass, draft ? "targetClass" : null),
+    fieldText("Target Method", `${prefix}-target-method`, form.targetMethod, draft ? "targetMethod" : null),
+    '</div>',
+  ].join("");
+}
+
+function dependencyFields(task) {
+  const rows = orderedTasks()
+    .filter((candidate) => candidate.id !== task.id)
+    .map((candidate) => {
+      const existing = task.dependsOn.find((dep) => dep.taskId === candidate.id);
+      return [
+        '<div class="dependency-row">',
+        `<input type="checkbox" data-dependency-checkbox="${esc(candidate.id)}"${existing ? " checked" : ""}>`,
+        '<div class="dependency-copy">',
+        `<div class="dependency-title">${esc(candidate.title || "Untitled task")}</div>`,
+        `<div class="dependency-meta">${esc([candidate.priority, displayPhase(candidate.phase), compactCoord(candidate.targetCoord)].filter(Boolean).join(" . "))}</div>`,
+        '</div>',
+        `<select data-dependency-type="${esc(candidate.id)}">`,
+        DEP_TYPES.map((type) => `<option value="${esc(type)}"${(existing?.type || "blocks") === type ? " selected" : ""}>${esc(labelize(type))}</option>`).join(""),
+        '</select></div>',
+      ].join("");
+    }).join("");
+  return rows || '<div class="empty-state">No other tasks available to link.</div>';
+}
+
+function notesFields(prefix, form, draft) {
+  return [
+    '<div class="field-row">',
+    fieldText("Started At", `${prefix}-started-at`, form.startedAt, draft ? "startedAt" : null, "ISO-8601"),
+    fieldText("Completed At", `${prefix}-completed-at`, form.completedAt, draft ? "completedAt" : null, "ISO-8601"),
+    '</div>',
+    fieldTextarea("Human Notes", `${prefix}-human-notes`, form.humanNotes, draft ? "humanNotes" : null),
+    fieldTextarea("AI Notes", `${prefix}-ai-notes`, form.aiNotes, draft ? "aiNotes" : null),
+  ].join("");
+}
+
+function section(title, open, body) {
+  return `<details class="editor-section"${open ? " open" : ""}><summary>${esc(title)}</summary><div class="editor-section-body">${body}</div></details>`;
+}
+
+function summaryCard(label, value, hint) {
+  return `<article class="summary-card"><div class="summary-copy"><span class="summary-label">${esc(label)}</span><span class="summary-value">${esc(String(value))}</span><span class="summary-hint">${esc(hint || "")}</span></div></article>`;
+}
+
+function fieldText(label, id, value, draftField, placeholder) {
+  return `<div class="field-group"><label class="field-label" for="${esc(id)}">${esc(label)}</label><input id="${esc(id)}" type="text" value="${esc(value || "")}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""}${draftField ? ` data-draft-field="${esc(draftField)}"` : ""}></div>`;
+}
+
+function fieldNumber(label, id, value, draftField) {
+  return `<div class="field-group"><label class="field-label" for="${esc(id)}">${esc(label)}</label><input id="${esc(id)}" type="number" value="${esc(value || "")}"${draftField ? ` data-draft-field="${esc(draftField)}"` : ""}></div>`;
+}
+
+function fieldTextarea(label, id, value, draftField) {
+  return `<div class="field-group"><label class="field-label" for="${esc(id)}">${esc(label)}</label><textarea id="${esc(id)}"${draftField ? ` data-draft-field="${esc(draftField)}"` : ""}>${esc(value || "")}</textarea></div>`;
+}
+
+function fieldSelect(label, id, options, selected, draftField) {
+  const markup = options.map((option) => `<option value="${esc(option.value)}"${option.value === selected ? " selected" : ""}>${esc(option.label)}</option>`).join("");
+  return `<div class="field-group"><label class="field-label" for="${esc(id)}">${esc(label)}</label><select id="${esc(id)}"${draftField ? ` data-draft-field="${esc(draftField)}"` : ""}>${markup}</select></div>`;
+}
+
+function taskTypeOptions() {
+  return [
+    { value: "impl", label: "Implementation" }, { value: "test", label: "Test" }, { value: "spike", label: "Spike" },
+    { value: "review", label: "Review" }, { value: "refactor", label: "Refactor" }, { value: "protocol", label: "Protocol" },
+    { value: "bug_fix", label: "Bug Fix" }, { value: "feature", label: "Feature" }, { value: "task", label: "Task" },
+  ];
+}
+
+function anchorTypeOptions() {
+  return [
+    { value: "modify", label: "Modify" }, { value: "create-at", label: "Create At" },
+    { value: "delete", label: "Delete" }, { value: "read-only-context", label: "Read Only Context" },
+  ];
+}
+
+function phaseOptions() {
+  return [{ value: "", label: "Inbox" }, ...state.board.phaseOptions.map((phase) => ({ value: phase, label: phase }))];
+}
+
+function normalizeBoard(raw) {
+  const tasks = Array.isArray(raw.tasks) ? raw.tasks.map(normalizeTask) : [];
+  const tasksById = {};
+  const orderedIds = [];
+  const phaseOptions = [];
+  const pushPhase = (value) => {
+    const phase = emptyToNull(value);
+    if (phase && !phaseOptions.includes(phase)) { phaseOptions.push(phase); }
+  };
+  (Array.isArray(raw.phases) ? raw.phases : []).forEach(pushPhase);
+  tasks.forEach((task) => {
+    tasksById[task.id] = task;
+    orderedIds.push(task.id);
+    pushPhase(task.phase);
+  });
+  return { tasksById, orderedIds, phaseOptions, updatedAt: String(raw.updatedAt || ""), path: String(raw.path || "") };
+}
+
 function normalizeTask(raw) {
+  const owner = isRecord(raw.owner) ? raw.owner : {};
+  const coord = isRecord(raw.targetCoord) ? raw.targetCoord : {};
   return {
     id: String(raw.id || ""),
     title: String(raw.title || ""),
     description: String(raw.description || ""),
-    rationale: raw.rationale || "",
-    targetCoord: {
-      file: String(raw.targetCoord?.file || ""),
-      class: raw.targetCoord?.class || "",
-      method: raw.targetCoord?.method || "",
-      line: typeof raw.targetCoord?.line === "number" ? raw.targetCoord.line : null,
-      anchorType: raw.targetCoord?.anchorType || "modify",
-    },
-    contextCoords: Array.isArray(raw.contextCoords) ? raw.contextCoords : [],
+    rationale: String(raw.rationale || ""),
+    phase: emptyToNull(raw.phase),
     priority: String(raw.priority || "P2"),
-    phase: raw.phase || null,
-    dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn : [],
-    blockedReason: raw.blockedReason || "",
-    owner: raw.owner || { type: "unassigned", name: "" },
-    taskType: raw.taskType || "impl",
-    timing: raw.timing || "one_time",
-    estimatedMinutes: raw.estimatedMinutes,
-    actualMinutes: raw.actualMinutes,
-    status: raw.status || "pending",
-    humanNotes: raw.humanNotes || "",
-    aiNotes: raw.aiNotes || "",
+    status: String(raw.status || "pending"),
+    taskType: String(raw.taskType || "impl"),
+    timing: String(raw.timing || "one_time"),
+    blockedReason: String(raw.blockedReason || ""),
+    owner: { type: String(owner.type || "unassigned"), name: String(owner.name || ""), assignedAt: String(owner.assignedAt || "") },
+    targetCoord: {
+      file: String(coord.file || ""),
+      class: String(coord.class || ""),
+      method: String(coord.method || ""),
+      line: typeof coord.line === "number" ? coord.line : null,
+      anchorType: String(coord.anchorType || "modify"),
+    },
+    dependsOn: Array.isArray(raw.dependsOn) ? raw.dependsOn.map((dep) => ({ taskId: String(dep?.taskId || ""), type: String(dep?.type || "blocks") })) : [],
+    estimatedMinutes: typeof raw.estimatedMinutes === "number" ? raw.estimatedMinutes : null,
+    actualMinutes: typeof raw.actualMinutes === "number" ? raw.actualMinutes : null,
+    humanNotes: String(raw.humanNotes || ""),
+    aiNotes: String(raw.aiNotes || ""),
+    acceptanceCriteria: String(raw.acceptanceCriteria || ""),
+    trigger: String(raw.trigger || ""),
+    startedAt: String(raw.startedAt || ""),
+    completedAt: String(raw.completedAt || ""),
     annotations: Array.isArray(raw.annotations) ? raw.annotations : [],
-    acceptanceCriteria: raw.acceptanceCriteria || "",
-    trigger: raw.trigger || "",
   };
 }
 
+function taskForm(task) {
+  return {
+    title: task.title || "", description: task.description || "", rationale: task.rationale || "", phase: task.phase || "",
+    priority: task.priority || "P2", status: task.status || "pending", taskType: task.taskType || "impl", timing: task.timing || "one_time",
+    ownerType: task.owner?.type || "unassigned", ownerName: task.owner?.name || "", ownerAssignedAt: task.owner?.assignedAt || "",
+    targetFile: task.targetCoord?.file || "", targetClass: task.targetCoord?.class || "", targetMethod: task.targetCoord?.method || "",
+    targetLine: task.targetCoord?.line == null ? "" : String(task.targetCoord.line), anchorType: task.targetCoord?.anchorType || "modify",
+    blockedReason: task.blockedReason || "", trigger: task.trigger || "", acceptanceCriteria: task.acceptanceCriteria || "",
+    humanNotes: task.humanNotes || "", aiNotes: task.aiNotes || "",
+    estimatedMinutes: task.estimatedMinutes == null ? "" : String(task.estimatedMinutes),
+    actualMinutes: task.actualMinutes == null ? "" : String(task.actualMinutes),
+    startedAt: task.startedAt || "", completedAt: task.completedAt || "",
+  };
+}
+
+function filteredTasks() {
+  const query = state.searchQuery.trim().toLowerCase();
+  if (!query) { return orderedTasks(); }
+  return orderedTasks().filter((task) => [
+    task.id, task.title, task.description, task.rationale, task.phase, task.blockedReason, task.owner.name, task.owner.type,
+    task.taskType, task.timing, task.humanNotes, task.aiNotes, task.trigger, task.acceptanceCriteria,
+    task.targetCoord.file, task.targetCoord.class, task.targetCoord.method,
+  ].filter(Boolean).join("\n").toLowerCase().includes(query));
+}
+
 function orderedTasks() {
-  const items = [];
-  for (const phaseKey of state.board.phaseOrder) {
-    for (const taskId of state.board.phaseTasks[phaseKey] || []) {
-      const task = state.board.tasksById[taskId];
-      if (task) {
-        items.push(task);
-      }
-    }
-  }
-  return items;
+  return state.board.orderedIds.map((taskId) => state.board.tasksById[taskId]).filter(Boolean);
 }
 
 function selectedTask() {
   return state.selectionId ? state.board.tasksById[state.selectionId] : null;
 }
 
-function firstTaskId() {
-  return orderedTasks()[0]?.id || null;
+function groupOpen(groupId) {
+  if (state.collapsedGroups[groupId] != null) { return !state.collapsedGroups[groupId]; }
+  return groupId === "priority:P0" || groupId === "priority:P1" || groupId === "dependencies:forest";
 }
 
-function firstPhaseKey() {
-  return state.board.phaseOrder[0] || INBOX_PHASE;
+function displayPhase(phase) {
+  return emptyToNull(phase) || "Inbox";
 }
 
-function normalizePhase(phase) {
-  const value = String(phase || "").trim();
-  return value || INBOX_PHASE;
+function compactCoord(coord) {
+  if (!coord || !coord.file) { return "No target"; }
+  return String(coord.file).split(/[\\/]/).pop() || "No target";
 }
 
-function displayPhaseName(phaseKey) {
-  return phaseKey === INBOX_PHASE ? "Inbox" : phaseKey;
+function depLabel(task) {
+  return task.dependsOn.length ? `${task.dependsOn.length} dep${task.dependsOn.length === 1 ? "" : "s"}` : "Ready";
 }
 
-function formatCoord(coord) {
-  if (!coord) {
-    return "No target";
-  }
-  const file = String(coord.file || "").trim();
-  const fileName = file ? file.split(/[\\/]/).pop() : "No target";
-  const symbol = coord.method || coord.class || "";
-  const line = typeof coord.line === "number" ? `:${coord.line}` : "";
-  return `${fileName}${symbol ? `::${symbol}` : ""}${line}`;
+function labelize(value) {
+  return String(value || "").replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-function statCard(label, value, hint) {
-  return [
-    '<article class="stat-card">',
-    `<span class="stat-label">${escapeHtml(label)}</span>`,
-    `<span class="stat-value">${escapeHtml(String(value))}</span>`,
-    hint ? `<span class="muted">${escapeHtml(hint)}</span>` : "",
-    '</article>',
-  ].join("");
+function parseNullableInt(value) {
+  const text = String(value || "").trim();
+  if (!text) { return null; }
+  const parsed = Number.parseInt(text, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-function statusPill(status) {
-  return `<span class="status-pill status-${escapeHtml(status)}">${escapeHtml(status)}</span>`;
+function emptyToNull(value) {
+  const text = String(value || "").trim();
+  return text || null;
 }
 
-function taskDepth(task, phaseKey) {
-  const phaseTaskIds = new Set(state.board.phaseTasks[phaseKey] || []);
-  let depth = 0;
-  for (const dep of task.dependsOn || []) {
-    if (phaseTaskIds.has(dep.taskId)) {
-      depth += 1;
-    }
-  }
-  return Math.min(depth, 2);
-}
-
-function phaseOptions() {
-  const options = state.board.phaseOrder.map((phaseKey) => ({
-    value: phaseKey,
-    label: displayPhaseName(phaseKey),
-  }));
-  if (!options.some((option) => option.value === INBOX_PHASE)) {
-    options.unshift({ value: INBOX_PHASE, label: "Inbox" });
-  }
-  return options;
-}
-
-function priorityOptions() {
-  return ["P0", "P1", "P2", "P3", "spike"].map((value) => ({ value, label: value }));
-}
-
-function statusOptions() {
-  return ["pending", "annotating", "negotiating", "executing", "complete", "skipped"].map((value) => ({ value, label: value }));
-}
-
-function ownerTypeOptions() {
-  return ["unassigned", "human", "agent"].map((value) => ({ value, label: value }));
-}
-
-function taskTypeOptions() {
-  return [
-    { value: "impl",     label: "Implementation" },
-    { value: "test",     label: "Test" },
-    { value: "spike",    label: "Spike" },
-    { value: "review",   label: "Review" },
-    { value: "refactor", label: "Refactor" },
-    { value: "protocol", label: "Protocol" },
-    { value: "bug_fix",  label: "Bug Fix" },
-    { value: "feature",  label: "Feature" },
-    { value: "task",     label: "Task" },
-  ];
-}
-
-function timingOptions() {
-  return [
-    { value: "one_time",   label: "One and Done" },
-    { value: "recurring",  label: "Recurring" },
-  ];
-}
-
-function fieldText(label, id, value, autofocus, composerField) {
-  return [
-    '<div class="field-group">',
-    `<label class="field-label" for="${escapeHtml(id)}">${escapeHtml(label)}</label>`,
-    `<input id="${escapeHtml(id)}" type="text" value="${escapeHtml(value || "")}"${autofocus ? " autofocus" : ""}${composerField ? ` data-composer-field="${escapeHtml(composerField)}"` : ""}>`,
-    '</div>',
-  ].join("");
-}
-
-function fieldTextarea(label, id, value, composerField) {
-  return [
-    '<div class="field-group">',
-    `<label class="field-label" for="${escapeHtml(id)}">${escapeHtml(label)}</label>`,
-    `<textarea id="${escapeHtml(id)}"${composerField ? ` data-composer-field="${escapeHtml(composerField)}"` : ""}>${escapeHtml(value || "")}</textarea>`,
-    '</div>',
-  ].join("");
-}
-
-function fieldSelect(label, id, options, selected, composerField) {
-  const markup = options.map((option) => (
-    `<option value="${escapeHtml(option.value)}"${option.value === selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`
-  )).join("");
-  return [
-    '<div class="field-group">',
-    `<label class="field-label" for="${escapeHtml(id)}">${escapeHtml(label)}</label>`,
-    `<select id="${escapeHtml(id)}"${composerField ? ` data-composer-field="${escapeHtml(composerField)}"` : ""}>${markup}</select>`,
-    '</div>',
-  ].join("");
-}
-
-function parsePositiveInt(value) {
-  const parsed = Number.parseInt(String(value || "").trim(), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+function emptyToBlank(value) {
+  return emptyToNull(value) || "";
 }
 
 function valueOf(id) {
   const element = document.getElementById(id);
-  if (!element) {
-    return "";
-  }
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-    return element.value;
-  }
-  return "";
-}
-
-function clearDragTargets() {
-  document.querySelectorAll(".drag-target").forEach((element) => {
-    element.classList.remove("drag-target");
-  });
+  return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ? element.value : "";
 }
 
 function persist() {
   vscode.setState({
     selectionId: state.selectionId,
-    composer: state.composer,
+    editorMode: state.editorMode,
+    draftTask: state.draftTask,
+    searchQuery: state.searchQuery,
+    treeMode: state.treeMode,
+    collapsedGroups: state.collapsedGroups,
   });
 }
 
-function escapeHtml(value) {
+function esc(value) {
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function cssEscape(value) {
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 render();

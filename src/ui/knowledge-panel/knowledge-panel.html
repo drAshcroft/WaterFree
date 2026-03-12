@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{STYLE_URI}}">
+  <title>WaterFree Knowledge Explorer</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Global Knowledge Base</p>
+        <h1>Knowledge Explorer</h1>
+        <p class="hero-copy">Search indexed patterns, browse by category, and add new knowledge entries.</p>
+      </div>
+      <div class="hero-actions">
+        <button type="button" class="ghost-btn" data-action="addEntry">+ Add Entry</button>
+        <button type="button" class="ghost-btn" data-action="refresh">Refresh</button>
+      </div>
+    </header>
+
+    <div class="search-bar-wrap">
+      <input id="search-input" type="search" placeholder="Search knowledge base…" autocomplete="off" spellcheck="false">
+      <button type="button" class="primary-btn" id="search-btn">Search</button>
+    </div>
+
+    <div id="stats-bar" class="stats-bar"></div>
+
+    <div class="workspace">
+      <aside class="tree-panel">
+        <div class="panel-head">
+          <span>Index</span>
+          <button type="button" class="micro-btn" id="tree-root-btn" title="Go to root">&#8593; Root</button>
+        </div>
+        <div id="tree-list" class="tree-list"></div>
+      </aside>
+
+      <main class="results-panel">
+        <div id="results-header" class="results-header"></div>
+        <div id="results-list" class="results-list"></div>
+      </main>
+
+      <aside id="detail-panel" class="detail-panel hidden">
+        <div class="panel-head">
+          <span>Detail</span>
+          <button type="button" class="micro-btn" id="detail-close-btn">&#x2715;</button>
+        </div>
+        <div id="detail-content" class="detail-content"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Add Entry Modal -->
+  <div id="add-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Add Knowledge Entry">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Add Knowledge Entry</h2>
+        <button type="button" class="micro-btn" id="modal-close-btn">&#x2715;</button>
+      </div>
+      <form id="add-form" class="add-form" novalidate>
+        <label>Title <span class="req">*</span>
+          <input type="text" name="title" required placeholder="Short descriptive title">
+        </label>
+        <label>Description <span class="req">*</span>
+          <textarea name="description" rows="2" required placeholder="What does this pattern do?"></textarea>
+        </label>
+        <label>Code <span class="req">*</span>
+          <textarea name="code" rows="8" required placeholder="Paste the code snippet here…" class="mono"></textarea>
+        </label>
+        <div class="form-row">
+          <label>Snippet Type <span class="req">*</span>
+            <select name="snippet_type" required>
+              <option value="pattern">pattern</option>
+              <option value="utility">utility</option>
+              <option value="style">style</option>
+              <option value="api_usage">api_usage</option>
+              <option value="convention">convention</option>
+            </select>
+          </label>
+          <label>Source Repo <span class="req">*</span>
+            <input type="text" name="source_repo" required placeholder="my-project">
+          </label>
+        </div>
+        <label>Source File
+          <input type="text" name="source_file" placeholder="src/utils/auth.py">
+        </label>
+        <label>Tags <small>(comma-separated)</small>
+          <input type="text" name="tags" placeholder="python, auth, jwt">
+        </label>
+        <label>Hierarchy Path <small>(slash-separated, e.g. backend/auth/jwt)</small>
+          <input type="text" name="hierarchy_path" placeholder="backend/auth/jwt">
+        </label>
+        <label>Context / Caveats
+          <textarea name="context" rows="2" placeholder="When to use, version requirements, related files…"></textarea>
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="primary-btn">Save Entry</button>
+          <button type="button" class="ghost-btn" id="modal-cancel-btn">Cancel</button>
+        </div>
+        <p id="form-error" class="form-error hidden"></p>
+      </form>
+    </div>
+  </div>
+
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

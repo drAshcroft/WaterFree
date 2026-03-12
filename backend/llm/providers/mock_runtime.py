@@ -39,7 +39,10 @@ calls).
 from __future__ import annotations
 
 import json
+import os
+import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from backend.llm.prompt_templates import build_system_prompt
@@ -53,9 +56,17 @@ from backend.session.models import (
 from backend.todo.store import TaskStore
 from backend.llm.checkpoints.store import CheckpointStore
 
+_DEFAULT_TIMEOUT = 300.0
+_POLL_INTERVAL = 0.5
+
 
 class MockRuntime:
-    """AgentRuntime that returns scripted responses from a rule table."""
+    """AgentRuntime that returns scripted responses from a rule table.
+
+    When ``interactive=True`` the rule table is bypassed: each call writes a
+    capture file to ``{workspace}/.waterfree/mock/`` and blocks until the
+    WaterFree Mock Panel webview (or any tool) writes a matching response file.
+    """
 
     def __init__(
         self,
@@ -64,10 +75,19 @@ class MockRuntime:
         rules_file: Optional[str] = None,
         default_response: Optional[dict] = None,
         workspace_path: str = ".",
+        interactive: bool = False,
+        capture_dir: Optional[str] = None,
+        timeout: Optional[float] = None,
         task_store_factory: Optional[Callable[[str], TaskStore]] = None,
         checkpoint_store_factory: Optional[Callable[[str], CheckpointStore]] = None,
     ) -> None:
         self._workspace_path = workspace_path
+        self._interactive = interactive
+        self._capture_dir = (
+            capture_dir
+            or os.path.join(workspace_path, ".waterfree", "mock")
+        )
+        self._timeout = timeout if timeout is not None else _DEFAULT_TIMEOUT
         self._task_store_factory = task_store_factory or (lambda wp: TaskStore(wp))
         self._checkpoint_store_factory = checkpoint_store_factory or (
             lambda wp: CheckpointStore(wp)
@@ -89,6 +109,60 @@ class MockRuntime:
     @property
     def runtime_id(self) -> str:
         return "mock"
+
+    # ------------------------------------------------------------------
+    # Interactive capture / await
+    # ------------------------------------------------------------------
+
+    def _capture_and_await(self, *, stage: str, system: str, user: str) -> str:
+        """Write a capture file and block until a matching response file appears."""
+        call_id = uuid.uuid4().hex[:12]
+        os.makedirs(self._capture_dir, exist_ok=True)
+        capture_path = os.path.join(self._capture_dir, f"capture_{call_id}.json")
+        response_path = os.path.join(self._capture_dir, f"response_{call_id}.json")
+        capture = {
+            "id": call_id,
+            "stage": stage,
+            "persona": "mock",
+            "system": system,
+            "user": user,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        }
+        with open(capture_path, "w", encoding="utf-8") as fh:
+            json.dump(capture, fh, indent=2, ensure_ascii=False)
+        deadline = time.monotonic() + self._timeout
+        while time.monotonic() < deadline:
+            if os.path.exists(response_path):
+                try:
+                    with open(response_path, encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    return str(data.get("response", ""))
+                except Exception:
+                    pass
+            time.sleep(_POLL_INTERVAL)
+        return ""
+
+    def _capture_structured(self, *, stage: str, system: str, user: str) -> Optional[dict[str, Any]]:
+        text = self._capture_and_await(stage=stage, system=system, user=user)
+        if not text:
+            return None
+        text = text.strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        import re
+        for candidate in reversed(re.findall(r"\{.*\}", text, flags=re.DOTALL)):
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+        return None
 
     # ------------------------------------------------------------------
     # Rule-matching helpers
@@ -131,7 +205,11 @@ class MockRuntime:
         persona: str = "default",
     ):
         user = f"GOAL:\n{goal}\n\nCONTEXT:\n{context}"
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("PLANNING", persona)
+            payload = self._capture_structured(stage="PLANNING", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         raw_tasks = [t for t in payload.get("tasks", []) if isinstance(t, dict)]
         tasks = [task_from_raw(r) for r in raw_tasks]
         apply_task_dependencies(tasks, raw_tasks)
@@ -145,7 +223,11 @@ class MockRuntime:
         persona: str = "default",
     ) -> IntentAnnotation:
         user = f"TASK TITLE: {task.title}\nTASK DESCRIPTION: {task.description}\n\nCONTEXT:\n{context}"
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("ANNOTATION", persona)
+            payload = self._capture_structured(stage="ANNOTATION", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         return IntentAnnotation(
             task_id=task.id,
             target_coord=CodeCoord(
@@ -170,12 +252,20 @@ class MockRuntime:
         persona: str = "default",
     ) -> list[dict]:
         user = f"TASK TITLE: {task.title}\nTASK DESCRIPTION: {task.description}\n\nCONTEXT:\n{context}"
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("EXECUTION", persona)
+            payload = self._capture_structured(stage="EXECUTION", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         return list(payload.get("edits", []))
 
     def detect_ripple(self, task: Task, scan_context: str, workspace_path: str = "") -> str:
         user = f"TASK TITLE: {task.title}\n\nSCAN:\n{scan_context}"
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("RIPPLE_DETECTION", "reviewer")
+            payload = self._capture_structured(stage="RIPPLE_DETECTION", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         return str(payload.get("summary", ""))
 
     def alter_annotation(
@@ -191,7 +281,11 @@ class MockRuntime:
             f"TASK TITLE: {task.title}\nDEVELOPER FEEDBACK: {feedback}\n\n"
             f"PREVIOUS SUMMARY: {old_annotation.summary}\n\nCONTEXT:\n{context}"
         )
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("ALTER_ANNOTATION", persona)
+            payload = self._capture_structured(stage="ALTER_ANNOTATION", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         return IntentAnnotation(
             task_id=task.id,
             target_coord=CodeCoord(
@@ -224,7 +318,12 @@ class MockRuntime:
         workspace_path: str = "",
         persona: str = "default",
     ) -> dict:
-        payload = self._match_dict(f"DEBUG CONTEXT:\n{debug_context}")
+        user = f"DEBUG CONTEXT:\n{debug_context}"
+        if self._interactive:
+            system = build_system_prompt("LIVE_DEBUG", persona)
+            payload = self._capture_structured(stage="LIVE_DEBUG", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         suggested_fix = dict(payload.get("suggestedFix", {}))
         return {
             "diagnosis": str(payload.get("diagnosis", "Mock diagnosis.")),
@@ -249,7 +348,11 @@ class MockRuntime:
         persona: str = "default",
     ) -> dict:
         user = f"QUESTION: {question}\n\nCONTEXT:\n{context}"
-        payload = self._match_dict(user)
+        if self._interactive:
+            system = build_system_prompt("QUESTION_ANSWER", persona)
+            payload = self._capture_structured(stage="QUESTION_ANSWER", system=system, user=user) or {}
+        else:
+            payload = self._match_dict(user)
         return {
             "answer": str(payload.get("answer", "Mock answer.")),
             "shouldUpdatePlan": bool(payload.get("shouldUpdatePlan", False)),
@@ -310,6 +413,9 @@ class MockRuntime:
         metadata: Optional[dict] = None,
     ) -> dict:
         user = f"STAGE KIND: {stage_kind}\nSTAGE TITLE: {stage_title}\nGOAL:\n{goal}"
+        if self._interactive:
+            system = build_system_prompt("WIZARD", persona)
+            return self._capture_structured(stage="WIZARD", system=system, user=user) or {}
         return self._match_dict(user)
 
     # ------------------------------------------------------------------

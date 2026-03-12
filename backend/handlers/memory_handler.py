@@ -138,6 +138,16 @@ def handle_list_knowledge_sources(server, params: dict) -> dict:
     }
 
 
+def handle_browse_knowledge_index(server, params: dict) -> dict:
+    store = server._get_knowledge_store()
+    return store.browse_hierarchy(
+        path=str(params.get("path", "")),
+        depth=int(params.get("depth", 2)),
+        include_entries=bool(params.get("includeEntries", False)),
+        entry_limit=int(params.get("entryLimit", 10)),
+    )
+
+
 def handle_extract_procedure(server, params: dict) -> dict:
     name = params.get("name", "").strip()
     if not name:
@@ -193,3 +203,37 @@ def handle_remove_knowledge_source(server, params: dict) -> dict:
     deleted = store.delete_repo(name)
     log.info("removeKnowledgeSource: '%s' — %d entries deleted", name, deleted)
     return {"name": name, "deleted": deleted}
+
+
+def handle_add_knowledge_entry(server, params: dict) -> dict:
+    from backend.knowledge.models import KnowledgeEntry
+    store = server._get_knowledge_store()
+    entry = KnowledgeEntry.create(
+        source_repo=params.get("sourceRepo", params.get("source_repo", "")).strip(),
+        source_file=params.get("sourceFile", params.get("source_file", "")).strip(),
+        snippet_type=params.get("snippetType", params.get("snippet_type", "pattern")).strip(),
+        title=params.get("title", "").strip(),
+        description=params.get("description", "").strip(),
+        code=params.get("code", "").strip(),
+        tags=params.get("tags", []),
+        source_repo_url=params.get("sourceRepoUrl", params.get("source_repo_url", "")).strip(),
+        context=params.get("context", "").strip(),
+        hierarchy_path=params.get("hierarchyPath", params.get("hierarchy_path", None)),
+    )
+    if not entry.title or not entry.code or not entry.source_repo:
+        raise ValueError("title, code, and source_repo are required")
+    added = store.add_entry(entry)
+    if added:
+        store.upsert_repo(entry.source_repo, "")
+    log.info("addKnowledgeEntry: '%s' added=%s", entry.title, added)
+    return {"id": entry.id, "added": added, "message": "Entry added." if added else "Duplicate entry (same code hash)."}
+
+
+def handle_delete_knowledge_entry(server, params: dict) -> dict:
+    entry_id = params.get("id", "").strip()
+    if not entry_id:
+        raise ValueError("id is required")
+    store = server._get_knowledge_store()
+    deleted = store.delete_entry(entry_id)
+    log.info("deleteKnowledgeEntry: '%s' deleted=%s", entry_id, deleted)
+    return {"id": entry_id, "deleted": deleted}

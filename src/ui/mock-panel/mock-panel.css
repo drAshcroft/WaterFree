@@ -1,0 +1,200 @@
+:root {
+  --font-mono: var(--vscode-editor-font-family, "Courier New", monospace);
+  --font-ui: var(--vscode-font-family, system-ui, sans-serif);
+  --font-size: var(--vscode-font-size, 13px);
+  --fg: var(--vscode-foreground, #cccccc);
+  --bg: var(--vscode-editor-background, #1e1e1e);
+  --bg-input: var(--vscode-input-background, #3c3c3c);
+  --border: var(--vscode-input-border, #555);
+  --accent: var(--vscode-button-background, #0e639c);
+  --accent-hover: var(--vscode-button-hoverBackground, #1177bb);
+  --secondary-bg: var(--vscode-button-secondaryBackground, #3a3d41);
+  --secondary-hover: var(--vscode-button-secondaryHoverBackground, #45494e);
+  --badge-bg: var(--vscode-badge-background, #4d4d4d);
+  --badge-fg: var(--vscode-badge-foreground, #cccccc);
+  --section-bg: var(--vscode-editorWidget-background, #252526);
+  --radius: 4px;
+  --gap: 16px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--font-size);
+  color: var(--fg);
+  background: var(--bg);
+  padding: var(--gap);
+  min-height: 100vh;
+}
+
+.mock-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  max-width: 900px;
+}
+
+/* ---- Header ---- */
+
+.mock-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mock-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.capture-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.75em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.capture-id {
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  opacity: 0.55;
+}
+
+/* ---- Empty state ---- */
+
+.empty-state {
+  padding: 40px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0.6;
+}
+
+.hint {
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.hint code {
+  font-family: var(--font-mono);
+  background: var(--section-bg);
+  padding: 1px 5px;
+  border-radius: var(--radius);
+}
+
+/* ---- Capture view ---- */
+
+.capture-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.prompt-section, .response-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.section-label {
+  font-size: 0.8em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.65;
+}
+
+.prompt-block {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--section-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.response-textarea {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  resize: vertical;
+  width: 100%;
+  line-height: 1.5;
+}
+
+.response-textarea:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---- Footer ---- */
+
+.mock-footer {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+button {
+  font-family: var(--font-ui);
+  font-size: var(--font-size);
+  padding: 6px 16px;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+button.primary:hover { background: var(--accent-hover); }
+
+button.secondary {
+  background: var(--secondary-bg);
+  color: var(--fg);
+}
+button.secondary:hover { background: var(--secondary-hover); }
+
+/* ---- Queue bar ---- */
+
+.queue-bar {
+  font-size: 0.85em;
+  opacity: 0.7;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.queue-count {
+  font-weight: 600;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  border-radius: 10px;
+  padding: 1px 8px;
+}

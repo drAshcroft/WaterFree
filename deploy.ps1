@@ -25,6 +25,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $ScriptDir = $PSScriptRoot
 $SkillsDir = Join-Path $ScriptDir "skills"
@@ -60,6 +63,83 @@ function Write-Step([string]$Message) {
 
 function Write-Ok([string]$Message) {
     Write-Host "    $Message" -ForegroundColor Green
+}
+
+function Assert-LastExitCode([string]$CommandName) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$CommandName failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Get-ArtifactInfo([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path $Path)) {
+        return $null
+    }
+
+    $item = Get-Item $Path
+    $hash = (Get-FileHash -Path $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    return [PSCustomObject]@{
+        Path          = $item.FullName
+        LastWriteTime = $item.LastWriteTime
+        Length        = $item.Length
+        Sha256        = $hash.Substring(0, 12)
+    }
+}
+
+function Write-ArtifactInfo([string]$Label, $Info) {
+    if ($null -eq $Info) {
+        Write-Host "    ${Label}: missing" -ForegroundColor Yellow
+        return
+    }
+
+    $timestamp = $Info.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+    Write-Ok "${Label}: $($Info.Path)"
+    Write-Host "    modified=$timestamp size=$($Info.Length) sha256=$($Info.Sha256)"
+}
+
+function Get-InstalledExtensionPath([string]$ExtensionId) {
+    $extensionsRoot = Join-Path $HOME ".vscode\extensions"
+    if (-not (Test-Path $extensionsRoot)) {
+        return $null
+    }
+
+    $installDir = Get-ChildItem -Path $extensionsRoot -Directory |
+        Where-Object { $_.Name -like "$ExtensionId*" } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $installDir) {
+        return $null
+    }
+
+    return $installDir.FullName
+}
+
+function Get-InstalledExtensionBundlePath([string]$ExtensionId) {
+    $installPath = Get-InstalledExtensionPath -ExtensionId $ExtensionId
+    if ([string]::IsNullOrWhiteSpace($installPath)) {
+        return $null
+    }
+
+    $bundlePath = Join-Path $installPath "dist\extension.js"
+    if (Test-Path $bundlePath) {
+        return $bundlePath
+    }
+
+    return $null
+}
+
+function Get-InstalledExtensionAssetPath([string]$ExtensionId, [string]$RelativePath) {
+    $installPath = Get-InstalledExtensionPath -ExtensionId $ExtensionId
+    if ([string]::IsNullOrWhiteSpace($installPath)) {
+        return $null
+    }
+
+    $assetPath = Join-Path $installPath $RelativePath
+    if (Test-Path $assetPath) {
+        return $assetPath
+    }
+
+    return $null
 }
 
 function New-McpEntry([string]$Module) {
@@ -179,33 +259,92 @@ function Merge-JsonMcpConfig([string]$ConfigPath) {
 
 
 function Deploy-Local {
-    Write-Step "Building extension..."
+    $manifest = Get-Content (Join-Path $ScriptDir "package.json") -Raw | ConvertFrom-Json
+    $extensionId = "$($manifest.publisher).$($manifest.name)"
+    $extensionVersion = [string]$manifest.version
+    $bundlePath = Join-Path $ScriptDir "dist\extension.js"
+
+    Write-Step "Building extension $extensionId@$extensionVersion..."
     Push-Location $ScriptDir
     try {
         if ($Quick) {
             npm run compile
+            Assert-LastExitCode "npm run compile"
         } else {
             npm run vscode:prepublish
+            Assert-LastExitCode "npm run vscode:prepublish"
         }
     } finally {
         Pop-Location
     }
 
+    if (-not (Test-Path $bundlePath)) {
+        throw "Build did not create $bundlePath."
+    }
+
+    $bundleInfo = Get-ArtifactInfo -Path $bundlePath
+    Write-ArtifactInfo -Label "Built bundle" -Info $bundleInfo
+
     Write-Step "Packaging VSIX..."
+    if (Test-Path $VsixPath) {
+        Remove-Item $VsixPath -Force
+    }
+
     Push-Location $ScriptDir
     try {
         npx --yes @vscode/vsce package --no-dependencies --out $VsixPath --baseContentUrl https://localhost
+        Assert-LastExitCode "VSIX packaging"
     } finally {
         Pop-Location
     }
 
-    Write-Step "Installing extension..."
+    if (-not (Test-Path $VsixPath)) {
+        throw "VSIX packaging did not create $VsixPath."
+    }
+
+    $vsixInfo = Get-ArtifactInfo -Path $VsixPath
+    Write-ArtifactInfo -Label "Built VSIX" -Info $vsixInfo
+
+    Write-Step "Installing extension $extensionId@$extensionVersion..."
     $installOut = & $CodeCmd --install-extension $VsixPath --force 2>&1
     if ($LASTEXITCODE -ne 0 -and ($installOut -match "EBUSY|restart VS Code")) {
         Write-Host "    Extension is locked by a running VS Code instance." -ForegroundColor Yellow
         Write-Host "    Close VS Code or run 'Developer: Reload Window', then re-run the installer." -ForegroundColor Yellow
+    } elseif ($LASTEXITCODE -ne 0) {
+        throw "VS Code extension install failed with exit code $LASTEXITCODE.`n$installOut"
     } else {
         Write-Host $installOut
+        $installedExtensionLine = & $CodeCmd --list-extensions --show-versions 2>$null |
+            Where-Object { $_ -like "$extensionId@*" } |
+            Select-Object -First 1
+        if ($LASTEXITCODE -eq 0 -and $installedExtensionLine) {
+            Write-Ok "VS Code reports installed extension: $installedExtensionLine"
+        }
+
+        $installedBundlePath = Get-InstalledExtensionBundlePath -ExtensionId $extensionId
+        $installedBundleInfo = Get-ArtifactInfo -Path $installedBundlePath
+        Write-ArtifactInfo -Label "Installed bundle" -Info $installedBundleInfo
+        if ($installedBundleInfo -and $bundleInfo -and $installedBundleInfo.Sha256 -eq $bundleInfo.Sha256) {
+            Write-Ok "Installed bundle matches freshly built bundle."
+        } elseif ($installedBundleInfo -and $bundleInfo) {
+            Write-Warning "Installed bundle hash does not match the freshly built bundle."
+        } else {
+            Write-Warning "Could not verify the installed bundle contents."
+        }
+
+        $repoSidebarAssetPath = Join-Path $ScriptDir "src\ui\sidebar\sidebar.html"
+        $installedSidebarAssetPath = Get-InstalledExtensionAssetPath -ExtensionId $extensionId -RelativePath "src\ui\sidebar\sidebar.html"
+        $repoSidebarInfo = Get-ArtifactInfo -Path $repoSidebarAssetPath
+        $installedSidebarInfo = Get-ArtifactInfo -Path $installedSidebarAssetPath
+        Write-ArtifactInfo -Label "Installed sidebar asset" -Info $installedSidebarInfo
+        if ($installedSidebarInfo -and $repoSidebarInfo -and $installedSidebarInfo.Sha256 -eq $repoSidebarInfo.Sha256) {
+            Write-Ok "Installed sidebar asset matches repo asset."
+        } elseif ($installedSidebarInfo -and $repoSidebarInfo) {
+            Write-Warning "Installed sidebar asset does not match the repo asset."
+        } else {
+            Write-Warning "Could not verify the installed sidebar asset."
+        }
+
         Write-Ok "Installed. Use 'Developer: Reload Window' in VS Code to activate."
     }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+from backend.llm.provider_profiles import normalize_provider_profile
 from backend.llm.runtime_registry import (
     list_runtime_descriptors,
     resolve_runtime_name,
@@ -15,8 +16,9 @@ def handle_list_runtimes(server, params: dict) -> dict:
 
 
 def handle_get_active_runtime(server, params: dict) -> dict:
-    _ = params
-    return {"runtimeId": server._runtime_name}
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    profile = server._get_provider_profile(workspace_path)
+    return {"runtimeId": server._runtime_name, "providerId": profile.active_provider_id}
 
 
 def handle_set_active_runtime(server, params: dict) -> dict:
@@ -24,8 +26,15 @@ def handle_set_active_runtime(server, params: dict) -> dict:
     if runtime_id == server._runtime_name:
         return {"ok": True, "runtimeId": server._runtime_name}
     server._runtime_name = runtime_id
-    server._runtime = None
+    server._clear_runtime_cache()
     return {"ok": True, "runtimeId": server._runtime_name}
+
+
+def handle_sync_provider_profile(server, params: dict) -> dict:
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    profile = normalize_provider_profile(params.get("profile", {}))
+    profile_hash = server._set_provider_profile(workspace_path, profile)
+    return {"ok": True, "profileHash": profile_hash}
 
 
 def handle_list_skills(server, params: dict) -> dict:
@@ -108,6 +117,15 @@ def handle_list_subagents(server, params: dict) -> dict:
     if not callable(list_subagents):
         return {"subagents": []}
     return {"subagents": list_subagents()}
+
+
+def handle_get_usage_stats(server, params: dict) -> dict:
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    runtime = server._get_runtime(workspace_path)
+    get_usage = getattr(runtime, "get_usage_stats", None)
+    if not callable(get_usage):
+        return {"providers": []}
+    return {"providers": get_usage(workspace_path)}
 
 
 def handle_delegate_to_subagent(server, params: dict) -> dict:

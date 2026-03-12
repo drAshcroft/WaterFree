@@ -10,6 +10,7 @@ from typing import Callable, Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.provider_profiles import ProviderProfileDocument
 from backend.llm.providers import DeepAgentsRuntime, HuggingFaceRuntime, MockRuntime, MonitorRuntime
 from backend.llm.runtime import AgentRuntime
 from backend.todo.store import TaskStore
@@ -146,12 +147,14 @@ def create_runtime(
     knowledge_store: Optional[KnowledgeStore] = None,
     task_store_factory: Optional[Callable[[str], TaskStore]] = None,
     workspace_path: str = ".",
+    provider_profile_document: Optional[ProviderProfileDocument] = None,
 ) -> AgentRuntime:
     name = resolve_runtime_name(runtime_name)
     common_kwargs = {
         "graph": graph,
         "knowledge_store": knowledge_store,
         "task_store_factory": task_store_factory,
+        "provider_profile_document": provider_profile_document,
     }
     if name in {"deep_agents", "ollama", "openai"}:
         return DeepAgentsRuntime(
@@ -167,6 +170,7 @@ def create_runtime(
     if name == "mock":
         return MockRuntime(
             workspace_path=workspace_path,
+            interactive=True,
             task_store_factory=task_store_factory,
         )
     if name == "monitor":

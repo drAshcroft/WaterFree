@@ -48,6 +48,9 @@ def _entry_to_dict(entry) -> dict:
         "source_file": entry.source_file,
         "source_repo_url": entry.source_repo_url,
         "created_at": entry.created_at,
+        "hierarchy_path": entry.effective_hierarchy_path(),
+        "hierarchy_segments": entry.effective_hierarchy_segments(),
+        "hierarchy_source": entry.hierarchy_source(),
     }
 
 
@@ -106,11 +109,44 @@ def _knowledge_stats_impl() -> str:
     """
     store = _get_store()
     repos = store.list_repos()
+    hierarchy = store.browse_hierarchy(depth=1)
     return json.dumps(
         {
             "total_entries": store.total_entries(),
             "source_count": len(repos),
+            "top_level_category_count": len(hierarchy["nodes"]),
         },
+        indent=2,
+    )
+
+
+def _browse_knowledge_index_impl(
+    path: str = "",
+    depth: int = 2,
+    include_entries: bool = False,
+    entry_limit: int = 10,
+) -> str:
+    """Browse the knowledge taxonomy as a hierarchical index.
+
+    Use this when the topic is broad and you want category-first traversal instead of
+    jumping straight to full-text search.
+
+    Args:
+        path: Optional subtree path such as "platform/auth" or "pattern/python".
+        depth: How many levels of child categories to expand from the requested path.
+        include_entries: Include sample entries from the selected subtree.
+        entry_limit: Maximum number of entries to include when include_entries is true.
+
+    Returns JSON describing the subtree, entry counts, and child nodes.
+    """
+    store = _get_store()
+    return json.dumps(
+        store.browse_hierarchy(
+            path=path,
+            depth=depth,
+            include_entries=include_entries,
+            entry_limit=entry_limit,
+        ),
         indent=2,
     )
 
@@ -125,6 +161,7 @@ def _add_knowledge_impl(
     tags: list[str] | None = None,
     context: str = "",
     source_repo_url: str = "",
+    hierarchy_path: str | list[str] | None = None,
 ) -> str:
     """Add a knowledge entry directly to the global store.
 
@@ -142,6 +179,7 @@ def _add_knowledge_impl(
         tags: Relevant tags e.g. ["python", "async", "error-handling"] (optional).
         context: Extra context — caveats, version requirements, related files, when NOT to use (optional).
         source_repo_url: Git remote URL of the source repo (optional).
+        hierarchy_path: Optional taxonomy path, e.g. "platform/auth/jwt" or ["platform", "auth", "jwt"].
 
     Returns JSON with the new entry id and a confirmation message.
     """
@@ -156,6 +194,7 @@ def _add_knowledge_impl(
         tags=tags or [],
         context=context,
         source_repo_url=source_repo_url,
+        hierarchy_path=hierarchy_path,
     )
     added = store.add_entry(entry)
     store.upsert_repo(source_repo, source_file or source_repo, source_repo_url)
@@ -163,6 +202,7 @@ def _add_knowledge_impl(
         {
             "id": entry.id,
             "added": added,
+            "hierarchy_path": entry.effective_hierarchy_path(),
             "message": (
                 f"Entry '{title}' added to knowledge store."
                 if added
@@ -204,6 +244,9 @@ list_knowledge_sources = mcp.tool()(
     instrument_tool(log, "list_knowledge_sources", _list_knowledge_sources_impl)
 )
 knowledge_stats = mcp.tool()(instrument_tool(log, "knowledge_stats", _knowledge_stats_impl))
+browse_knowledge_index = mcp.tool()(
+    instrument_tool(log, "browse_knowledge_index", _browse_knowledge_index_impl)
+)
 add_knowledge = mcp.tool()(instrument_tool(log, "add_knowledge", _add_knowledge_impl))
 delete_knowledge = mcp.tool()(instrument_tool(log, "delete_knowledge", _delete_knowledge_impl))
 

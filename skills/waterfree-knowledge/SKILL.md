@@ -14,12 +14,14 @@ Knowledge is shared across all workspaces and stored at `~/.waterfree/global/kno
 ## When to Use (Read)
 
 Use these tools when you need to:
+- Traverse the store by stable subject/category before searching — use `browse_knowledge_index`
 - Find a reusable pattern before writing new code — use `search_knowledge`
 - Look for prior implementations of a concept across projects — use `search_knowledge`
 - Check what has already been indexed — use `list_knowledge_sources`
 - Understand how many snippets are available — use `knowledge_stats`
 
-Always search the knowledge store before writing boilerplate or reaching for external docs.
+Use the hierarchy first for broad domains and search for precise lookups. Always consult
+the knowledge store before writing boilerplate or reaching for external docs.
 
 ## When to Add
 
@@ -47,6 +49,7 @@ across **any** project. Good candidates:
 | `description` | 2–4 sentences: what it does, why it's useful, when to reach for it |
 | `context` | Caveats, version requirements, related files/symbols, when NOT to use |
 | `snippet_type` | Pick the closest: `pattern`, `utility`, `style`, `api_usage`, `convention` |
+| `hierarchy_path` | Stable subject taxonomy such as `"platform/auth/jwt"` or `"frontend/forms/validation"` |
 | `source_repo` | Always the actual project name or path — e.g. `"WaterFree"` or `"c:/projects/myapp"` |
 | `tags` | 3–6 short tags covering language, framework, domain, and key concept |
 
@@ -73,15 +76,21 @@ Use `delete_knowledge` when:
 
 ### Search for snippets
 ```
+browse_knowledge_index(path="", depth=2)
+browse_knowledge_index(path="platform/auth", depth=2, include_entries=true)
 search_knowledge(query="retry with exponential backoff", limit=10)
 search_knowledge(query="authentication middleware")
 search_knowledge(query="sqlite connection pooling")
 search_knowledge(query="dataclass serialisation")
 ```
 
+Use `browse_knowledge_index` when the question is category-first, exploratory, or the
+subject already has an obvious taxonomy. It returns child nodes, subtree counts, and
+optionally sample entries from the selected branch.
+
 The search uses BM25-ranked full-text search over title, description, tags, and code.
 Return fields: `id`, `title`, `description`, `snippet_type`, `code`, `tags`, `context`,
-`source_repo`, `source_file`, `source_repo_url`, `created_at`.
+`source_repo`, `source_file`, `source_repo_url`, `created_at`, `hierarchy_path`.
 
 ### Add a snippet
 ```
@@ -93,6 +102,7 @@ add_knowledge(
     snippet_type="utility",
     source_repo="WaterFree",
     source_file="backend/llm/claude_client.py",
+    hierarchy_path="platform/reliability/retries",
     tags=["python", "retry", "error-handling", "decorator"],
     context="Requires Python 3.10+. Not suitable for DB transactions — use explicit
              savepoints instead. See also: circuit_breaker pattern.",
@@ -129,7 +139,10 @@ Returns total entry count and number of indexed sources.
 ## Tips
 
 - Search with specific terms ("singleton pattern", "JWT decode") or broad concepts ("caching").
+- Reach for `browse_knowledge_index` before `search_knowledge` when the domain is easier
+  to navigate as a tree than as keywords.
 - Use `tags` in the returned entries to discover related searches.
+- Use `hierarchy_path` for stable subject organization; use `tags` for looser cross-cuts.
 - Use the `context` field to explain why a snippet has constraints — future readers
   won't have the original conversation to refer to.
 - If the store is empty, knowledge must be built first using the `buildKnowledge` command

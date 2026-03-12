@@ -3,7 +3,7 @@
 .waterfree/**
 .tmp_*/**
 node_modules/**
-src/**
+src/**/*.ts
 skills/**
 **/*.map
 tsconfig.json

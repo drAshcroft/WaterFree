@@ -76,6 +76,10 @@ let state = {
   draftDebugReason: typeof savedState.draftDebugReason === "string" ? savedState.draftDebugReason : "bug investigation",
   selectedPersona: typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect",
   expandedWizard: typeof savedState.expandedWizard === "string" ? savedState.expandedWizard : null,
+  // history dropdown
+  historyOpen: false,
+  historyItems: [],      // [{id, goalStatement, status, createdAt, persona, file}]
+  expandedHistoryDates: {},   // {dateKey: true}
   // settings state (not persisted)
   settingsOpen: false,
   settingsPage: null,   // null = menu, "providers", "mcp", "skills", "personas", "usage", "todos", "index", "knowledge"
@@ -119,8 +123,14 @@ function formatCoord(coord) {
   return parts.join("");
 }
 
+function formatLabel(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, function(match) { return match.toUpperCase(); });
+}
+
 function statusBadge(status) {
-  return '<span class="badge ' + escapeHtml(status) + '">' + escapeHtml(status) + "</span>";
+  return '<span class="badge ' + escapeHtml(status) + '">' + escapeHtml(formatLabel(status)) + "</span>";
 }
 
 function mkButton(label, action, data, primary, disabled) {
@@ -138,6 +148,7 @@ function renderQuickJobs() {
   return [
     '<section class="card composer">',
     '<div class="card-body">',
+    '<div class="section-accent" aria-hidden="true"></div>',
     '<div class="title-row">',
     '<p class="eyebrow" style="margin-bottom:0">Quick Jobs</p>',
     disabled && state.busyMessage ? '<span class="badge pending">' + escapeHtml(state.busyMessage) + "</span>" : "",
@@ -165,9 +176,9 @@ function renderWizards() {
     let bodyHtml = "";
     if (isExpanded) {
       const stepsHtml = w.steps.length > 0
-        ? '<div class="wizard-steps">' + w.steps.map(function(s, i) {
-            return '<span class="step-pill">' + (i + 1) + ". " + escapeHtml(s) + "</span>";
-          }).join("") + "</div>"
+        ? '<p class="wizard-steps">' + w.steps.map(function(s, i) {
+            return (i + 1) + ". " + escapeHtml(s);
+          }).join("  ·  ") + "</p>"
         : "";
       bodyHtml = [
         '<div class="wizard-body">',
@@ -181,12 +192,14 @@ function renderWizards() {
     return [
       '<div class="wizard-item' + (isExpanded ? " expanded" : "") + '">',
       '<div class="wizard-header" data-action="toggleWizard" data-wizard-id="' + escapeHtml(w.id) + '">',
-      '<span class="wizard-icon">' + escapeHtml(w.icon) + "</span>",
       '<div class="wizard-info">',
+      '<div class="wizard-title-row">',
       '<div class="wizard-name">' + escapeHtml(w.title) + "</div>",
+      '<span class="wizard-icon">' + escapeHtml(w.icon) + "</span>",
+      "</div>",
       '<div class="wizard-tagline">' + escapeHtml(w.tagline) + "</div>",
       "</div>",
-      '<span class="wizard-chevron">' + (isExpanded ? "&#x25B2;" : "&#x25BC;") + "</span>",
+      '<span class="wizard-chevron">' + (isExpanded ? "Hide" : "Open") + "</span>",
       "</div>",
       bodyHtml,
       "</div>",
@@ -196,6 +209,7 @@ function renderWizards() {
   return [
     '<section class="card wizards-card">',
     '<div class="card-body">',
+    '<div class="section-accent section-accent--muted" aria-hidden="true"></div>',
     '<p class="eyebrow">Wizards</p>',
     '<div class="wizard-list">',
     items,
@@ -215,7 +229,7 @@ function renderDebugPanel() {
     return '<option value="' + escapeHtml(r) + '"' + (state.draftDebugReason === r ? " selected" : "") + ">" + escapeHtml(r) + "</option>";
   }).join("");
   return [
-    '<section class="card" style="border-top:3px solid var(--warning)">',
+    '<section class="card card--warning">',
     '<div class="card-body">',
     '<p class="eyebrow">Debug Investigation</p>',
     loc,
@@ -370,22 +384,86 @@ function renderBacklog(backlogSummary) {
 }
 
 function renderHeader() {
-  const active = state.settingsOpen ? ' gear-btn--active' : '';
+  const gearActive = state.settingsOpen ? ' gear-btn--active' : '';
+  const histActive = state.historyOpen ? ' history-btn--active' : '';
   return [
     '<div class="sidebar-header">',
-    '<button type="button" class="gear-btn' + active + '" data-action="openSettings" title="Settings">',
-    '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">',
-    '<path d="M8 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6zm0 5a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/>',
-    '<path d="M8 0a1 1 0 0 1 .95.68l.54 1.62a5.98 5.98 0 0 1 1.32.77l1.65-.54a1 1 0 0 1 1.18.46l1 1.73a1 1 0 0 1-.18 1.24l-1.24 1.1c.03.27.03.55 0 .82l1.24 1.1a1 1 0 0 1 .18 1.24l-1 1.73a1 1 0 0 1-1.18.46l-1.65-.54a5.98 5.98 0 0 1-1.32.77L8.95 15.32A1 1 0 0 1 8 16a1 1 0 0 1-.95-.68l-.54-1.62a5.98 5.98 0 0 1-1.32-.77l-1.65.54a1 1 0 0 1-1.18-.46l-1-1.73a1 1 0 0 1 .18-1.24l1.24-1.1a5.98 5.98 0 0 1 0-.82l-1.24-1.1a1 1 0 0 1-.18-1.24l1-1.73a1 1 0 0 1 1.18-.46l1.65.54a5.98 5.98 0 0 1 1.32-.77L7.05.68A1 1 0 0 1 8 0z"/>',
-    '</svg>',
+    '<button type="button" class="history-btn' + histActive + '" data-action="toggleHistory" title="Session History">',
+    '&#x25A4;',
+    '</button>',
+    '<button type="button" class="gear-btn' + gearActive + '" data-action="openSettings" title="Settings">',
+    '⚙',
     '</button>',
     '</div>',
   ].join("");
 }
 
-/* ── Settings Overlay ────────────────────────────────────────── */
+function renderHistoryDropdown() {
+  if (!state.historyOpen) { return ""; }
 
-function renderSettingsOverlay() {
+  if (state.historyItems.length === 0) {
+    return [
+      '<div class="history-dropdown">',
+      '<p class="empty" style="padding:10px 12px;margin:0">No archived sessions yet.</p>',
+      '</div>',
+    ].join("");
+  }
+
+  // Group sessions by date (YYYY-MM-DD from createdAt)
+  var groups = {};
+  var groupOrder = [];
+  state.historyItems.forEach(function(s) {
+    var dateKey = (s.createdAt || "").slice(0, 10) || "Unknown";
+    if (!groups[dateKey]) {
+      groups[dateKey] = [];
+      groupOrder.push(dateKey);
+    }
+    groups[dateKey].push(s);
+  });
+  // Reverse so most recent date is first
+  groupOrder.reverse();
+
+  var groupsHtml = groupOrder.map(function(dateKey, i) {
+    var isExpanded = state.expandedHistoryDates[dateKey] !== false && i === 0
+      ? true
+      : Boolean(state.expandedHistoryDates[dateKey]);
+    var sessions = groups[dateKey];
+    var sessionsHtml = isExpanded ? sessions.map(function(s) {
+      var goal = s.goalStatement || "(no goal)";
+      var persona = s.persona ? ' <span class="history-persona">' + escapeHtml(formatLabel(s.persona)) + '</span>' : '';
+      return [
+        '<div class="history-session" data-action="restoreSession" data-file="' + escapeHtml(s.file || "") + '">',
+        '<div class="history-session-goal">' + escapeHtml(goal) + '</div>',
+        '<div class="history-session-meta">',
+        statusBadge(s.status || "complete"),
+        persona,
+        '</div>',
+        '</div>',
+      ].join("");
+    }).join("") : "";
+
+    return [
+      '<div class="history-group">',
+      '<div class="history-group-header" data-action="toggleHistoryDate" data-date="' + escapeHtml(dateKey) + '">',
+      '<span class="history-date">' + escapeHtml(dateKey) + '</span>',
+      '<span class="history-group-count">' + sessions.length + '</span>',
+      '<span class="history-chevron">' + (isExpanded ? '&#x25B4;' : '&#x25BE;') + '</span>',
+      '</div>',
+      sessionsHtml,
+      '</div>',
+    ].join("");
+  }).join("");
+
+  return [
+    '<div class="history-dropdown">',
+    groupsHtml,
+    '</div>',
+  ].join("");
+}
+
+/* ── Settings Panel ──────────────────────────────────────────── */
+
+function renderSettingsPanel() {
   const isMenu      = !state.settingsPage;
   const isProvForm  = Boolean(state.providerForm);
   const menuItem    = MENU_ITEMS.find(function(m) { return m.id === state.settingsPage; });
@@ -396,8 +474,8 @@ function renderSettingsOverlay() {
 
   const backAction  = isMenu ? "closeSettings" : isProvForm ? "cancelProvider" : "settingsBack";
   const backBtn = isMenu
-    ? '<span style="width:28px;display:inline-block"></span>'
-    : '<button type="button" class="settings-nav-btn" data-action="' + backAction + '">&#x2190;</button>';
+    ? ""
+    : '<button type="button" class="settings-nav-btn" data-action="' + backAction + '">Back</button>';
 
   let bodyHtml;
   if (isProvForm)                          { bodyHtml = renderProviderForm(); }
@@ -406,18 +484,19 @@ function renderSettingsOverlay() {
   else                                     { bodyHtml = renderSettingsMenu(); }
 
   return [
-    '<div class="settings-overlay">',
-    '<div class="settings-dialog">',
+    '<section class="card settings-panel">',
+    '<div class="card-body settings-panel-body">',
+    '<div class="section-accent section-accent--muted" aria-hidden="true"></div>',
     '<div class="settings-dialog-header">',
     backBtn,
     '<span class="settings-title">' + escapeHtml(title) + '</span>',
-    '<button type="button" class="settings-nav-btn" data-action="closeSettings">&#x2715;</button>',
+    '<button type="button" class="settings-nav-btn" data-action="closeSettings">Close</button>',
     '</div>',
     '<div class="settings-body">',
     bodyHtml,
     '</div>',
     '</div>',
-    '</div>',
+    '</section>',
   ].join("");
 }
 
@@ -443,6 +522,7 @@ function renderProvidersPage() {
     : providers.map(function(p) {
         const icon = PROVIDER_ICONS[p.type] || "???";
         const label = PROVIDER_LABELS[p.type] || p.type;
+        const enabledLabel = p.enabled ? "Enabled" : "Disabled";
         const credHtml = p.type === "mock"
           ? '<span class="key-badge mock">Mock</span>'
           : p.hasKey
@@ -458,10 +538,10 @@ function renderProvidersPage() {
           '<span class="provider-icon">' + icon + '</span>',
           '<div class="provider-card-info">',
           '<span class="provider-name">' + escapeHtml(p.name) + '</span>',
-          '<span class="provider-type">' + escapeHtml(label) + '</span>',
+          '<span class="provider-type">' + escapeHtml(label) + ' · ' + enabledLabel + '</span>',
           '</div>',
           '<button type="button" class="toggle-btn' + (p.enabled ? ' toggle-btn--on' : '') + '" data-action="toggleProvider" data-provider-id="' + escapeHtml(p.id) + '" title="' + (p.enabled ? "Disable" : "Enable") + '">',
-          p.enabled ? '&#x25CF;' : '&#x25CB;',
+          p.enabled ? 'Disable' : 'Enable',
           '</button>',
           '</div>',
           '<div class="provider-card-meta">',
@@ -608,18 +688,22 @@ function wireSettingsForms() {
 }
 
 function render() {
-  const overlayHtml = state.settingsOpen ? renderSettingsOverlay() : "";
+  const contentHtml = state.settingsOpen
+    ? renderSettingsPanel()
+    : [
+        renderQuickJobs(),
+        renderWizards(),
+        renderDebugPanel(),
+        renderPlan(state.plan),
+        renderBacklog(state.backlogSummary),
+      ].join("");
 
   root.innerHTML = [
     renderHeader(),
+    renderHistoryDropdown(),
     '<div class="stack">',
-    renderQuickJobs(),
-    renderWizards(),
-    renderDebugPanel(),
-    renderPlan(state.plan),
-    renderBacklog(state.backlogSummary),
+    contentHtml,
     "</div>",
-    overlayHtml,
   ].join("");
 
   const goalInput = document.getElementById("goal-input");
@@ -648,6 +732,34 @@ root.addEventListener("click", function(event) {
   if (!el) { return; }
   const action = el.getAttribute("data-action");
   if (!action) { return; }
+
+  if (action === "toggleHistory") {
+    state.historyOpen = !state.historyOpen;
+    if (state.historyOpen) {
+      vscode.postMessage({ type: "requestHistory" });
+    }
+    render();
+    return;
+  }
+
+  if (action === "toggleHistoryDate") {
+    var dateKey = el.getAttribute("data-date");
+    if (dateKey) {
+      state.expandedHistoryDates[dateKey] = !state.expandedHistoryDates[dateKey];
+      render();
+    }
+    return;
+  }
+
+  if (action === "restoreSession") {
+    var file = el.getAttribute("data-file");
+    if (file) {
+      state.historyOpen = false;
+      vscode.postMessage({ type: "restoreSession", file: file });
+      render();
+    }
+    return;
+  }
 
   if (action === "openSettings") {
     state.settingsOpen = true;
@@ -683,6 +795,14 @@ root.addEventListener("click", function(event) {
       state.settingsPage = null;
       state.providerForm = null;
       vscode.postMessage({ type: "openTodoBoard" });
+      render();
+      return;
+    }
+    if (page === "knowledge") {
+      state.settingsOpen = false;
+      state.settingsPage = null;
+      state.providerForm = null;
+      vscode.postMessage({ type: "openKnowledge" });
       render();
       return;
     }
@@ -864,6 +984,18 @@ root.addEventListener("click", function(event) {
 
 window.addEventListener("message", function(event) {
   const message = event.data || {};
+  if (message.type === "history") {
+    state.historyItems = Array.isArray(message.sessions) ? message.sessions : [];
+    // Auto-expand the most recent date group
+    state.expandedHistoryDates = {};
+    if (state.historyItems.length > 0) {
+      var newest = state.historyItems[state.historyItems.length - 1];
+      var newestDate = (newest.createdAt || "").slice(0, 10) || "Unknown";
+      state.expandedHistoryDates[newestDate] = true;
+    }
+    if (state.historyOpen) { render(); }
+    return;
+  }
   if (message.type === "settings") {
     state.settingsData = Object.assign({ providers: [] }, message.data || {});
     if (state.settingsOpen) { render(); }

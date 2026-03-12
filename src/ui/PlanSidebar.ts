@@ -95,6 +95,9 @@ export type SidebarAction =
   | { type: "snippetizeSymbol"; symbol: string; context: string }
   | { type: "pushDebugToAgent"; intent: string; stopReason: string }
   | { type: "openTodoBoard" }
+  | { type: "openKnowledge" }
+  | { type: "requestHistory" }
+  | { type: "restoreSession"; file: string }
   | { type: "requestSettings" }
   | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
   | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
@@ -213,6 +216,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   sendSettings(data: unknown): void {
     void this._view?.webview.postMessage({ type: "settings", data });
+  }
+
+  sendHistory(sessions: unknown[]): void {
+    void this._view?.webview.postMessage({ type: "history", sessions });
   }
 
   dispose(): void {
@@ -341,6 +348,17 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       case "openTodoBoard":
         this._actionEmitter.fire({ type: "openTodoBoard" });
+        return;
+      case "openKnowledge":
+        this._actionEmitter.fire({ type: "openKnowledge" });
+        return;
+      case "requestHistory":
+        this._actionEmitter.fire({ type: "requestHistory" });
+        return;
+      case "restoreSession":
+        if (typeof message.file === "string") {
+          this._actionEmitter.fire({ type: "restoreSession", file: message.file });
+        }
         return;
       case "requestSettings":
         this._actionEmitter.fire({ type: "requestSettings" });

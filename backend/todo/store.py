@@ -12,7 +12,6 @@ from typing import Optional
 from backend.session.models import (
     CodeCoord,
     CoordAnchorType,
-    DependencyType,
     OwnerType,
     Task,
     TaskDependency,
