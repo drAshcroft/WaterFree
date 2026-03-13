@@ -13,6 +13,16 @@ export type ProviderStage =
   | "alter_annotation"
   | "knowledge";
 export type ProviderReloadMode = "manual" | "on_change";
+export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
+  "planning",
+  "annotation",
+  "execution",
+  "debug",
+  "question_answer",
+  "ripple_detection",
+  "alter_annotation",
+  "knowledge",
+];
 
 export interface ProviderConfig {
   id: string;
@@ -20,8 +30,8 @@ export interface ProviderConfig {
   name: string;
   baseUrl: string;
   models: string[];
-  modes: string[];
-  useWith: string;
+  modes?: string[];
+  useWith?: string;
   enabled: boolean;
   connectionStyle?: ProviderConnectionStyle;
 }
@@ -79,12 +89,20 @@ export interface ProviderProfileEntry {
   routing: ProviderProfileRouting;
 }
 
+export interface ProviderPersonaAssignment {
+  personaId: string;
+  providerId: string;
+  model: string;
+  stages: ProviderStage[];
+}
+
 export interface ProviderProfilePolicies {
   fallbackProviderOrder: string[];
   sessionKeyStrategy: string;
   flushOnTaskComplete: boolean;
   flushOnProviderSwitch: boolean;
   reloadMode: ProviderReloadMode;
+  personaAssignments: ProviderPersonaAssignment[];
   summarizationThresholds: Partial<Record<string, number>>;
 }
 
@@ -159,6 +177,7 @@ const DEFAULT_POLICIES: ProviderProfilePolicies = {
   flushOnTaskComplete: true,
   flushOnProviderSwitch: true,
   reloadMode: "on_change",
+  personaAssignments: [],
   summarizationThresholds: {
     EXECUTION: 60000,
     PLANNING: 30000,
@@ -317,6 +336,25 @@ export class WaterFreeProviders {
     await this._persistProfile();
   }
 
+  async updatePersonaAssignments(personaId: string, assignments: Array<Omit<ProviderPersonaAssignment, "personaId">>): Promise<void> {
+    const normalizedPersonaId = String(personaId || "").trim().toLowerCase();
+    const kept = this._profile.policies.personaAssignments.filter((entry) => entry.personaId !== normalizedPersonaId);
+    this._profile = normalizeProfileDocument({
+      ...this._profile,
+      policies: {
+        ...this._profile.policies,
+        personaAssignments: [
+          ...kept,
+          ...assignments.map((entry) => ({
+            ...entry,
+            personaId: normalizedPersonaId,
+          })),
+        ],
+      },
+    });
+    await this._persistProfile();
+  }
+
   async toggle(id: string): Promise<void> {
     const entry = this._profile.catalog.find((item) => item.id === id);
     if (!entry) { return; }
@@ -436,9 +474,11 @@ function normalizeProfileDocument(raw: unknown): ProviderProfileDocument {
         flushOnTaskComplete: source.policies.flushOnTaskComplete !== false,
         flushOnProviderSwitch: source.policies.flushOnProviderSwitch !== false,
         reloadMode: source.policies.reloadMode === "manual" ? "manual" : "on_change",
+        personaAssignments: normalizePersonaAssignments(source.policies.personaAssignments, catalog),
         summarizationThresholds: normalizeSummarizationThresholds(source.policies.summarizationThresholds),
       } : {
         fallbackProviderOrder,
+        personaAssignments: normalizePersonaAssignments(undefined, catalog),
       }),
     },
   };
@@ -522,7 +562,7 @@ function normalizeRouting(
   const legacyStages = normalizeModes(legacyModes).map(modeToStage);
   if (!isRecord(rawRouting)) {
     return {
-      useForStages: legacyStages.length > 0 ? legacyStages : ["planning", "annotation", "execution", "debug"],
+      useForStages: legacyStages.length > 0 ? legacyStages : [...DEFAULT_PROVIDER_STAGES],
       personas: normalizeUseWith(legacyUseWith),
     };
   }
@@ -532,10 +572,65 @@ function normalizeRouting(
       .filter((entry): entry is ProviderStage => entry !== null)
     : legacyStages;
   return {
-    useForStages: stages.length > 0 ? stages : ["planning", "annotation", "execution", "debug"],
+    useForStages: stages.length > 0 ? stages : [...DEFAULT_PROVIDER_STAGES],
     personas: Array.isArray(rawRouting.personas)
       ? rawRouting.personas.map((entry) => String(entry).trim()).filter(Boolean)
       : normalizeUseWith(legacyUseWith),
+  };
+}
+
+function normalizePersonaAssignments(
+  raw: unknown,
+  catalog: ProviderProfileEntry[],
+): ProviderPersonaAssignment[] {
+  const validIds = new Set(catalog.map((entry) => entry.id));
+  if (Array.isArray(raw)) {
+    return raw
+      .map((entry) => normalizePersonaAssignment(entry, validIds))
+      .filter((entry): entry is ProviderPersonaAssignment => entry !== null);
+  }
+
+  const migrated: ProviderPersonaAssignment[] = [];
+  for (const entry of catalog) {
+    if (!entry.routing.personas.length) {
+      continue;
+    }
+    for (const personaId of entry.routing.personas) {
+      migrated.push({
+        personaId: personaId.trim().toLowerCase(),
+        providerId: entry.id,
+        model: entry.models.default || "",
+        stages: entry.routing.useForStages.length > 0
+          ? [...entry.routing.useForStages]
+          : [...DEFAULT_PROVIDER_STAGES],
+      });
+    }
+  }
+  return migrated;
+}
+
+function normalizePersonaAssignment(
+  raw: unknown,
+  validIds: Set<string>,
+): ProviderPersonaAssignment | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const personaId = String(raw.personaId ?? "").trim().toLowerCase();
+  const providerId = String(raw.providerId ?? "").trim();
+  if (!personaId || !providerId || !validIds.has(providerId)) {
+    return null;
+  }
+  const stages = Array.isArray(raw.stages)
+    ? raw.stages
+      .map((entry) => normalizeStage(entry))
+      .filter((entry): entry is ProviderStage => entry !== null)
+    : [];
+  return {
+    personaId,
+    providerId,
+    model: String(raw.model ?? "").trim(),
+    stages: stages.length > 0 ? Array.from(new Set(stages)) : [...DEFAULT_PROVIDER_STAGES],
   };
 }
 

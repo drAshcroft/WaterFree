@@ -85,6 +85,34 @@ export interface SessionRuntimeSelection {
   model?: string;
 }
 
+export interface PersonaProviderAssignment {
+  providerId: string;
+  model: string;
+  stages: Array<
+    | "planning"
+    | "annotation"
+    | "execution"
+    | "debug"
+    | "question_answer"
+    | "ripple_detection"
+    | "alter_annotation"
+    | "knowledge"
+  >;
+}
+
+function isProviderStage(value: string): value is PersonaProviderAssignment["stages"][number] {
+  return [
+    "planning",
+    "annotation",
+    "execution",
+    "debug",
+    "question_answer",
+    "ripple_detection",
+    "alter_annotation",
+    "knowledge",
+  ].includes(value);
+}
+
 export type SidebarAction =
   | { type: "startSession"; goal: string; persona: string; runtimeSelection?: SessionRuntimeSelection }
   | { type: "openWizard"; wizardId: string; goal: string; persona: string }
@@ -104,8 +132,9 @@ export type SidebarAction =
   | { type: "requestHistory" }
   | { type: "restoreSession"; file: string }
   | { type: "requestSettings" }
-  | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
-  | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
+  | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
+  | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
+  | { type: "savePersonaAssignments"; personaId: string; assignments: PersonaProviderAssignment[] }
   | { type: "removeProvider"; id: string }
   | { type: "toggleProvider"; id: string }
   | { type: "requestUsageStats" };
@@ -397,8 +426,6 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           apiKey: String(message.apiKey ?? ""),
           baseUrl: String(message.baseUrl ?? ""),
           models: Array.isArray(message.models) ? message.models.map(String) : [],
-          modes: Array.isArray(message.modes) ? message.modes.map(String) : [],
-          useWith: String(message.useWith ?? "all"),
           enabled: Boolean(message.enabled ?? true),
         });
         return;
@@ -412,9 +439,26 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             apiKey: String(message.apiKey ?? ""),
             baseUrl: String(message.baseUrl ?? ""),
             models: Array.isArray(message.models) ? message.models.map(String) : [],
-            modes: Array.isArray(message.modes) ? message.modes.map(String) : [],
-            useWith: String(message.useWith ?? "all"),
             enabled: Boolean(message.enabled ?? true),
+          });
+        }
+        return;
+      case "savePersonaAssignments":
+        if (typeof message.personaId === "string") {
+          this._actionEmitter.fire({
+            type: "savePersonaAssignments",
+            personaId: message.personaId,
+            assignments: Array.isArray(message.assignments)
+              ? message.assignments
+                .filter(isRecord)
+                .map((entry) => ({
+                  providerId: String(entry.providerId ?? ""),
+                  model: String(entry.model ?? ""),
+                  stages: Array.isArray(entry.stages)
+                    ? entry.stages.map(String).filter(isProviderStage)
+                    : [],
+                }))
+              : [],
           });
         }
         return;

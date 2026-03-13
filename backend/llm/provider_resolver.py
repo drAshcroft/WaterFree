@@ -11,6 +11,7 @@ from backend.llm.provider_profiles import ProviderProfile, ProviderProfileDocume
 class ResolvedProvider:
     profile: ProviderProfile
     runtime_name: str
+    model_name: str
 
 
 def resolve_provider(
@@ -22,12 +23,10 @@ def resolve_provider(
     provider_id: str = "",
     subagent_id: str = "",
 ) -> ResolvedProvider | None:
-    candidates = [
-        item for item in ordered_providers(document)
-        if item.enabled
-        and item.supports_stage(stage)
-        and item.supports_persona(persona)
-        and runtime_matches(item, preferred_runtime)
+    ordered = ordered_providers(document)
+    eligible = [
+        item for item in ordered
+        if item.enabled and runtime_matches(item, preferred_runtime)
     ]
 
     # Subagent overrides take priority over all other resolution, keeping
@@ -35,23 +34,29 @@ def resolve_provider(
     if subagent_id:
         override = _find_subagent_override(document, subagent_id)
         if override is not None:
-            overridden = next((c for c in candidates if c.id == override.provider_id), None)
+            overridden = next((c for c in eligible if c.id == override.provider_id), None)
             if overridden is not None:
-                return ResolvedProvider(
-                    profile=overridden,
-                    runtime_name=runtime_name_for_provider(overridden),
-                )
+                return _resolved(overridden, stage=stage)
 
     if provider_id:
-        explicit = next((item for item in candidates if item.id == provider_id), None)
+        explicit = next((item for item in eligible if item.id == provider_id), None)
         if explicit is not None:
-            return ResolvedProvider(profile=explicit, runtime_name=runtime_name_for_provider(explicit))
+            return _resolved(explicit, stage=stage)
+
+    assigned = _find_persona_assignment(document, eligible, stage=stage, persona=persona)
+    if assigned is not None:
+        return assigned
+
+    candidates = [
+        item for item in eligible
+        if item.supports_stage(stage) and item.supports_persona(persona)
+    ]
     active = next((item for item in candidates if item.id == document.active_provider_id), None)
     if active is not None:
-        return ResolvedProvider(profile=active, runtime_name=runtime_name_for_provider(active))
+        return _resolved(active, stage=stage)
     if candidates:
         chosen = candidates[0]
-        return ResolvedProvider(profile=chosen, runtime_name=runtime_name_for_provider(chosen))
+        return _resolved(chosen, stage=stage)
     return None
 
 
@@ -95,3 +100,33 @@ def runtime_matches(profile: ProviderProfile, preferred_runtime: str) -> bool:
     if preferred_runtime == "deep_agents":
         return runtime_name_for_provider(profile) in {"deep_agents", "openai", "ollama"}
     return runtime_name_for_provider(profile) == preferred_runtime
+
+
+def _find_persona_assignment(
+    document: ProviderProfileDocument,
+    eligible: list[ProviderProfile],
+    *,
+    stage: str,
+    persona: str,
+) -> ResolvedProvider | None:
+    persona_key = persona.strip().lower()
+    by_id = {item.id: item for item in eligible}
+    for assignment in document.policies.persona_assignments:
+        if assignment.persona_id != persona_key:
+            continue
+        if not assignment.supports_stage(stage):
+            continue
+        profile = by_id.get(assignment.provider_id)
+        if profile is None:
+            continue
+        return _resolved(profile, stage=stage, model_name=assignment.model)
+    return None
+
+
+def _resolved(profile: ProviderProfile, *, stage: str, model_name: str = "") -> ResolvedProvider:
+    selected_model = model_name.strip() or profile.model_for_stage(stage)
+    return ResolvedProvider(
+        profile=profile,
+        runtime_name=runtime_name_for_provider(profile),
+        model_name=selected_model,
+    )

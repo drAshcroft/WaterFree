@@ -1620,8 +1620,6 @@ export class WaterFreeController implements vscode.Disposable {
           name: action.name,
           baseUrl: action.baseUrl,
           models: action.models,
-          modes: action.modes,
-          useWith: action.useWith,
           enabled: action.enabled,
         }, action.apiKey);
         await this._syncProviderProfile({ restartBackend: true });
@@ -1633,10 +1631,13 @@ export class WaterFreeController implements vscode.Disposable {
           name: action.name,
           baseUrl: action.baseUrl,
           models: action.models,
-          modes: action.modes,
-          useWith: action.useWith,
           enabled: action.enabled,
         }, action.apiKey);
+        await this._syncProviderProfile({ restartBackend: true });
+        return;
+      }
+      case "savePersonaAssignments": {
+        await this._providers.updatePersonaAssignments(action.personaId, action.assignments);
         await this._syncProviderProfile({ restartBackend: true });
         return;
       }
@@ -1746,6 +1747,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._sidebarProvider.sendSettings({
       providers: statuses,
       activeProviderId: resolvedProfile.activeProviderId,
+      personaAssignments: resolvedProfile.policies.personaAssignments,
     });
   }
 

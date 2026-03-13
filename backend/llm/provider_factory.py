@@ -34,9 +34,10 @@ def build_runtime_spec(
     persona: str,
     session_key: str,
     policies: ProviderPolicies,
+    model_name_override: str = "",
 ) -> ProviderRuntimeSpec:
     stage_key = normalize_stage_name(stage)
-    model_name = profile.model_for_stage(stage_key)
+    model_name = model_name_override.strip() or profile.model_for_stage(stage_key)
     provider_type = profile.provider_kind()
     threshold = policies.summarization_thresholds.get(stage.upper(), 30_000)
     metadata: dict[str, Any] = {}

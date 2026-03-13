@@ -43,7 +43,6 @@ if (-not $CodeCmd) {
 }
 
 $McpServers = @(
-    @{ name = "waterfree-debug"; module = "backend.mcp_debug" }
     @{ name = "waterfree-index"; module = "backend.mcp_index" }
     @{ name = "waterfree-knowledge"; module = "backend.mcp_knowledge" }
     @{ name = "waterfree-todos"; module = "backend.mcp_todos" }

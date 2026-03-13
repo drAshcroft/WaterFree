@@ -64,8 +64,10 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(profile.active_provider_id, "openai-primary")
         self.assertEqual(profile.policies.fallback_provider_order[0], "claude-secondary")
         self.assertEqual(profile.catalog[0].models["execution"], "gpt-4o")
+        self.assertEqual(profile.policies.persona_assignments[0].persona_id, "reviewer")
+        self.assertEqual(profile.policies.persona_assignments[0].provider_id, "openai-primary")
 
-    def test_resolve_provider_honors_stage_persona_and_fallback(self) -> None:
+    def test_resolve_provider_prefers_persona_assignments_before_fallback(self) -> None:
         profile = normalize_provider_profile({
             "activeProviderId": "openai-primary",
             "catalog": [
@@ -85,7 +87,17 @@ class ProviderProfileTests(unittest.TestCase):
                     "connection": {"style": "native", "baseUrl": "", "secretRef": "y", "apiKey": "ak"},
                 },
             ],
-            "policies": {"fallbackProviderOrder": ["claude-fallback", "openai-primary"]},
+            "policies": {
+                "fallbackProviderOrder": ["claude-fallback", "openai-primary"],
+                "personaAssignments": [
+                    {
+                        "personaId": "coding_agent",
+                        "providerId": "openai-primary",
+                        "model": "gpt-4o-mini",
+                        "stages": ["execution"],
+                    }
+                ],
+            },
         })
 
         planning = resolve_provider(profile, stage="PLANNING", persona="reviewer", preferred_runtime="deep_agents")
@@ -94,7 +106,8 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertIsNotNone(planning)
         self.assertEqual(planning.profile.id, "openai-primary")
         self.assertIsNotNone(execution)
-        self.assertEqual(execution.profile.id, "claude-fallback")
+        self.assertEqual(execution.profile.id, "openai-primary")
+        self.assertEqual(execution.model_name, "gpt-4o-mini")
 
     def test_openai_runtime_spec_preserves_cache_metadata_and_usage_extraction(self) -> None:
         profile = default_provider_profile_document("openai").catalog[0]
@@ -158,6 +171,7 @@ class ProviderProfileTests(unittest.TestCase):
             session_key="session-1",
             provider_profile=profile.catalog[0],
             runtime_name="deep_agents",
+            model_name=profile.catalog[0].model_for_stage("planning"),
         )
 
         self.assertIsInstance(agent, dict)

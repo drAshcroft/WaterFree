@@ -110,6 +110,7 @@ class DeepAgentsChannel:
                 session_key=session_key or workspace_path,
                 provider_profile=resolved.profile,
                 runtime_name=resolved.runtime_name,
+                model_name=resolved.model_name,
             )
             if agent is None:
                 return ChannelResult(text="", usage=UsageStats())
@@ -141,7 +142,7 @@ class DeepAgentsChannel:
             self._lane,
             resolved.profile.id,
             stage,
-            resolved.profile.model_for_stage(stage),
+            resolved.model_name,
             usage.input_tokens,
             usage.output_tokens,
             usage.cache_creation_tokens,
@@ -197,6 +198,7 @@ class DeepAgentsChannel:
         session_key: str,
         provider_profile,
         runtime_name: str,
+        model_name: str,
     ) -> tuple[Optional[Any], str]:
         from backend.llm.personas import DEFAULT_PERSONA, PERSONAS
 
@@ -215,6 +217,7 @@ class DeepAgentsChannel:
             persona=norm_persona,
             session_key=session_key,
             policies=self._provider_profiles.policies,
+            model_name_override=model_name,
         )
 
         kwargs: dict[str, Any] = {

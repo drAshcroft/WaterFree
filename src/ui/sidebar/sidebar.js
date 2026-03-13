@@ -5,6 +5,10 @@ const savedState = vscode.getState() || {};
 const PERSONAS = [
   { id: "architect",        title: "The Architect",         tagline: "Requirements, feasibility, risks, trade-offs" },
   { id: "pattern_expert",   title: "Design Pattern Expert", tagline: "Framework fit, patterns, anti-patterns" },
+  { id: "market_researcher", title: "Market Researcher",    tagline: "Validates product demand and outside options" },
+  { id: "bdd_test_designer", title: "BDD Test Designer",    tagline: "Turns design intent into acceptance scenarios" },
+  { id: "coding_agent",     title: "Coding Agent",          tagline: "Implements real code and escalates bad guidance" },
+  { id: "reviewer",         title: "Reviewer",              tagline: "Checks correctness, regressions, and gaps" },
   { id: "debug_detective",  title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
   { id: "yolo",             title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
   { id: "socratic",         title: "Socratic Coach",        tagline: "Guides with questions instead of answers" },
@@ -12,16 +16,16 @@ const PERSONAS = [
 ];
 
 const WIZARDS = [
-  { id: "bring_idea_to_life",   icon: "Idea", title: "Bring Idea to Life",      tagline: "From raw idea to working code",               steps: ["Market Research", "Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "create_application",   icon: "App",  title: "Create Application",       tagline: "Build a full application from scratch",       steps: ["Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "feature",              icon: "Feat", title: "Feature",                  tagline: "Add a feature to an existing codebase",       steps: ["Architect Review", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "refactor",             icon: "Rfct", title: "Refactor",                 tagline: "Improve structure without changing behavior",  steps: ["Architect Review", "Design Patterns", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "bug_hunt",             icon: "Bug",  title: "Bug Hunt",                 tagline: "Systematically find and eliminate bugs",      steps: [] },
-  { id: "debugging",            icon: "Dbg",  title: "Debugging",                tagline: "Deep dive into a specific issue",             steps: [] },
-  { id: "improvement_search",   icon: "Impr", title: "Improvement Search",       tagline: "Find and prioritize improvements",            steps: [] },
-  { id: "deploy_package",       icon: "Pkg",  title: "Deploy / Package Helper",  tagline: "Prepare and ship your application",           steps: [] },
-  { id: "documentation_genius", icon: "Doc",  title: "Documentation Genius",     tagline: "Generate comprehensive documentation",       steps: [] },
-  { id: "clean_code_review",    icon: "Lint", title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
+  { id: "bring_idea_to_life",   title: "Bring Idea to Life",      tagline: "From raw idea to working code",               steps: ["Market Research", "Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "create_application",   title: "Create Application",       tagline: "Build a full application from scratch",       steps: ["Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "feature",              title: "Feature",                  tagline: "Add a feature to an existing codebase",       steps: ["Architect Review", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "refactor",             title: "Refactor",                 tagline: "Improve structure without changing behavior",  steps: ["Architect Review", "Design Patterns", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "bug_hunt",             title: "Bug Hunt",                 tagline: "Systematically find and eliminate bugs",      steps: [] },
+  { id: "debugging",            title: "Debugging",                tagline: "Deep dive into a specific issue",             steps: [] },
+  { id: "improvement_search",   title: "Improvement Search",       tagline: "Find and prioritize improvements",            steps: [] },
+  { id: "deploy_package",       title: "Deploy / Package Helper",  tagline: "Prepare and ship your application",           steps: [] },
+  { id: "documentation_genius", title: "Documentation Genius",     tagline: "Generate comprehensive documentation",       steps: [] },
+  { id: "clean_code_review",    title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
 ];
 
 const QUICK_JOB_MODES = [
@@ -39,12 +43,22 @@ const PROVIDER_LABELS = {
   mock: "Mock (no API calls)",
 };
 
-const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", groq: "GRQ", ollama: "OLL", huggingface: "HF", mock: "OFF" };
-
 const PROVIDER_MODELS = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
-  groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "llama-3.2-90b-vision-preview",
+    "meta-llama/llama-guard-4-12b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-safeguard-20b",
+    "qwen/qwen3-32b",
+    "moonshotai/kimi-k2-instruct-0905",
+  ],
   ollama: ["llama3.2", "codestral", "qwen2.5-coder", "mistral"],
   huggingface: [],
   mock: [],
@@ -56,26 +70,26 @@ const PROVIDER_MODE_LABELS = {
   indexing: "Knowledge indexing",
 };
 
-const PERSONA_USE_WITH = [
-  { id: "all", label: "All sessions" },
-  { id: "architect", label: "Architect" },
-  { id: "pattern_expert", label: "Design Pattern Expert" },
-  { id: "debug_detective", label: "Debug Detective" },
-  { id: "yolo", label: "YOLO" },
-  { id: "socratic", label: "Socratic Coach" },
-  { id: "stub_wireframer", label: "Stub / Wireframer" },
-  { id: "indexing", label: "Knowledge indexing" },
+const PERSONA_STAGE_OPTIONS = [
+  { id: "planning", label: "Plans" },
+  { id: "annotation", label: "Architect / Design" },
+  { id: "execution", label: "Code" },
+  { id: "debug", label: "Debug" },
+  { id: "question_answer", label: "Q&A / Tutorialize" },
+  { id: "ripple_detection", label: "Ripple Detection" },
+  { id: "alter_annotation", label: "Alter Annotation" },
+  { id: "knowledge", label: "Knowledge / Snippetize" },
 ];
 
 const MENU_ITEMS = [
-  { id: "providers", icon: "API", label: "Providers" },
-  { id: "mcp",       icon: "MCP", label: "MCP Servers" },
-  { id: "skills",    icon: "SKL", label: "Skills" },
-  { id: "personas",  icon: "PSN", label: "Personas" },
-  { id: "usage",     icon: "USG", label: "Usage" },
-  { id: "todos",     icon: "TDO", label: "Todos" },
-  { id: "index",     icon: "IDX", label: "Index" },
-  { id: "knowledge", icon: "KNW", label: "Knowledge Explorer" },
+  { id: "providers", label: "Providers" },
+  { id: "mcp",       label: "MCP Servers" },
+  { id: "skills",    label: "Skills" },
+  { id: "personas",  label: "Personas" },
+  { id: "usage",     label: "Usage" },
+  { id: "todos",     label: "Todos" },
+  { id: "index",     label: "Index" },
+  { id: "knowledge", label: "Knowledge Explorer" },
 ];
 
 let state = {
@@ -102,8 +116,9 @@ let state = {
   // settings state (not persisted)
   settingsOpen: false,
   settingsPage: null,   // null = menu, "providers", "mcp", "skills", "personas", "usage", "todos", "index", "knowledge"
-  settingsData: { providers: [], activeProviderId: "" },
-  providerForm: null,  // {mode:"add"|"edit", id, type, name, apiKey, baseUrl, models, modes, useWith, enabled}
+  settingsData: { providers: [], activeProviderId: "", personaAssignments: [] },
+  providerForm: null,  // {mode:"add"|"edit", id, type, name, apiKey, baseUrl, models, enabled}
+  personaForm: null,   // {personaId, title, tagline, assignments:[{providerId, model, stages}]}
   usageData: null,     // {providers: [], byPersona: [], byStage: []} or null = not loaded yet
   usageLoading: false,
 };
@@ -164,6 +179,70 @@ function normalizeQuickJobSelection() {
   if (!models.includes(state.selectedQuickModel)) {
     state.selectedQuickModel = models[0] || "";
   }
+}
+
+function providerLabel(provider) {
+  if (!provider) { return ""; }
+  return provider.name || PROVIDER_LABELS[provider.type] || provider.id || "Provider";
+}
+
+function providerChoices() {
+  return Array.isArray(state.settingsData.providers) ? state.settingsData.providers : [];
+}
+
+function providerModels(providerId) {
+  const provider = providerChoices().find(function(entry) { return entry.id === providerId; });
+  return provider && Array.isArray(provider.models) ? provider.models.slice() : [];
+}
+
+function assignmentsForPersona(personaId) {
+  const all = Array.isArray(state.settingsData.personaAssignments) ? state.settingsData.personaAssignments : [];
+  return all
+    .filter(function(entry) { return entry && entry.personaId === personaId; })
+    .map(function(entry) {
+      return {
+        providerId: entry.providerId || "",
+        model: entry.model || "",
+        stages: Array.isArray(entry.stages) ? entry.stages.slice() : [],
+      };
+    });
+}
+
+function personaCatalog() {
+  const known = PERSONAS.slice();
+  const seen = new Set(known.map(function(persona) { return persona.id; }));
+  (state.settingsData.personaAssignments || []).forEach(function(entry) {
+    if (entry && entry.personaId && !seen.has(entry.personaId)) {
+      seen.add(entry.personaId);
+      known.push({
+        id: entry.personaId,
+        title: formatLabel(entry.personaId),
+        tagline: "Imported from saved persona assignments.",
+      });
+    }
+  });
+  return known;
+}
+
+function normalizePersonaAssignmentsForm() {
+  if (!state.personaForm) { return; }
+  const providers = providerChoices();
+  state.personaForm.assignments = (state.personaForm.assignments || []).map(function(entry) {
+    const provider = providers.find(function(item) { return item.id === entry.providerId; }) || providers[0] || null;
+    const providerId = provider ? provider.id : "";
+    const models = providerModels(providerId);
+    const stages = Array.isArray(entry.stages) && entry.stages.length > 0
+      ? Array.from(new Set(entry.stages))
+      : PERSONA_STAGE_OPTIONS.map(function(stage) { return stage.id; });
+    const model = entry.model && (models.length === 0 || models.includes(entry.model))
+      ? entry.model
+      : models[0] || entry.model || "";
+    return {
+      providerId: providerId,
+      model: model,
+      stages: stages,
+    };
+  });
 }
 
 function formatCoord(coord) {
@@ -275,10 +354,7 @@ function renderWizards() {
       '<div class="wizard-item' + (isExpanded ? " expanded" : "") + '">',
       '<div class="wizard-header" data-action="toggleWizard" data-wizard-id="' + escapeHtml(w.id) + '">',
       '<div class="wizard-info">',
-      '<div class="wizard-title-row">',
       '<div class="wizard-name">' + escapeHtml(w.title) + "</div>",
-      '<span class="wizard-icon">' + escapeHtml(w.icon) + "</span>",
-      "</div>",
       '<div class="wizard-tagline">' + escapeHtml(w.tagline) + "</div>",
       "</div>",
       '<span class="wizard-chevron">' + escapeHtml(isExpanded ? "Hide" : collapsedHint) + "</span>",
@@ -548,20 +624,24 @@ function renderHistoryDropdown() {
 function renderSettingsPanel() {
   const isMenu      = !state.settingsPage;
   const isProvForm  = Boolean(state.providerForm);
+  const isPersonaForm = Boolean(state.personaForm);
   const menuItem    = MENU_ITEMS.find(function(m) { return m.id === state.settingsPage; });
 
   let title = "Settings";
   if (isProvForm) { title = state.providerForm.mode === "add" ? "Add Provider" : "Edit Provider"; }
+  else if (isPersonaForm) { title = state.personaForm.title; }
   else if (menuItem) { title = menuItem.label; }
 
-  const backAction  = isMenu ? "closeSettings" : isProvForm ? "cancelProvider" : "settingsBack";
+  const backAction  = isMenu ? "closeSettings" : (isProvForm || isPersonaForm) ? "settingsBack" : "settingsBack";
   const backBtn = isMenu
     ? ""
     : '<button type="button" class="settings-nav-btn" data-action="' + backAction + '">Back</button>';
 
   let bodyHtml;
   if (isProvForm)                              { bodyHtml = renderProviderForm(); }
+  else if (isPersonaForm)                     { bodyHtml = renderPersonaForm(); }
   else if (state.settingsPage === "providers") { bodyHtml = renderProvidersPage(); }
+  else if (state.settingsPage === "personas")  { bodyHtml = renderPersonasPage(); }
   else if (state.settingsPage === "usage")     { bodyHtml = renderUsagePage(); }
   else if (state.settingsPage)                 { bodyHtml = renderSettingsStub(state.settingsPage); }
   else                                         { bodyHtml = renderSettingsMenu(); }
@@ -597,7 +677,6 @@ function renderSettingsMenu() {
     const badge = badgeVal > 0 ? ' <span class="menu-count">' + badgeVal + '</span>' : '';
     return [
       '<div class="menu-item" data-action="settingsNav" data-page="' + m.id + '">',
-      '<span class="menu-icon">' + m.icon + '</span>',
       '<span class="menu-label">' + escapeHtml(m.label) + badge + '</span>',
       '<span class="menu-arrow">&#x203A;</span>',
       '</div>',
@@ -611,7 +690,6 @@ function renderProvidersPage() {
   const cards = providers.length === 0
     ? '<p class="empty" style="margin-bottom:10px">No providers configured.</p>'
     : providers.map(function(p) {
-        const icon = PROVIDER_ICONS[p.type] || "???";
         const label = PROVIDER_LABELS[p.type] || p.type;
         const enabledLabel = p.enabled ? "Enabled" : "Disabled";
         const credHtml = p.type === "mock"
@@ -619,14 +697,16 @@ function renderProvidersPage() {
           : p.hasKey
             ? '<span class="key-badge set">' + escapeHtml(p.maskedKey) + '</span>'
             : '<span class="key-badge unset">No key</span>';
-        const modePills = (p.modes || []).map(function(m) {
-          return '<span class="mode-pill">' + escapeHtml(PROVIDER_MODE_LABELS[m] || formatLabel(m)) + '</span>';
+        const modelPills = (p.models || []).map(function(model) {
+          return '<span class="mode-pill">' + escapeHtml(model) + '</span>';
         }).join("");
+        const urlHtml = p.baseUrl
+          ? '<span class="mode-pill">' + escapeHtml(p.baseUrl) + '</span>'
+          : '<span class="mode-pill">' + escapeHtml((p.connectionLabel || "native").toUpperCase()) + '</span>';
         const enabledClass = p.enabled ? " provider-card--on" : " provider-card--off";
         return [
           '<div class="provider-card' + enabledClass + '">',
           '<div class="provider-card-header">',
-          '<span class="provider-icon">' + icon + '</span>',
           '<div class="provider-card-info">',
           '<span class="provider-name">' + escapeHtml(p.name) + '</span>',
           '<span class="provider-type">' + escapeHtml(label) + ' · ' + enabledLabel + '</span>',
@@ -637,7 +717,8 @@ function renderProvidersPage() {
           '</div>',
           '<div class="provider-card-meta">',
           credHtml,
-          modePills,
+          urlHtml,
+          modelPills,
           '</div>',
           '<div class="button-row" style="margin-top:8px">',
           '<button type="button" data-action="editProvider" data-provider-id="' + escapeHtml(p.id) + '">Edit</button>',
@@ -659,12 +740,8 @@ function renderProviderForm() {
     return '<option value="' + t + '"' + (f.type === t ? " selected" : "") + ">" + escapeHtml(PROVIDER_LABELS[t]) + "</option>";
   }).join("");
 
-  const useWithOptions = PERSONA_USE_WITH.map(function(u) {
-    return '<option value="' + u.id + '"' + (f.useWith === u.id ? " selected" : "") + ">" + escapeHtml(u.label) + "</option>";
-  }).join("");
-
   const needsKey = f.type !== "mock" && f.type !== "ollama";
-  const needsUrl = f.type === "ollama";
+  const supportsUrl = f.type !== "mock";
   const knownModels = PROVIDER_MODELS[f.type] || [];
   const hasFreeTextModels = f.type === "ollama" || f.type === "huggingface";
 
@@ -694,10 +771,10 @@ function renderProviderForm() {
       '<input type="password" id="pf-key" class="key-input" placeholder="sk-ant-..." autocomplete="off">',
       '</div>',
     ].join("") : "",
-    needsUrl ? [
+    supportsUrl ? [
       '<div class="field-group">',
-      '<label class="field-label" for="pf-url">Base URL</label>',
-      '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || "http://localhost:11434") + '">',
+      '<label class="field-label" for="pf-url">Base URL (optional)</label>',
+      '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || (f.type === "ollama" ? "http://localhost:11434" : "")) + '" placeholder="' + escapeHtml(f.type === "ollama" ? "http://localhost:11434" : "https://api.example.com/v1") + '">',
       '</div>',
     ].join("") : "",
     f.type !== "mock" && modelsHtml ? [
@@ -706,23 +783,106 @@ function renderProviderForm() {
       modelsHtml,
       '</div>',
     ].join("") : "",
-    '<div class="field-group">',
-    '<label class="field-label">Use for</label>',
-    '<div class="checkbox-group">',
-    ['planning', 'execution', 'indexing'].map(function(mode) {
-      const checked = (f.modes || []).includes(mode) ? " checked" : "";
-      return '<label><input type="checkbox" data-mode-check="' + mode + '"' + checked + '> '
-        + escapeHtml(PROVIDER_MODE_LABELS[mode] || formatLabel(mode)) + '</label>';
-    }).join(""),
-    '</div>',
-    '</div>',
-    '<div class="field-group">',
-    '<label class="field-label" for="pf-usewith">Use with</label>',
-    '<select id="pf-usewith">' + useWithOptions + '</select>',
-    '</div>',
+    '<p class="hint" style="margin-top:12px">Provider setup only stores connection details and available models. Persona-specific provider/model routing is configured under Personas.</p>',
     '<div class="button-row" style="margin-top:12px">',
     '<button type="button" class="primary" data-action="submitProvider">Save</button>',
     '<button type="button" data-action="cancelProvider">Cancel</button>',
+    '</div>',
+    '</div>',
+  ].join("");
+}
+
+function renderPersonasPage() {
+  const personas = personaCatalog();
+  if (personas.length === 0) {
+    return '<p class="empty">No personas available.</p>';
+  }
+  return personas.map(function(persona) {
+    const assignments = assignmentsForPersona(persona.id);
+    return [
+      '<div class="provider-card provider-card--on">',
+      '<div class="provider-card-header">',
+      '<div class="provider-card-info">',
+      '<span class="provider-name">' + escapeHtml(persona.title) + '</span>',
+      '<span class="provider-type">' + escapeHtml(persona.tagline) + '</span>',
+      '</div>',
+      '<span class="mode-pill">' + assignments.length + ' route' + (assignments.length === 1 ? '' : 's') + '</span>',
+      '</div>',
+      assignments.length > 0
+        ? '<div class="provider-card-meta">' + assignments.map(function(entry) {
+            const stages = (entry.stages || []).map(function(stageId) {
+              const stage = PERSONA_STAGE_OPTIONS.find(function(option) { return option.id === stageId; });
+              return stage ? stage.label : formatLabel(stageId);
+            }).join(", ");
+            return '<span class="mode-pill">' + escapeHtml(providerLabel(providerChoices().find(function(item) { return item.id === entry.providerId; })))
+              + (entry.model ? " · " + escapeHtml(entry.model) : "")
+              + (stages ? " · " + escapeHtml(stages) : "") + '</span>';
+          }).join("") + '</div>'
+        : '<p class="empty" style="margin:10px 0 0">No provider/model routes configured yet.</p>',
+      '<div class="button-row" style="margin-top:8px">',
+      '<button type="button" data-action="editPersona" data-persona-id="' + escapeHtml(persona.id) + '">Configure</button>',
+      '</div>',
+      '</div>',
+    ].join("");
+  }).join("");
+}
+
+function renderPersonaForm() {
+  const form = state.personaForm;
+  const providers = providerChoices();
+  const rows = (form.assignments || []).map(function(entry, index) {
+    const models = providerModels(entry.providerId);
+    const providerOptions = providers.length > 0
+      ? providers.map(function(provider) {
+          return '<option value="' + escapeHtml(provider.id) + '"' + (provider.id === entry.providerId ? " selected" : "") + ">"
+            + escapeHtml(providerLabel(provider) + (provider.enabled ? "" : " (Disabled)")) + '</option>';
+        }).join("")
+      : '<option value="">No providers</option>';
+    const modelControl = models.length > 0
+      ? '<select data-persona-model="' + index + '">'
+        + '<option value="">Provider default</option>'
+        + models.map(function(model) {
+          return '<option value="' + escapeHtml(model) + '"' + (entry.model === model ? " selected" : "") + ">" + escapeHtml(model) + '</option>';
+        }).join("")
+        + '</select>'
+      : '<input type="text" data-persona-model-text="' + index + '" class="key-input" placeholder="Provider default" value="' + escapeHtml(entry.model || "") + '">';
+    const stageOptions = PERSONA_STAGE_OPTIONS.map(function(stage) {
+      const checked = (entry.stages || []).includes(stage.id) ? " checked" : "";
+      return '<label><input type="checkbox" data-persona-stage="' + index + '" data-stage-id="' + escapeHtml(stage.id) + '"' + checked + '> ' + escapeHtml(stage.label) + '</label>';
+    }).join("");
+    return [
+      '<div class="provider-card provider-card--on" style="margin-bottom:12px">',
+      '<div class="field-group">',
+      '<label class="field-label">Provider</label>',
+      '<select data-persona-provider="' + index + '">' + providerOptions + '</select>',
+      '</div>',
+      '<div class="field-group">',
+      '<label class="field-label">Model</label>',
+      modelControl,
+      '</div>',
+      '<div class="field-group">',
+      '<label class="field-label">Stages</label>',
+      '<div class="checkbox-group">' + stageOptions + '</div>',
+      '</div>',
+      '<div class="button-row">',
+      '<button type="button" data-action="movePersonaAssignmentUp" data-index="' + index + '"' + (index === 0 ? " disabled" : "") + '>Up</button>',
+      '<button type="button" data-action="movePersonaAssignmentDown" data-index="' + index + '"' + (index === form.assignments.length - 1 ? " disabled" : "") + '>Down</button>',
+      '<button type="button" class="danger-btn" data-action="removePersonaAssignment" data-index="' + index + '">Remove</button>',
+      '</div>',
+      '</div>',
+    ].join("");
+  }).join("");
+
+  return [
+    '<div class="provider-form">',
+    '<p class="hint" style="margin-bottom:12px">' + escapeHtml(form.tagline || "Assign one or more provider/model routes for this persona. Higher rows are tried first.") + '</p>',
+    rows || '<p class="empty" style="margin-bottom:12px">No provider/model routes configured yet.</p>',
+    '<div class="button-row">',
+    '<button type="button" data-action="addPersonaAssignment"' + (providers.length === 0 ? " disabled" : "") + '>+ Add Route</button>',
+    '</div>',
+    '<div class="button-row" style="margin-top:12px">',
+    '<button type="button" class="primary" data-action="savePersonaAssignments">Save</button>',
+    '<button type="button" data-action="cancelPersona">Cancel</button>',
     '</div>',
     '</div>',
   ].join("");
@@ -852,7 +1012,6 @@ function renderSettingsStub(page) {
 }
 
 function wireSettingsForms() {
-  // Provider type select — triggers re-render to show correct fields
   const typeSelect = document.getElementById("pf-type");
   if (typeSelect) {
     typeSelect.addEventListener("change", function(e) {
@@ -885,15 +1044,48 @@ function wireSettingsForms() {
       else { state.providerForm.models = state.providerForm.models.filter(function(m) { return m !== model; }); }
     });
   });
-  document.querySelectorAll("[data-mode-check]").forEach(function(cb) {
-    cb.addEventListener("change", function(e) {
-      const mode = e.target.getAttribute("data-mode-check");
-      if (e.target.checked) { if (!state.providerForm.modes.includes(mode)) { state.providerForm.modes.push(mode); } }
-      else { state.providerForm.modes = state.providerForm.modes.filter(function(m) { return m !== mode; }); }
+  document.querySelectorAll("[data-persona-provider]").forEach(function(select) {
+    select.addEventListener("change", function(e) {
+      const index = Number(e.target.getAttribute("data-persona-provider"));
+      if (!state.personaForm || !state.personaForm.assignments[index]) { return; }
+      state.personaForm.assignments[index].providerId = e.target.value;
+      const models = providerModels(e.target.value);
+      if (models.length > 0 && !models.includes(state.personaForm.assignments[index].model)) {
+        state.personaForm.assignments[index].model = models[0];
+      }
+      render();
     });
   });
-  const useWithSelect = document.getElementById("pf-usewith");
-  if (useWithSelect) { useWithSelect.addEventListener("change", function(e) { state.providerForm.useWith = e.target.value; }); }
+  document.querySelectorAll("[data-persona-model]").forEach(function(select) {
+    select.addEventListener("change", function(e) {
+      const index = Number(e.target.getAttribute("data-persona-model"));
+      if (!state.personaForm || !state.personaForm.assignments[index]) { return; }
+      state.personaForm.assignments[index].model = e.target.value;
+    });
+  });
+  document.querySelectorAll("[data-persona-model-text]").forEach(function(input) {
+    input.addEventListener("input", function(e) {
+      const index = Number(e.target.getAttribute("data-persona-model-text"));
+      if (!state.personaForm || !state.personaForm.assignments[index]) { return; }
+      state.personaForm.assignments[index].model = e.target.value;
+    });
+  });
+  document.querySelectorAll("[data-persona-stage]").forEach(function(input) {
+    input.addEventListener("change", function(e) {
+      const index = Number(e.target.getAttribute("data-persona-stage"));
+      const stageId = e.target.getAttribute("data-stage-id");
+      if (!state.personaForm || !state.personaForm.assignments[index] || !stageId) { return; }
+      const current = state.personaForm.assignments[index].stages || [];
+      if (e.target.checked) {
+        if (!current.includes(stageId)) {
+          current.push(stageId);
+        }
+        state.personaForm.assignments[index].stages = current;
+      } else {
+        state.personaForm.assignments[index].stages = current.filter(function(stage) { return stage !== stageId; });
+      }
+    });
+  });
 }
 
 function render() {
@@ -951,7 +1143,7 @@ function render() {
   if (debugReasonSelect) {
     debugReasonSelect.addEventListener("change", function(e) { state.draftDebugReason = e.target.value; persistState(); });
   }
-  if (state.settingsOpen && state.providerForm) {
+  if (state.settingsOpen && (state.providerForm || state.personaForm)) {
     wireSettingsForms();
   }
 }
@@ -994,6 +1186,7 @@ root.addEventListener("click", function(event) {
     state.settingsOpen = true;
     state.settingsPage = null;
     state.providerForm = null;
+    state.personaForm = null;
     vscode.postMessage({ type: "requestSettings" });
     render();
     return;
@@ -1003,6 +1196,7 @@ root.addEventListener("click", function(event) {
     state.settingsOpen = false;
     state.settingsPage = null;
     state.providerForm = null;
+    state.personaForm = null;
     render();
     return;
   }
@@ -1010,6 +1204,8 @@ root.addEventListener("click", function(event) {
   if (action === "settingsBack") {
     if (state.providerForm) {
       state.providerForm = null;
+    } else if (state.personaForm) {
+      state.personaForm = null;
     } else {
       state.settingsPage = null;
     }
@@ -1023,6 +1219,7 @@ root.addEventListener("click", function(event) {
       state.settingsOpen = false;
       state.settingsPage = null;
       state.providerForm = null;
+      state.personaForm = null;
       vscode.postMessage({ type: "openTodoBoard" });
       render();
       return;
@@ -1031,12 +1228,14 @@ root.addEventListener("click", function(event) {
       state.settingsOpen = false;
       state.settingsPage = null;
       state.providerForm = null;
+      state.personaForm = null;
       vscode.postMessage({ type: "openKnowledge" });
       render();
       return;
     }
     state.settingsPage = page;
     state.providerForm = null;
+    state.personaForm = null;
     if (page === "usage" && !state.usageData) {
       state.usageLoading = true;
       vscode.postMessage({ type: "requestUsageStats" });
@@ -1060,8 +1259,6 @@ root.addEventListener("click", function(event) {
       name: PROVIDER_LABELS["claude"],
       apiKey: "", baseUrl: "",
       models: ["claude-opus-4-6", "claude-sonnet-4-6"],
-      modes: ["planning", "execution"],
-      useWith: "all",
       enabled: true,
     };
     render();
@@ -1080,8 +1277,6 @@ root.addEventListener("click", function(event) {
         apiKey: "",
         baseUrl: provider.baseUrl || "",
         models: (provider.models || []).slice(),
-        modes: (provider.modes || []).slice(),
-        useWith: provider.useWith || "all",
         enabled: provider.enabled,
       };
       render();
@@ -1089,8 +1284,30 @@ root.addEventListener("click", function(event) {
     return;
   }
 
+  if (action === "editPersona") {
+    const personaId = el.getAttribute("data-persona-id");
+    const persona = personaCatalog().find(function(entry) { return entry.id === personaId; });
+    if (persona) {
+      state.personaForm = {
+        personaId: persona.id,
+        title: persona.title,
+        tagline: persona.tagline,
+        assignments: assignmentsForPersona(persona.id),
+      };
+      normalizePersonaAssignmentsForm();
+      render();
+    }
+    return;
+  }
+
   if (action === "cancelProvider") {
     state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "cancelPersona") {
+    state.personaForm = null;
     render();
     return;
   }
@@ -1104,8 +1321,6 @@ root.addEventListener("click", function(event) {
       apiKey: f.apiKey || "",
       baseUrl: f.baseUrl || "",
       models: f.models || [],
-      modes: f.modes || [],
-      useWith: f.useWith || "all",
       enabled: f.enabled !== false,
     };
     if (f.mode === "add") {
@@ -1114,6 +1329,61 @@ root.addEventListener("click", function(event) {
       vscode.postMessage(Object.assign({ type: "updateProvider", id: f.id }, msg));
     }
     state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === "addPersonaAssignment") {
+    if (!state.personaForm) { return; }
+    const providers = providerChoices();
+    const provider = providers[0] || null;
+    const models = provider ? providerModels(provider.id) : [];
+    state.personaForm.assignments.push({
+      providerId: provider ? provider.id : "",
+      model: models[0] || "",
+      stages: PERSONA_STAGE_OPTIONS.map(function(stage) { return stage.id; }),
+    });
+    render();
+    return;
+  }
+
+  if (action === "removePersonaAssignment") {
+    const index = Number(el.getAttribute("data-index"));
+    if (!state.personaForm || Number.isNaN(index)) { return; }
+    state.personaForm.assignments.splice(index, 1);
+    render();
+    return;
+  }
+
+  if (action === "movePersonaAssignmentUp" || action === "movePersonaAssignmentDown") {
+    const index = Number(el.getAttribute("data-index"));
+    if (!state.personaForm || Number.isNaN(index)) { return; }
+    const delta = action === "movePersonaAssignmentUp" ? -1 : 1;
+    const nextIndex = index + delta;
+    if (nextIndex < 0 || nextIndex >= state.personaForm.assignments.length) { return; }
+    const items = state.personaForm.assignments;
+    const moved = items[index];
+    items[index] = items[nextIndex];
+    items[nextIndex] = moved;
+    render();
+    return;
+  }
+
+  if (action === "savePersonaAssignments") {
+    if (!state.personaForm) { return; }
+    normalizePersonaAssignmentsForm();
+    vscode.postMessage({
+      type: "savePersonaAssignments",
+      personaId: state.personaForm.personaId,
+      assignments: state.personaForm.assignments.map(function(entry) {
+        return {
+          providerId: entry.providerId,
+          model: entry.model || "",
+          stages: (entry.stages || []).slice(),
+        };
+      }),
+    });
+    state.personaForm = null;
     render();
     return;
   }
@@ -1247,8 +1517,9 @@ window.addEventListener("message", function(event) {
     return;
   }
   if (message.type === "settings") {
-    state.settingsData = Object.assign({ providers: [], activeProviderId: "" }, message.data || {});
+    state.settingsData = Object.assign({ providers: [], activeProviderId: "", personaAssignments: [] }, message.data || {});
     normalizeQuickJobSelection();
+    normalizePersonaAssignmentsForm();
     persistState();
     render();
     return;

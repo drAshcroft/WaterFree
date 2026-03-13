@@ -19,6 +19,16 @@ DEFAULT_SUMMARIZATION_THRESHOLDS: dict[str, int] = {
     "RIPPLE_DETECTION": 15_000,
     "QUESTION_ANSWER": 15_000,
 }
+DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
+    "planning",
+    "annotation",
+    "execution",
+    "debug",
+    "question_answer",
+    "ripple_detection",
+    "alter_annotation",
+    "knowledge",
+)
 DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
     "claude": {
         "default": "claude-sonnet-4-6",
@@ -72,7 +82,7 @@ class ProviderFeatures:
 
 @dataclass(frozen=True)
 class ProviderRouting:
-    use_for_stages: tuple[str, ...] = ("planning", "annotation", "execution", "debug")
+    use_for_stages: tuple[str, ...] = DEFAULT_PROVIDER_STAGES
     personas: tuple[str, ...] = ()
 
 
@@ -134,6 +144,23 @@ class SubagentProviderOverride:
 
 
 @dataclass(frozen=True)
+class PersonaProviderAssignment:
+    persona_id: str
+    provider_id: str
+    model: str = ""
+    stages: tuple[str, ...] = DEFAULT_PROVIDER_STAGES
+
+    def supports_stage(self, stage: str) -> bool:
+        stage_key = normalize_stage_name(stage)
+        allowed = set(self.stages)
+        if not allowed:
+            return True
+        if stage_key in allowed:
+            return True
+        return stage_key == "debug" and "live_debug" in allowed
+
+
+@dataclass(frozen=True)
 class ProviderPolicies:
     fallback_provider_order: tuple[str, ...]
     session_key_strategy: str
@@ -141,6 +168,7 @@ class ProviderPolicies:
     flush_on_provider_switch: bool
     reload_mode: str
     summarization_thresholds: dict[str, int]
+    persona_assignments: tuple[PersonaProviderAssignment, ...] = ()
     subagent_overrides: tuple[SubagentProviderOverride, ...] = ()
 
 
@@ -168,6 +196,15 @@ class ProviderProfileDocument:
                 "flushOnProviderSwitch": self.policies.flush_on_provider_switch,
                 "reloadMode": self.policies.reload_mode,
                 "summarizationThresholds": dict(self.policies.summarization_thresholds),
+                "personaAssignments": [
+                    {
+                        "personaId": assignment.persona_id,
+                        "providerId": assignment.provider_id,
+                        "model": assignment.model,
+                        "stages": list(assignment.stages),
+                    }
+                    for assignment in self.policies.persona_assignments
+                ],
                 "subagentOverrides": [
                     {
                         "subagentId": o.subagent_id,
@@ -217,7 +254,7 @@ def default_provider_profile_document(provider_type: str) -> ProviderProfileDocu
                     "anthropic": normalize_anthropic_optimizations({}) if normalized_type == "claude" else {},
                 },
                 "routing": {
-                    "useForStages": ["planning", "annotation", "execution", "debug"],
+                    "useForStages": list(DEFAULT_PROVIDER_STAGES),
                     "personas": [],
                 },
             }
@@ -287,6 +324,9 @@ def normalize_provider_profile(raw: Any) -> ProviderProfileDocument:
         summarization_thresholds=normalize_summarization_thresholds(
             policies_raw.get("summarizationThresholds", {})
         ),
+        persona_assignments=_normalize_persona_assignments(
+            policies_raw.get("personaAssignments"), catalog
+        ),
         subagent_overrides=_normalize_subagent_overrides(
             policies_raw.get("subagentOverrides", []), catalog
         ),
@@ -320,7 +360,7 @@ def normalize_provider_entry(raw: Any, fallback_id: str) -> ProviderProfile | No
         stage for stage in (
             normalize_stage_name(item) for item in routing_raw.get("useForStages", [])
         ) if stage
-    ) or ("planning", "annotation", "execution", "debug")
+    ) or DEFAULT_PROVIDER_STAGES
     personas = tuple(
         str(item).strip().lower() for item in routing_raw.get("personas", []) if str(item).strip()
     )
@@ -481,6 +521,48 @@ def _normalize_subagent_overrides(
             session_key_prefix=str(item.get("sessionKeyPrefix", "") or "").strip(),
         ))
     return tuple(overrides)
+
+
+def _normalize_persona_assignments(
+    raw: Any, catalog: tuple[ProviderProfile, ...]
+) -> tuple[PersonaProviderAssignment, ...]:
+    valid_ids = {p.id for p in catalog}
+    assignments: list[PersonaProviderAssignment] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            persona_id = str(item.get("personaId", "") or "").strip().lower()
+            provider_id = str(item.get("providerId", "") or "").strip()
+            if not persona_id or provider_id not in valid_ids:
+                continue
+            stages = tuple(dict.fromkeys(
+                stage for stage in (
+                    normalize_stage_name(entry) for entry in item.get("stages", [])
+                ) if stage
+            )) or DEFAULT_PROVIDER_STAGES
+            assignments.append(PersonaProviderAssignment(
+                persona_id=persona_id,
+                provider_id=provider_id,
+                model=str(item.get("model", "") or "").strip(),
+                stages=stages,
+            ))
+        return tuple(assignments)
+
+    # Legacy migration: provider.routing.personas used to carry persona affinity.
+    for provider in catalog:
+        if not provider.routing.personas:
+            continue
+        stages = provider.routing.use_for_stages or DEFAULT_PROVIDER_STAGES
+        model = provider.models.get("default", "")
+        for persona_id in provider.routing.personas:
+            assignments.append(PersonaProviderAssignment(
+                persona_id=persona_id.strip().lower(),
+                provider_id=provider.id,
+                model=model,
+                stages=tuple(dict.fromkeys(stages)) or DEFAULT_PROVIDER_STAGES,
+            ))
+    return tuple(assignments)
 
 
 def default_provider_label(provider_type: str) -> str:

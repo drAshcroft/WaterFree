@@ -393,13 +393,6 @@ button.primary:hover:enabled {
   min-width: 0;
 }
 
-.wizard-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .wizard-name,
 .task-title,
 .annotation-summary,
@@ -428,9 +421,6 @@ button.primary:hover:enabled {
   line-height: 1.35;
 }
 
-.wizard-icon,
-.menu-icon,
-.provider-icon,
 .key-badge,
 .mode-pill {
   display: inline-flex;
@@ -445,13 +435,6 @@ button.primary:hover:enabled {
   font-size: 10px;
   font-weight: 600;
   flex-shrink: 0;
-}
-
-.wizard-item.expanded .wizard-icon,
-.provider-icon {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface-alt) 91%);
 }
 
 .wizard-chevron,
