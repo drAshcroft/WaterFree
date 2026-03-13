@@ -6,7 +6,7 @@ description: Use the WaterFree task MCP tools to inspect the workspace backlog, 
 # WaterFree — Task / Todo Store Tools
 
 You have access to the workspace task backlog via the `waterfree-todos` MCP server.
-Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite).
+Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite). 
 
 ## When to Use
 
@@ -18,6 +18,8 @@ Use these tools when you need to:
 - Check what to work on next (highest-priority, no blockers) — use `get_next_task`
 - See only unblocked work — use `get_ready_tasks`
 - Create a recurring health check or review — use `add_task` then patch `timing` to `"recurring"`
+- If an off subject item needs to be addressed later, push it into todos for future work
+- Future work or Suggestions for improvements
 
 ## Task Model
 

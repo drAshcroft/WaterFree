@@ -8,6 +8,7 @@ from backend.llm.provider_profiles import (
     default_provider_profile_document,
     normalize_provider_profile,
 )
+from backend.llm.prompt_templates import build_system_prompt, set_persona_prompt_overrides
 from backend.llm.provider_resolver import resolve_provider
 from backend.session.models import PlanDocument, RuntimeSelection
 from backend.server import Server
@@ -189,6 +190,35 @@ class ProviderProfileTests(unittest.TestCase):
         second = server._get_runtime(workspace)
 
         self.assertIsNot(first, second)
+
+    def test_server_sync_profile_applies_persona_prompt_overrides(self) -> None:
+        workspace = str(make_test_dir(self, prefix="persona-prompt-"))
+        server = Server()
+        self.addCleanup(server.close)
+        self.addCleanup(lambda: set_persona_prompt_overrides({}))
+
+        profile = normalize_provider_profile({
+            "activeProviderId": "claude-primary",
+            "catalog": [
+                {
+                    "id": "claude-primary",
+                    "type": "claude",
+                    "enabled": True,
+                    "label": "Claude Primary",
+                    "connection": {"style": "native", "baseUrl": "", "secretRef": "claude", "apiKey": "ak"},
+                },
+            ],
+            "policies": {
+                "personaPromptOverrides": {
+                    "architect": "Custom architect prompt for this workspace.",
+                },
+            },
+        })
+
+        server._set_provider_profile(workspace, profile)
+        prompt = build_system_prompt("PLANNING", "architect")
+
+        self.assertIn("Custom architect prompt for this workspace.", prompt)
 
     def test_session_runtime_selection_overrides_provider_and_model(self) -> None:
         workspace = str(make_test_dir(self, prefix="session-profile-"))

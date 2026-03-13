@@ -30,12 +30,13 @@ def _register(*personas: PersonaDef) -> None:
         PERSONAS[persona.id] = persona
 
 
-def get_persona_fragment(persona_id: str, stage: str = "") -> str:
+def get_persona_fragment(persona_id: str, stage: str = "", prompt_override: str = "") -> str:
     """Return the persona fragment for a stage, or empty string for unknown ids."""
     persona = PERSONAS.get(persona_id)
     if not persona:
         return _NO_OP_FRAGMENT
-    parts = [persona.system_fragment]
+    base_fragment = prompt_override.strip() or persona.system_fragment
+    parts = [base_fragment]
     stage_fragment = persona.stage_fragments.get(stage.upper())
     if stage_fragment:
         parts.append(stage_fragment)
@@ -45,6 +46,13 @@ def get_persona_fragment(persona_id: str, stage: str = "") -> str:
 def list_personas() -> list[dict]:
     """Return a serializable list of all personas for the frontend."""
     return [
-        {"id": p.id, "name": p.name, "icon": p.icon, "tagline": p.tagline}
+        {
+            "id": p.id,
+            "name": p.name,
+            "icon": p.icon,
+            "tagline": p.tagline,
+            "systemFragment": p.system_fragment,
+            "stageFragments": dict(p.stage_fragments),
+        }
         for p in PERSONAS.values()
     ]

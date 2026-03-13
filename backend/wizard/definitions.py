@@ -30,7 +30,7 @@ MARKET_RESEARCH_TEMPLATE = StageTemplate(
     persona="market_researcher",
     relative_doc_path="market-research.md",
     chunks=(
-        ChunkDef("initial_goal", "What is the idea?", "Describe the software idea, problem you want to solve or frustration in plain language."),
+        ChunkDef("initial_goal", "What is the idea?", ""),
         ChunkDef("similar_ideas", "Similar Ideas and Niches", "Compare the idea to adjacent products and call out what feels different."),
         ChunkDef("who_wants_this", "Who Wants This?", "Describe the primary audiences and their pain points."),
         ChunkDef("core_features", "Core Features", "List the features that make the idea compelling."),

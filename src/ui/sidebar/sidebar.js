@@ -43,6 +43,24 @@ const PROVIDER_LABELS = {
   mock: "Mock (no API calls)",
 };
 
+const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", groq: "GRQ", ollama: "OLL", huggingface: "HF", mock: "OFF" };
+const DEFAULT_PROVIDER_URLS = {
+  claude: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  groq: "https://api.groq.com/openai/v1",
+  ollama: "http://localhost:11434",
+  huggingface: "https://router.huggingface.co/v1",
+  mock: "",
+};
+const API_KEY_PLACEHOLDERS = {
+  claude: "sk-ant-api03-...",
+  openai: "sk-proj-...",
+  groq: "gsk_...",
+  ollama: "",
+  huggingface: "hf_...",
+  mock: "",
+};
+
 const PROVIDER_MODELS = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
@@ -193,6 +211,10 @@ function providerChoices() {
 function providerModels(providerId) {
   const provider = providerChoices().find(function(entry) { return entry.id === providerId; });
   return provider && Array.isArray(provider.models) ? provider.models.slice() : [];
+}
+
+function defaultModelsForProviderType(type) {
+  return Array.isArray(PROVIDER_MODELS[type]) ? PROVIDER_MODELS[type].slice() : [];
 }
 
 function assignmentsForPersona(personaId) {
@@ -697,9 +719,6 @@ function renderProvidersPage() {
           : p.hasKey
             ? '<span class="key-badge set">' + escapeHtml(p.maskedKey) + '</span>'
             : '<span class="key-badge unset">No key</span>';
-        const modelPills = (p.models || []).map(function(model) {
-          return '<span class="mode-pill">' + escapeHtml(model) + '</span>';
-        }).join("");
         const urlHtml = p.baseUrl
           ? '<span class="mode-pill">' + escapeHtml(p.baseUrl) + '</span>'
           : '<span class="mode-pill">' + escapeHtml((p.connectionLabel || "native").toUpperCase()) + '</span>';
@@ -718,7 +737,6 @@ function renderProvidersPage() {
           '<div class="provider-card-meta">',
           credHtml,
           urlHtml,
-          modelPills,
           '</div>',
           '<div class="button-row" style="margin-top:8px">',
           '<button type="button" data-action="editProvider" data-provider-id="' + escapeHtml(p.id) + '">Edit</button>',
@@ -742,18 +760,8 @@ function renderProviderForm() {
 
   const needsKey = f.type !== "mock" && f.type !== "ollama";
   const supportsUrl = f.type !== "mock";
-  const knownModels = PROVIDER_MODELS[f.type] || [];
-  const hasFreeTextModels = f.type === "ollama" || f.type === "huggingface";
-
-  let modelsHtml = "";
-  if (knownModels.length > 0) {
-    modelsHtml = '<div class="checkbox-group">' + knownModels.map(function(m) {
-      const checked = f.models.includes(m) ? " checked" : "";
-      return '<label><input type="checkbox" data-model-check="' + escapeHtml(m) + '"' + checked + '> ' + escapeHtml(m) + '</label>';
-    }).join("") + '</div>';
-  } else if (hasFreeTextModels) {
-    modelsHtml = '<input type="text" id="pf-models-text" class="key-input" placeholder="model1, model2" value="' + escapeHtml((f.models || []).join(", ")) + '">';
-  }
+  const keyPlaceholder = API_KEY_PLACEHOLDERS[f.type] || "API key";
+  const defaultUrl = DEFAULT_PROVIDER_URLS[f.type] || "";
 
   return [
     '<div class="provider-form">',
@@ -768,22 +776,16 @@ function renderProviderForm() {
     needsKey ? [
       '<div class="field-group">',
       '<label class="field-label" for="pf-key">API Key' + (f.mode === "edit" ? " (leave blank to keep existing)" : "") + '</label>',
-      '<input type="password" id="pf-key" class="key-input" placeholder="sk-ant-..." autocomplete="off">',
+      '<input type="password" id="pf-key" class="key-input" placeholder="' + escapeHtml(keyPlaceholder) + '" autocomplete="off">',
       '</div>',
     ].join("") : "",
     supportsUrl ? [
       '<div class="field-group">',
       '<label class="field-label" for="pf-url">Base URL (optional)</label>',
-      '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || (f.type === "ollama" ? "http://localhost:11434" : "")) + '" placeholder="' + escapeHtml(f.type === "ollama" ? "http://localhost:11434" : "https://api.example.com/v1") + '">',
+      '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || defaultUrl) + '" placeholder="' + escapeHtml(defaultUrl || "https://api.example.com/v1") + '">',
       '</div>',
     ].join("") : "",
-    f.type !== "mock" && modelsHtml ? [
-      '<div class="field-group">',
-      '<label class="field-label">Models</label>',
-      modelsHtml,
-      '</div>',
-    ].join("") : "",
-    '<p class="hint" style="margin-top:12px">Provider setup only stores connection details and available models. Persona-specific provider/model routing is configured under Personas.</p>',
+    '<p class="hint" style="margin-top:12px">Provider setup only stores connection details. Persona prompts and model routing live in the Persona Studio page.</p>',
     '<div class="button-row" style="margin-top:12px">',
     '<button type="button" class="primary" data-action="submitProvider">Save</button>',
     '<button type="button" data-action="cancelProvider">Cancel</button>',
@@ -1020,8 +1022,11 @@ function wireSettingsForms() {
       if (!state.providerForm.name || autoNames.includes(state.providerForm.name)) {
         state.providerForm.name = PROVIDER_LABELS[t] || t;
       }
+      if (!state.providerForm.baseUrl || state.providerForm.baseUrl === DEFAULT_PROVIDER_URLS[state.providerForm.type]) {
+        state.providerForm.baseUrl = DEFAULT_PROVIDER_URLS[t] || "";
+      }
       state.providerForm.type = t;
-      state.providerForm.models = [];
+      state.providerForm.models = defaultModelsForProviderType(t);
       render();
     });
   }
@@ -1233,6 +1238,15 @@ root.addEventListener("click", function(event) {
       render();
       return;
     }
+    if (page === "personas") {
+      state.settingsOpen = false;
+      state.settingsPage = null;
+      state.providerForm = null;
+      state.personaForm = null;
+      vscode.postMessage({ type: "openPersonaStudio" });
+      render();
+      return;
+    }
     state.settingsPage = page;
     state.providerForm = null;
     state.personaForm = null;
@@ -1257,8 +1271,8 @@ root.addEventListener("click", function(event) {
       mode: "add", id: null,
       type: "claude",
       name: PROVIDER_LABELS["claude"],
-      apiKey: "", baseUrl: "",
-      models: ["claude-opus-4-6", "claude-sonnet-4-6"],
+      apiKey: "", baseUrl: DEFAULT_PROVIDER_URLS.claude,
+      models: defaultModelsForProviderType("claude"),
       enabled: true,
     };
     render();
@@ -1275,7 +1289,7 @@ root.addEventListener("click", function(event) {
         type: provider.type,
         name: provider.name,
         apiKey: "",
-        baseUrl: provider.baseUrl || "",
+        baseUrl: provider.baseUrl || DEFAULT_PROVIDER_URLS[provider.type] || "",
         models: (provider.models || []).slice(),
         enabled: provider.enabled,
       };
@@ -1320,7 +1334,7 @@ root.addEventListener("click", function(event) {
       name: f.name || PROVIDER_LABELS[f.type] || f.type,
       apiKey: f.apiKey || "",
       baseUrl: f.baseUrl || "",
-      models: f.models || [],
+      models: (f.models && f.models.length > 0 ? f.models : defaultModelsForProviderType(f.type)),
       enabled: f.enabled !== false,
     };
     if (f.mode === "add") {

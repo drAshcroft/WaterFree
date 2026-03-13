@@ -169,6 +169,7 @@ class ProviderPolicies:
     reload_mode: str
     summarization_thresholds: dict[str, int]
     persona_assignments: tuple[PersonaProviderAssignment, ...] = ()
+    persona_prompt_overrides: dict[str, str] = field(default_factory=dict)
     subagent_overrides: tuple[SubagentProviderOverride, ...] = ()
 
 
@@ -205,6 +206,7 @@ class ProviderProfileDocument:
                     }
                     for assignment in self.policies.persona_assignments
                 ],
+                "personaPromptOverrides": dict(self.policies.persona_prompt_overrides),
                 "subagentOverrides": [
                     {
                         "subagentId": o.subagent_id,
@@ -326,6 +328,9 @@ def normalize_provider_profile(raw: Any) -> ProviderProfileDocument:
         ),
         persona_assignments=_normalize_persona_assignments(
             policies_raw.get("personaAssignments"), catalog
+        ),
+        persona_prompt_overrides=_normalize_persona_prompt_overrides(
+            policies_raw.get("personaPromptOverrides")
         ),
         subagent_overrides=_normalize_subagent_overrides(
             policies_raw.get("subagentOverrides", []), catalog
@@ -563,6 +568,18 @@ def _normalize_persona_assignments(
                 stages=tuple(dict.fromkeys(stages)) or DEFAULT_PROVIDER_STAGES,
             ))
     return tuple(assignments)
+
+
+def _normalize_persona_prompt_overrides(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in raw.items():
+        persona_id = str(key or "").strip().lower()
+        prompt = str(value or "").strip()
+        if persona_id and prompt:
+            result[persona_id] = prompt
+    return result
 
 
 def default_provider_label(provider_type: str) -> str:

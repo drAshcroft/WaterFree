@@ -92,6 +92,7 @@ from backend.llm.provider_profiles import (
     load_provider_profile,
     normalize_provider_profile,
 )
+from backend.llm.prompt_templates import set_persona_prompt_overrides
 from backend.llm.provider_resolver import resolve_provider
 from backend.llm.runtime import AgentRuntime
 from backend.llm.runtime_registry import (
@@ -153,6 +154,7 @@ from backend.handlers.runtime_handler import (
     handle_get_active_runtime,
     handle_set_active_runtime,
     handle_sync_provider_profile,
+    handle_list_personas,
     handle_list_skills,
     handle_reload_skills,
     handle_get_skill_detail,
@@ -356,6 +358,7 @@ class Server:
                 default_type = "openai" if runtime_name == "openai" else "ollama" if runtime_name == "ollama" else "claude"
                 profile = default_provider_profile_document(default_type)
             self._provider_profiles[path] = profile
+            set_persona_prompt_overrides(profile.policies.persona_prompt_overrides)
         return profile
 
     def _set_provider_profile(self, workspace_path: str, profile: ProviderProfileDocument) -> str:
@@ -364,6 +367,7 @@ class Server:
             self._provider_profiles = {}
         normalized = normalize_provider_profile(profile.to_dict())
         self._provider_profiles[path] = normalized
+        set_persona_prompt_overrides(normalized.policies.persona_prompt_overrides)
         self._clear_runtime_cache(workspace_path=path)
         return normalized.profile_hash
 
@@ -442,6 +446,7 @@ class Server:
         "getActiveRuntime":     handle_get_active_runtime,
         "setActiveRuntime":     handle_set_active_runtime,
         "syncProviderProfile":  handle_sync_provider_profile,
+        "listPersonas":         handle_list_personas,
         "listSkills":           handle_list_skills,
         "reloadSkills":         handle_reload_skills,
         "getSkillDetail":       handle_get_skill_detail,

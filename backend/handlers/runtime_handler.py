@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+from backend.llm.personas import list_personas
 from backend.llm.provider_profiles import normalize_provider_profile
 from backend.llm.runtime_registry import (
     list_runtime_descriptors,
@@ -35,6 +36,11 @@ def handle_sync_provider_profile(server, params: dict) -> dict:
     profile = normalize_provider_profile(params.get("profile", {}))
     profile_hash = server._set_provider_profile(workspace_path, profile)
     return {"ok": True, "profileHash": profile_hash}
+
+
+def handle_list_personas(server, params: dict) -> dict:
+    _ = server, params
+    return {"personas": list_personas()}
 
 
 def handle_list_skills(server, params: dict) -> dict:

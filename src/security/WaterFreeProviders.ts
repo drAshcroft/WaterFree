@@ -103,7 +103,14 @@ export interface ProviderProfilePolicies {
   flushOnProviderSwitch: boolean;
   reloadMode: ProviderReloadMode;
   personaAssignments: ProviderPersonaAssignment[];
+  personaPromptOverrides: Record<string, string>;
   summarizationThresholds: Partial<Record<string, number>>;
+}
+
+export interface ProviderPersonaCustomization {
+  personaId: string;
+  prompt: string;
+  assignments: Array<Omit<ProviderPersonaAssignment, "personaId">>;
 }
 
 export interface ProviderProfileDocument {
@@ -127,6 +134,13 @@ export interface BackendProviderProfileDocument extends Omit<ProviderProfileDocu
 
 const PROVIDERS_KEY = "waterfree.providers.v1";
 const PROVIDERS_FILENAME = "providers.json";
+const DEFAULT_PROVIDER_URLS: Partial<Record<ProviderType, string>> = {
+  claude: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  groq: "https://api.groq.com/openai/v1",
+  ollama: "http://localhost:11434",
+  huggingface: "https://router.huggingface.co/v1",
+};
 const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6"],
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
@@ -178,6 +192,7 @@ const DEFAULT_POLICIES: ProviderProfilePolicies = {
   flushOnProviderSwitch: true,
   reloadMode: "on_change",
   personaAssignments: [],
+  personaPromptOverrides: {},
   summarizationThresholds: {
     EXECUTION: 60000,
     PLANNING: 30000,
@@ -355,6 +370,36 @@ export class WaterFreeProviders {
     await this._persistProfile();
   }
 
+  async setPersonaCustomizations(customizations: ProviderPersonaCustomization[]): Promise<void> {
+    const personaAssignments: ProviderPersonaAssignment[] = [];
+    const personaPromptOverrides: Record<string, string> = {};
+    for (const item of customizations) {
+      const personaId = String(item.personaId || "").trim().toLowerCase();
+      if (!personaId) { continue; }
+      const prompt = String(item.prompt || "").trim();
+      if (prompt) {
+        personaPromptOverrides[personaId] = prompt;
+      }
+      for (const assignment of item.assignments || []) {
+        personaAssignments.push({
+          personaId,
+          providerId: assignment.providerId,
+          model: assignment.model || "",
+          stages: Array.isArray(assignment.stages) ? assignment.stages.slice() : [],
+        });
+      }
+    }
+    this._profile = normalizeProfileDocument({
+      ...this._profile,
+      policies: {
+        ...this._profile.policies,
+        personaAssignments,
+        personaPromptOverrides,
+      },
+    });
+    await this._persistProfile();
+  }
+
   async toggle(id: string): Promise<void> {
     const entry = this._profile.catalog.find((item) => item.id === id);
     if (!entry) { return; }
@@ -475,10 +520,12 @@ function normalizeProfileDocument(raw: unknown): ProviderProfileDocument {
         flushOnProviderSwitch: source.policies.flushOnProviderSwitch !== false,
         reloadMode: source.policies.reloadMode === "manual" ? "manual" : "on_change",
         personaAssignments: normalizePersonaAssignments(source.policies.personaAssignments, catalog),
+        personaPromptOverrides: normalizePersonaPromptOverrides(source.policies.personaPromptOverrides),
         summarizationThresholds: normalizeSummarizationThresholds(source.policies.summarizationThresholds),
       } : {
         fallbackProviderOrder,
         personaAssignments: normalizePersonaAssignments(undefined, catalog),
+        personaPromptOverrides: normalizePersonaPromptOverrides(undefined),
       }),
     },
   };
@@ -632,6 +679,21 @@ function normalizePersonaAssignment(
     model: String(raw.model ?? "").trim(),
     stages: stages.length > 0 ? Array.from(new Set(stages)) : [...DEFAULT_PROVIDER_STAGES],
   };
+}
+
+function normalizePersonaPromptOverrides(raw: unknown): Record<string, string> {
+  if (!isRecord(raw)) {
+    return {};
+  }
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const personaId = String(key || "").trim().toLowerCase();
+    const prompt = String(value || "").trim();
+    if (personaId && prompt) {
+      normalized[personaId] = prompt;
+    }
+  }
+  return normalized;
 }
 
 function normalizeFeatures(raw: unknown): ProviderProfileFeatures {
@@ -821,10 +883,10 @@ function normalizeName(value: unknown, type: ProviderType): string {
 
 function normalizeBaseUrl(type: ProviderType, value: unknown): string {
   const url = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
-  if (type === "ollama") {
-    return url || "http://localhost:11434";
+  if (url) {
+    return url;
   }
-  return url;
+  return DEFAULT_PROVIDER_URLS[type] || "";
 }
 
 function normalizeModels(type: ProviderType, value: unknown): string[] {

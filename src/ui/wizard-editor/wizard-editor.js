@@ -89,7 +89,9 @@ if (persisted) {
 
 function renderState(state) {
   chunkTitle.textContent = state.chunkTitle || "What is the idea?";
-  guidance.textContent = state.guidance || "Describe the software idea, problem you want to solve or frustration in plain language.";
+  const guidanceText = state.guidance || "";
+  guidance.textContent = guidanceText;
+  guidance.hidden = !guidanceText;
   setEditorText(state.body || "");
   renderQuestions(Array.isArray(state.questions) ? state.questions : []);
   renderAcceptedChunks(Array.isArray(state.acceptedChunks) ? state.acceptedChunks : []);
@@ -129,8 +131,11 @@ function renderActionButtons(state) {
   reviewActions.hidden = !showReview;
 
   // Update the Generate/Accept label dynamically
+  const isInitialIdea = stageKind === "market_research" && state.chunkId === "initial_goal";
   if (state.hasDraft && state.chunkStatus !== "accepted") {
     submit.textContent = "Accept Chunk";
+  } else if (isInitialIdea) {
+    submit.textContent = "Market Research";
   } else {
     submit.textContent = "Generate";
   }
@@ -227,55 +232,34 @@ function renderQuestions(questionList) {
     return;
   }
 
+  // Show only the first question — one at a time
   clarifications.hidden = false;
-  for (const [index, item] of questionList.entries()) {
-    const questionKey = `q${index}`;
-    clarificationState.set(questionKey, { prompt: item, choice: "", note: "" });
+  const item = questionList[0];
+  const questionKey = "q0";
+  clarificationState.set(questionKey, { prompt: item, answer: "" });
 
-    const block = document.createElement("section");
-    block.className = "question-block";
+  const block = document.createElement("section");
+  block.className = "question-block";
 
-    const prompt = document.createElement("p");
-    prompt.className = "question";
-    prompt.textContent = item;
-    block.appendChild(prompt);
+  const prompt = document.createElement("p");
+  prompt.className = "question";
+  prompt.textContent = item;
+  block.appendChild(prompt);
 
-    const options = document.createElement("div");
-    options.className = "option-row";
-    for (const option of ["Yes", "No", "Not sure"]) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "option-chip";
-      button.textContent = option;
-      button.addEventListener("click", () => {
-        const state = clarificationState.get(questionKey);
-        if (!state) {
-          return;
-        }
-        state.choice = option;
-        clarificationState.set(questionKey, state);
-        syncSelectionState(options, option);
-      });
-      options.appendChild(button);
-    }
-    block.appendChild(options);
-
-    const note = document.createElement("input");
-    note.type = "text";
-    note.className = "clarification-note";
-    note.placeholder = "Optional detail";
-    note.addEventListener("input", () => {
-      const state = clarificationState.get(questionKey);
-      if (!state) {
-        return;
-      }
-      state.note = note.value.trim();
+  const answerEl = document.createElement("textarea");
+  answerEl.className = "clarification-answer";
+  answerEl.placeholder = "Your answer…";
+  answerEl.rows = 3;
+  answerEl.addEventListener("input", () => {
+    const state = clarificationState.get(questionKey);
+    if (state) {
+      state.answer = answerEl.value.trim();
       clarificationState.set(questionKey, state);
-    });
-    block.appendChild(note);
+    }
+  });
+  block.appendChild(answerEl);
 
-    questions.appendChild(block);
-  }
+  questions.appendChild(block);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,28 +278,16 @@ function buildSubmissionBody() {
   const base = getEditorText();
   const answers = [];
   for (const state of clarificationState.values()) {
-    if (!state.choice && !state.note) {
+    if (!state.answer) {
       continue;
     }
-    let line = `- ${state.prompt}: `;
-    if (state.choice) {
-      line += state.choice;
-    }
-    if (state.note) {
-      line += state.choice ? ` (${state.note})` : state.note;
-    }
-    answers.push(line);
+    answers.push(`${state.prompt}\n${state.answer}`);
   }
 
   if (answers.length === 0) {
     return base;
   }
-  const clarificationsText = ["Clarifications:", ...answers].join("\n");
-  return base ? `${base}\n\n${clarificationsText}` : clarificationsText;
+  const answersText = answers.join("\n\n");
+  return base ? `${base}\n\n${answersText}` : answersText;
 }
 
-function syncSelectionState(container, selectedOption) {
-  for (const child of container.children) {
-    child.classList.toggle("selected", child.textContent === selectedOption);
-  }
-}

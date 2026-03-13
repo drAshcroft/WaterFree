@@ -46,9 +46,35 @@ import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPan
 import { MonitorPanel } from "./ui/MonitorPanel.js";
 import { MockPanel } from "./ui/MockPanel.js";
 import { KnowledgePanel, type KnowledgePanelAction } from "./ui/KnowledgePanel.js";
+import {
+  PersonaStudioPanel,
+  type PersonaStudioAction,
+  type PersonaStudioState,
+} from "./ui/PersonaStudioPanel.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
+
+function isProviderStage(value: string): value is
+  | "planning"
+  | "annotation"
+  | "execution"
+  | "debug"
+  | "question_answer"
+  | "ripple_detection"
+  | "alter_annotation"
+  | "knowledge" {
+  return [
+    "planning",
+    "annotation",
+    "execution",
+    "debug",
+    "question_answer",
+    "ripple_detection",
+    "alter_annotation",
+    "knowledge",
+  ].includes(value);
+}
 import { CommandRegistry } from "./commands/CommandRegistry.js";
 
 // ------------------------------------------------------------------
@@ -113,6 +139,7 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _wizardEditor: WizardEditorPanel;
   private readonly _todoBoard: TodoBoardPanel;
   private readonly _knowledgePanel: KnowledgePanel;
+  private readonly _personaStudio: PersonaStudioPanel;
   private readonly _monitorPanel: MonitorPanel;
   private readonly _mockPanel: MockPanel;
   private readonly _fileWatcher: FileWatcher;
@@ -144,6 +171,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._wizardEditor = new WizardEditorPanel(context.extensionUri);
     this._todoBoard = new TodoBoardPanel(context.extensionUri);
     this._knowledgePanel = new KnowledgePanel(context.extensionUri);
+    this._personaStudio = new PersonaStudioPanel(context.extensionUri);
     this._monitorPanel = new MonitorPanel(context.extensionUri, _workspacePath);
     this._monitorPanel.attach(context);
     this._mockPanel = new MockPanel(context.extensionUri, _workspacePath);
@@ -161,6 +189,7 @@ export class WaterFreeController implements vscode.Disposable {
       this._wizardEditor,
       this._todoBoard,
       this._knowledgePanel,
+      this._personaStudio,
       this._monitorPanel,
       this._mockPanel,
       this._fileWatcher,
@@ -201,6 +230,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._knowledgePanel.onDidTriggerAction((action) => {
         void this._onKnowledgePanelAction(action);
+      }),
+      this._personaStudio.onDidTriggerAction((action) => {
+        void this._onPersonaStudioAction(action);
       }),
       this._wizardEditor.onDidTriggerAction((action) => {
         void this._onWizardEditorAction(action);
@@ -255,6 +287,11 @@ export class WaterFreeController implements vscode.Disposable {
 
   async cmdOpenKnowledgePanel(): Promise<void> {
     this._knowledgePanel.show();
+  }
+
+  async cmdOpenPersonaStudio(): Promise<void> {
+    const state = await this._loadPersonaStudioState();
+    await this._personaStudio.show(state);
   }
 
   async cmdOpenTodoBoard(): Promise<void> {
@@ -1585,6 +1622,9 @@ export class WaterFreeController implements vscode.Disposable {
       case "openKnowledge":
         await this.cmdOpenKnowledgePanel();
         return;
+      case "openPersonaStudio":
+        await this.cmdOpenPersonaStudio();
+        return;
       case "requestHistory": {
         const result = await this._bridge.request<{ sessions: unknown[] }>("listArchivedSessions", {
           workspacePath: this._workspacePath,
@@ -1720,6 +1760,27 @@ export class WaterFreeController implements vscode.Disposable {
     }
   }
 
+  private async _onPersonaStudioAction(action: PersonaStudioAction): Promise<void> {
+    try {
+      switch (action.type) {
+        case "save":
+          await this._providers.setPersonaCustomizations(action.customizations.map((item) => ({
+            personaId: item.personaId,
+            prompt: item.prompt,
+            assignments: item.assignments.map((assignment) => ({
+              providerId: assignment.providerId,
+              model: assignment.model,
+              stages: assignment.stages.filter(isProviderStage),
+            })),
+          })));
+          await this._syncProviderProfile({ restartBackend: true });
+          return;
+      }
+    } catch (err) {
+      this._handleError("Persona studio action failed", err);
+    }
+  }
+
   private async _syncProviderProfile(options: {
     profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>;
     restartBackend: boolean;
@@ -1736,6 +1797,9 @@ export class WaterFreeController implements vscode.Disposable {
     }
     if (profile) {
       await this._sendProviderSettings(profile);
+      if (this._personaStudio.isVisible()) {
+        await this._personaStudio.update(await this._loadPersonaStudioState(profile));
+      }
     }
   }
 
@@ -1749,6 +1813,52 @@ export class WaterFreeController implements vscode.Disposable {
       activeProviderId: resolvedProfile.activeProviderId,
       personaAssignments: resolvedProfile.policies.personaAssignments,
     });
+  }
+
+  private async _loadPersonaStudioState(
+    profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>,
+  ): Promise<PersonaStudioState> {
+    const resolvedProfile = profile ?? await this._providers.getProfile();
+    const statuses = await this._providers.getStatuses();
+    const personaResult = await this._bridge.request<{ personas: Array<Record<string, unknown>> }>("listPersonas", {});
+    const assignmentsByPersona = new Map<string, Array<{ providerId: string; model: string; stages: string[] }>>();
+    for (const entry of resolvedProfile.policies.personaAssignments) {
+      const existing = assignmentsByPersona.get(entry.personaId) ?? [];
+      existing.push({
+        providerId: entry.providerId,
+        model: entry.model,
+        stages: Array.isArray(entry.stages) ? entry.stages.slice() : [],
+      });
+      assignmentsByPersona.set(entry.personaId, existing);
+    }
+
+    const personas = (personaResult.personas ?? []).map((persona) => ({
+      id: String(persona.id ?? ""),
+      name: String(persona.name ?? persona.id ?? ""),
+      tagline: String(persona.tagline ?? ""),
+      systemFragment: String(persona.systemFragment ?? ""),
+      stageFragments: typeof persona.stageFragments === "object" && persona.stageFragments !== null
+        ? Object.fromEntries(Object.entries(persona.stageFragments).map(([key, value]) => [key, String(value)]))
+        : {},
+    }));
+
+    const customizations = personas.map((persona) => ({
+      personaId: persona.id,
+      prompt: resolvedProfile.policies.personaPromptOverrides[persona.id] ?? persona.systemFragment,
+      assignments: assignmentsByPersona.get(persona.id) ?? [],
+    }));
+
+    return {
+      personas,
+      providers: statuses.map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        type: provider.type,
+        enabled: provider.enabled,
+        models: Array.isArray(provider.models) ? provider.models.slice() : [],
+      })),
+      customizations,
+    };
   }
 
   private async _onTodoBoardAction(action: TodoBoardAction): Promise<void> {

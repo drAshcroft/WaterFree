@@ -1,0 +1,221 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--vscode-editor-background);
+  --surface: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background) 8%);
+  --surface-alt: color-mix(in srgb, var(--vscode-sideBar-background) 68%, transparent);
+  --border: color-mix(in srgb, var(--vscode-panel-border) 65%, transparent);
+  --text: var(--vscode-foreground);
+  --muted: var(--vscode-descriptionForeground);
+  --accent: var(--vscode-textLink-foreground);
+  --success: var(--vscode-testing-iconPassed, #3ba55d);
+  --danger: var(--vscode-errorForeground, #f85149);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--vscode-font-family);
+}
+
+button, select, textarea, input {
+  font: inherit;
+}
+
+button, select, textarea, input {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+button.primary {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+textarea, input, select {
+  width: 100%;
+  padding: 10px 12px;
+}
+
+#app {
+  height: 100%;
+}
+
+.studio {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  height: 100%;
+}
+
+.persona-list {
+  border-right: 1px solid var(--border);
+  padding: 18px 14px;
+  overflow: auto;
+  background: var(--surface-alt);
+}
+
+.persona-list h1 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.persona-list p {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+.persona-item {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.persona-item.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.persona-item-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.persona-item-tagline {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.persona-item-count {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 18px 20px 24px;
+  gap: 16px;
+  overflow: auto;
+}
+
+.editor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.editor-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.editor-tagline {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 16px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.route-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface-alt) 70%, transparent);
+  margin-bottom: 12px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.stage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.stage-grid label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 20px 0;
+}
+
+@media (max-width: 900px) {
+  .studio {
+    grid-template-columns: 1fr;
+  }
+
+  .persona-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+}

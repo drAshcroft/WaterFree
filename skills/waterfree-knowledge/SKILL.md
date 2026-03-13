@@ -21,7 +21,7 @@ Use these tools when you need to:
 - Understand how many snippets are available — use `knowledge_stats`
 
 Use the hierarchy first for broad domains and search for precise lookups. Always consult
-the knowledge store before writing boilerplate or reaching for external docs.
+the knowledge store before writing boilerplate or reaching for external docs. User preferences and style guides should be pushed to this store. Make it so the user does not have to repeat preferences for prompts. Preferences should be small, terse and few
 
 ## When to Add
 
