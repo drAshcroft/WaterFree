@@ -162,6 +162,7 @@ from backend.handlers.runtime_handler import (
     handle_list_subagents,
     handle_delegate_to_subagent,
     handle_get_usage_stats,
+    handle_get_provider_capabilities,
 )
 from backend.handlers.graph_handler import (
     handle_get_adr,
@@ -205,9 +206,14 @@ class Server:
         self._runtime_name = resolve_runtime_name()
         self._provider_profiles: dict[str, ProviderProfileDocument] = {}
 
-    def _get_runtime(self, workspace_path: str = ".") -> AgentRuntime:
+    def _get_runtime(
+        self,
+        workspace_path: str = ".",
+        *,
+        profile_override: ProviderProfileDocument | None = None,
+    ) -> AgentRuntime:
         workspace = os.path.abspath(workspace_path)
-        profile = self._get_provider_profile(workspace)
+        profile = profile_override or self._get_provider_profile(workspace)
         runtime_name = getattr(self, "_runtime_name", "deep_agents")
         cache_key = (workspace, runtime_name, profile.profile_hash)
         if not hasattr(self, "_runtime_cache"):
@@ -224,6 +230,66 @@ class Server:
             )
             self._runtime_cache[cache_key] = runtime
         return runtime
+
+    def _get_provider_profile_for_session(self, doc: PlanDocument) -> ProviderProfileDocument:
+        profile = self._get_provider_profile(doc.workspace_path)
+        selection = getattr(doc, "runtime_selection", None)
+        if selection is None:
+            return profile
+
+        provider_id = selection.provider_id.strip()
+        model = selection.model.strip()
+        if not provider_id and not model:
+            return profile
+
+        raw = profile.to_dict()
+        catalog = raw.get("catalog", [])
+        if not isinstance(catalog, list) or not catalog:
+            return profile
+
+        available_ids = {
+            str(entry.get("id", "")).strip()
+            for entry in catalog
+            if isinstance(entry, dict)
+        }
+        if provider_id and provider_id not in available_ids:
+            return profile
+
+        target_provider_id = provider_id or str(raw.get("activeProviderId", "")).strip()
+        if provider_id:
+            raw["activeProviderId"] = provider_id
+
+        if model and target_provider_id:
+            for entry in catalog:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("id", "")).strip() != target_provider_id:
+                    continue
+                models = entry.get("models", {})
+                if not isinstance(models, dict):
+                    models = {}
+                for stage_name in (
+                    "default",
+                    "planning",
+                    "annotation",
+                    "execution",
+                    "debug",
+                    "question_answer",
+                    "alter_annotation",
+                    "ripple_detection",
+                    "knowledge",
+                ):
+                    models[stage_name] = model
+                entry["models"] = models
+                break
+
+        return normalize_provider_profile(raw)
+
+    def _get_runtime_for_session(self, doc: PlanDocument) -> AgentRuntime:
+        return self._get_runtime(
+            doc.workspace_path,
+            profile_override=self._get_provider_profile_for_session(doc),
+        )
 
     def _get_runtime_for_stage(self, workspace_path: str, *, stage: str, workload: str = "") -> AgentRuntime:
         workspace = os.path.abspath(workspace_path)
@@ -382,9 +448,10 @@ class Server:
         "listCheckpoints":      handle_list_checkpoints,
         "resumeCheckpoint":     handle_resume_checkpoint,
         "discardCheckpoint":    handle_discard_checkpoint,
-        "getUsageStats":        handle_get_usage_stats,
-        "listSubagents":        handle_list_subagents,
-        "delegateToSubagent":   handle_delegate_to_subagent,
+        "getUsageStats":           handle_get_usage_stats,
+        "getProviderCapabilities": handle_get_provider_capabilities,
+        "listSubagents":           handle_list_subagents,
+        "delegateToSubagent":      handle_delegate_to_subagent,
         # ADR management
         "getADR":               handle_get_adr,
         "storeADR":             handle_store_adr,

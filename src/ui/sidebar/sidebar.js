@@ -24,22 +24,36 @@ const WIZARDS = [
   { id: "clean_code_review",    icon: "Lint", title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
 ];
 
+const QUICK_JOB_MODES = [
+  { id: "plan", label: "Plan", persona: "architect" },
+  { id: "debug", label: "Debug", persona: "debug_detective" },
+  { id: "yolo", label: "Yolo", persona: "yolo" },
+];
+
 const PROVIDER_LABELS = {
   claude: "Claude",
   openai: "OpenAI / Codex",
+  groq: "Groq",
   ollama: "Ollama",
   huggingface: "Hugging Face",
   mock: "Mock (no API calls)",
 };
 
-const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", ollama: "OLL", huggingface: "HF", mock: "OFF" };
+const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", groq: "GRQ", ollama: "OLL", huggingface: "HF", mock: "OFF" };
 
 const PROVIDER_MODELS = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
+  groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
   ollama: ["llama3.2", "codestral", "qwen2.5-coder", "mistral"],
   huggingface: [],
   mock: [],
+};
+
+const PROVIDER_MODE_LABELS = {
+  planning: "Planning",
+  execution: "Execution",
+  indexing: "Knowledge indexing",
 };
 
 const PERSONA_USE_WITH = [
@@ -50,7 +64,7 @@ const PERSONA_USE_WITH = [
   { id: "yolo", label: "YOLO" },
   { id: "socratic", label: "Socratic Coach" },
   { id: "stub_wireframer", label: "Stub / Wireframer" },
-  { id: "indexing", label: "Indexing only" },
+  { id: "indexing", label: "Knowledge indexing" },
 ];
 
 const MENU_ITEMS = [
@@ -75,6 +89,11 @@ let state = {
   draftDebugIntent: typeof savedState.draftDebugIntent === "string" ? savedState.draftDebugIntent : "",
   draftDebugReason: typeof savedState.draftDebugReason === "string" ? savedState.draftDebugReason : "bug investigation",
   selectedPersona: typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect",
+  selectedQuickMode: typeof savedState.selectedQuickMode === "string"
+    ? savedState.selectedQuickMode
+    : modeForPersona(typeof savedState.selectedPersona === "string" ? savedState.selectedPersona : "architect"),
+  selectedQuickProviderId: typeof savedState.selectedQuickProviderId === "string" ? savedState.selectedQuickProviderId : "",
+  selectedQuickModel: typeof savedState.selectedQuickModel === "string" ? savedState.selectedQuickModel : "",
   expandedWizard: typeof savedState.expandedWizard === "string" ? savedState.expandedWizard : null,
   // history dropdown
   historyOpen: false,
@@ -83,8 +102,10 @@ let state = {
   // settings state (not persisted)
   settingsOpen: false,
   settingsPage: null,   // null = menu, "providers", "mcp", "skills", "personas", "usage", "todos", "index", "knowledge"
-  settingsData: { providers: [] },
+  settingsData: { providers: [], activeProviderId: "" },
   providerForm: null,  // {mode:"add"|"edit", id, type, name, apiKey, baseUrl, models, modes, useWith, enabled}
+  usageData: null,     // {providers: [], byPersona: [], byStage: []} or null = not loaded yet
+  usageLoading: false,
 };
 
 function escapeHtml(value) {
@@ -102,8 +123,47 @@ function persistState() {
     draftDebugIntent: state.draftDebugIntent,
     draftDebugReason: state.draftDebugReason,
     selectedPersona: state.selectedPersona,
+    selectedQuickMode: state.selectedQuickMode,
+    selectedQuickProviderId: state.selectedQuickProviderId,
+    selectedQuickModel: state.selectedQuickModel,
     expandedWizard: state.expandedWizard,
   });
+}
+
+function resolveQuickMode(modeId) {
+  return QUICK_JOB_MODES.find(function(mode) { return mode.id === modeId; }) || QUICK_JOB_MODES[0];
+}
+
+function modeForPersona(persona) {
+  const match = QUICK_JOB_MODES.find(function(mode) { return mode.persona === persona; });
+  return match ? match.id : QUICK_JOB_MODES[0].id;
+}
+
+function listQuickJobProviders() {
+  return (state.settingsData.providers || []).filter(function(provider) {
+    return provider && provider.enabled;
+  });
+}
+
+function findQuickProvider(providerId) {
+  const providers = listQuickJobProviders();
+  return providers.find(function(provider) { return provider.id === providerId; }) || providers[0] || null;
+}
+
+function normalizeQuickJobSelection() {
+  const providers = listQuickJobProviders();
+  const activeProviderId = state.settingsData.activeProviderId || "";
+  const fallbackProvider = providers.find(function(provider) { return provider.id === activeProviderId; }) || providers[0] || null;
+  const provider = findQuickProvider(state.selectedQuickProviderId) || fallbackProvider;
+
+  state.selectedQuickMode = resolveQuickMode(state.selectedQuickMode).id;
+  state.selectedPersona = resolveQuickMode(state.selectedQuickMode).persona;
+  state.selectedQuickProviderId = provider ? provider.id : "";
+
+  const models = provider && Array.isArray(provider.models) ? provider.models : [];
+  if (!models.includes(state.selectedQuickModel)) {
+    state.selectedQuickModel = models[0] || "";
+  }
 }
 
 function formatCoord(coord) {
@@ -142,9 +202,23 @@ function mkButton(label, action, data, primary, disabled) {
 
 function renderQuickJobs() {
   const disabled = Boolean(state.busyMessage);
-  const personaOptions = PERSONAS.map(function(p) {
-    return '<option value="' + escapeHtml(p.id) + '"' + (state.selectedPersona === p.id ? " selected" : "") + ">" + escapeHtml(p.title) + "</option>";
+  normalizeQuickJobSelection();
+  const modeOptions = QUICK_JOB_MODES.map(function(mode) {
+    return '<option value="' + escapeHtml(mode.id) + '"' + (state.selectedQuickMode === mode.id ? " selected" : "") + ">" + escapeHtml(mode.label) + "</option>";
   }).join("");
+  const providers = listQuickJobProviders();
+  const selectedProvider = findQuickProvider(state.selectedQuickProviderId);
+  const providerOptions = providers.length > 0
+    ? providers.map(function(provider) {
+        const label = provider.name || PROVIDER_LABELS[provider.type] || provider.id;
+        return '<option value="' + escapeHtml(provider.id) + '"' + (state.selectedQuickProviderId === provider.id ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
+      }).join("")
+    : '<option value="">Workspace default</option>';
+  const modelOptions = selectedProvider && selectedProvider.models && selectedProvider.models.length > 0
+    ? selectedProvider.models.map(function(model) {
+        return '<option value="' + escapeHtml(model) + '"' + (state.selectedQuickModel === model ? " selected" : "") + ">" + escapeHtml(model) + "</option>";
+      }).join("")
+    : '<option value="">Provider default</option>';
   return [
     '<section class="card composer">',
     '<div class="card-body">',
@@ -153,12 +227,19 @@ function renderQuickJobs() {
     '<p class="eyebrow" style="margin-bottom:0">Quick Jobs</p>',
     disabled && state.busyMessage ? '<span class="badge pending">' + escapeHtml(state.busyMessage) + "</span>" : "",
     "</div>",
-    '<textarea id="goal-input" placeholder="Describe what to build or fix..." style="margin-top:8px"' + (disabled ? " disabled" : "") + ">" + escapeHtml(state.draftGoal) + "</textarea>",
-    '<label class="field-label">Agent Personality</label>',
-    '<select id="persona-select"' + (disabled ? " disabled" : "") + ">",
-    personaOptions,
+    '<textarea id="goal-input" class="composer-prompt"' + (disabled ? " disabled" : "") + ' placeholder="Describe what to build or fix...">' + escapeHtml(state.draftGoal) + "</textarea>",
+    '<div class="quick-job-controls">',
+    '<select id="quick-mode-select" aria-label="Quick job mode" title="Mode"' + (disabled ? " disabled" : "") + ">",
+    modeOptions,
     "</select>",
-    '<div class="button-row">',
+    '<select id="quick-provider-select" aria-label="Quick job provider" title="Provider"' + (disabled ? " disabled" : "") + ">",
+    providerOptions,
+    "</select>",
+    '<select id="quick-model-select" aria-label="Quick job model" title="Model"' + (disabled ? " disabled" : "") + ">",
+    modelOptions,
+    "</select>",
+    "</div>",
+    '<div class="button-row button-row--compact">',
     '<button type="button" class="primary" data-action="startSession"' + (disabled ? " disabled" : "") + ">Start</button>",
     '<button type="button" data-action="buildKnowledge" title="Extract reusable patterns from this workspace"' + (disabled ? " disabled" : "") + ">Snippetize</button>",
     '<button type="button" data-action="addKnowledgeRepo" title="Snippetize an external git repo or local path"' + (disabled ? " disabled" : "") + ">+ Repo</button>",
@@ -173,17 +254,18 @@ function renderWizards() {
   const disabled = Boolean(state.busyMessage);
   const items = WIZARDS.map(function(w) {
     const isExpanded = state.expandedWizard === w.id;
+    const collapsedHint = w.steps.length > 0 ? String(w.steps.length) + " steps" : "Run";
     let bodyHtml = "";
     if (isExpanded) {
       const stepsHtml = w.steps.length > 0
-        ? '<p class="wizard-steps">' + w.steps.map(function(s, i) {
-            return (i + 1) + ". " + escapeHtml(s);
-          }).join("  ·  ") + "</p>"
-        : "";
+        ? '<p class="wizard-steps"><span class="wizard-steps-label">Flow:</span> ' + w.steps.map(function(s) {
+            return escapeHtml(s);
+          }).join(" · ") + "</p>"
+        : '<p class="wizard-steps">Focused run for this workflow.</p>';
       bodyHtml = [
         '<div class="wizard-body">',
         stepsHtml,
-        '<div class="button-row">',
+        '<div class="button-row button-row--compact">',
         '<button type="button" class="primary" data-action="openWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
         "</div>",
         "</div>",
@@ -199,7 +281,7 @@ function renderWizards() {
       "</div>",
       '<div class="wizard-tagline">' + escapeHtml(w.tagline) + "</div>",
       "</div>",
-      '<span class="wizard-chevron">' + (isExpanded ? "Hide" : "Open") + "</span>",
+      '<span class="wizard-chevron">' + escapeHtml(isExpanded ? "Hide" : collapsedHint) + "</span>",
       "</div>",
       bodyHtml,
       "</div>",
@@ -478,10 +560,11 @@ function renderSettingsPanel() {
     : '<button type="button" class="settings-nav-btn" data-action="' + backAction + '">Back</button>';
 
   let bodyHtml;
-  if (isProvForm)                          { bodyHtml = renderProviderForm(); }
+  if (isProvForm)                              { bodyHtml = renderProviderForm(); }
   else if (state.settingsPage === "providers") { bodyHtml = renderProvidersPage(); }
-  else if (state.settingsPage)             { bodyHtml = renderSettingsStub(state.settingsPage); }
-  else                                     { bodyHtml = renderSettingsMenu(); }
+  else if (state.settingsPage === "usage")     { bodyHtml = renderUsagePage(); }
+  else if (state.settingsPage)                 { bodyHtml = renderSettingsStub(state.settingsPage); }
+  else                                         { bodyHtml = renderSettingsMenu(); }
 
   return [
     '<section class="card settings-panel">',
@@ -501,9 +584,17 @@ function renderSettingsPanel() {
 }
 
 function renderSettingsMenu() {
+  // Compute total calls from usage data for the badge
+  var totalUsageCalls = 0;
+  if (state.usageData && state.usageData.providers) {
+    state.usageData.providers.forEach(function(p) { totalUsageCalls += p.callCount || 0; });
+  }
+
   const items = MENU_ITEMS.map(function(m) {
-    const provCount = m.id === "providers" ? state.settingsData.providers.length : 0;
-    const badge = provCount > 0 ? ' <span class="menu-count">' + provCount + '</span>' : '';
+    var badgeVal = 0;
+    if (m.id === "providers") { badgeVal = state.settingsData.providers.length; }
+    else if (m.id === "usage") { badgeVal = totalUsageCalls; }
+    const badge = badgeVal > 0 ? ' <span class="menu-count">' + badgeVal + '</span>' : '';
     return [
       '<div class="menu-item" data-action="settingsNav" data-page="' + m.id + '">',
       '<span class="menu-icon">' + m.icon + '</span>',
@@ -529,7 +620,7 @@ function renderProvidersPage() {
             ? '<span class="key-badge set">' + escapeHtml(p.maskedKey) + '</span>'
             : '<span class="key-badge unset">No key</span>';
         const modePills = (p.modes || []).map(function(m) {
-          return '<span class="mode-pill">' + escapeHtml(m) + '</span>';
+          return '<span class="mode-pill">' + escapeHtml(PROVIDER_MODE_LABELS[m] || formatLabel(m)) + '</span>';
         }).join("");
         const enabledClass = p.enabled ? " provider-card--on" : " provider-card--off";
         return [
@@ -620,7 +711,8 @@ function renderProviderForm() {
     '<div class="checkbox-group">',
     ['planning', 'execution', 'indexing'].map(function(mode) {
       const checked = (f.modes || []).includes(mode) ? " checked" : "";
-      return '<label><input type="checkbox" data-mode-check="' + mode + '"' + checked + '> ' + mode.charAt(0).toUpperCase() + mode.slice(1) + '</label>';
+      return '<label><input type="checkbox" data-mode-check="' + mode + '"' + checked + '> '
+        + escapeHtml(PROVIDER_MODE_LABELS[mode] || formatLabel(mode)) + '</label>';
     }).join(""),
     '</div>',
     '</div>',
@@ -633,6 +725,123 @@ function renderProviderForm() {
     '<button type="button" data-action="cancelProvider">Cancel</button>',
     '</div>',
     '</div>',
+  ].join("");
+}
+
+function fmtTokens(n) {
+  if (typeof n !== "number") { return "0"; }
+  if (n >= 1000000) { return (n / 1000000).toFixed(1) + "M"; }
+  if (n >= 1000) { return (n / 1000).toFixed(1) + "K"; }
+  return String(n);
+}
+
+function renderUsageTokenRow(label, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, callCount) {
+  const processed = (inputTokens || 0) + (cacheReadTokens || 0) + (cacheCreationTokens || 0);
+  const cacheHitRate = processed > 0 ? Math.round((cacheReadTokens || 0) / processed * 100) : 0;
+  const hasCaching = (cacheReadTokens || 0) + (cacheCreationTokens || 0) > 0;
+  return [
+    '<div class="usage-row">',
+    '<div class="usage-row-label">' + escapeHtml(formatLabel(label)) + '</div>',
+    '<div class="usage-row-stats">',
+    '<span class="usage-stat" title="Input tokens">&#x2191; ' + fmtTokens(inputTokens) + '</span>',
+    '<span class="usage-stat" title="Output tokens">&#x2193; ' + fmtTokens(outputTokens) + '</span>',
+    hasCaching ? '<span class="usage-stat usage-stat--cache" title="Cache hit rate">' + cacheHitRate + '% hit</span>' : '',
+    '<span class="usage-stat usage-stat--calls" title="API calls">' + (callCount || 0) + ' calls</span>',
+    '</div>',
+    '</div>',
+  ].join("");
+}
+
+function renderUsagePage() {
+  if (state.usageLoading) {
+    return [
+      '<div class="usage-loading">',
+      '<p class="hint">Loading usage data...</p>',
+      '</div>',
+    ].join("");
+  }
+
+  const data = state.usageData;
+  if (!data) {
+    return [
+      '<p class="hint" style="margin-bottom:12px">No usage data loaded yet.</p>',
+      '<button type="button" class="primary" data-action="refreshUsage" style="width:100%">Load Usage Stats</button>',
+    ].join("");
+  }
+
+  const providers = data.providers || [];
+  const byPersona = data.byPersona || [];
+  const byStage = data.byStage || [];
+
+  // Compute totals across all providers
+  let totalIn = 0, totalOut = 0, totalCacheRead = 0, totalCacheCreate = 0, totalCalls = 0;
+  providers.forEach(function(p) {
+    totalIn += p.totalInputTokens || 0;
+    totalOut += p.totalOutputTokens || 0;
+    totalCacheRead += p.totalCacheReadTokens || 0;
+    totalCacheCreate += p.totalCacheCreationTokens || 0;
+    totalCalls += p.callCount || 0;
+  });
+  const totalProcessed = totalIn + totalCacheRead + totalCacheCreate;
+  const totalCacheHitRate = totalProcessed > 0 ? Math.round(totalCacheRead / totalProcessed * 100) : 0;
+
+  const summaryHtml = [
+    '<div class="usage-summary">',
+    '<div class="usage-summary-grid">',
+    '<div class="usage-summary-cell"><div class="usage-summary-value">' + fmtTokens(totalIn + totalCacheCreate + totalCacheRead) + '</div><div class="usage-summary-label">Total Input</div></div>',
+    '<div class="usage-summary-cell"><div class="usage-summary-value">' + fmtTokens(totalOut) + '</div><div class="usage-summary-label">Total Output</div></div>',
+    '<div class="usage-summary-cell"><div class="usage-summary-value">' + totalCacheHitRate + '%</div><div class="usage-summary-label">Cache Hit Rate</div></div>',
+    '<div class="usage-summary-cell"><div class="usage-summary-value">' + totalCalls + '</div><div class="usage-summary-label">API Calls</div></div>',
+    '</div>',
+    '</div>',
+  ].join("");
+
+  const providersHtml = providers.length === 0
+    ? '<p class="empty">No provider data recorded yet.</p>'
+    : providers.map(function(p) {
+        return renderUsageTokenRow(
+          p.provider + (p.model ? ' (' + p.model + ')' : ''),
+          p.totalInputTokens, p.totalOutputTokens,
+          p.totalCacheReadTokens, p.totalCacheCreationTokens,
+          p.callCount
+        );
+      }).join("");
+
+  const personaHtml = byPersona.length === 0
+    ? '<p class="empty">No persona data recorded yet.</p>'
+    : byPersona.map(function(p) {
+        return renderUsageTokenRow(p.label, p.totalInputTokens, p.totalOutputTokens, p.totalCacheReadTokens, p.totalCacheCreationTokens, p.callCount);
+      }).join("");
+
+  const stageOrder = ["planning", "annotation", "execution", "debug", "question_answer", "indexing"];
+  const sortedStages = byStage.slice().sort(function(a, b) {
+    var ai = stageOrder.indexOf(a.label);
+    var bi = stageOrder.indexOf(b.label);
+    if (ai === -1) { ai = 99; }
+    if (bi === -1) { bi = 99; }
+    return ai - bi;
+  });
+  const stageHtml = sortedStages.length === 0
+    ? '<p class="empty">No stage data recorded yet.</p>'
+    : sortedStages.map(function(s) {
+        return renderUsageTokenRow(s.label, s.totalInputTokens, s.totalOutputTokens, s.totalCacheReadTokens, s.totalCacheCreationTokens, s.callCount);
+      }).join("");
+
+  return [
+    summaryHtml,
+    '<div class="usage-section">',
+    '<div class="usage-section-title">By Provider</div>',
+    providersHtml,
+    '</div>',
+    '<div class="usage-section">',
+    '<div class="usage-section-title">By Persona</div>',
+    personaHtml,
+    '</div>',
+    '<div class="usage-section">',
+    '<div class="usage-section-title">By Stage / Mode</div>',
+    stageHtml,
+    '</div>',
+    '<button type="button" data-action="refreshUsage" style="width:100%;margin-top:12px">Refresh</button>',
   ].join("");
 }
 
@@ -710,9 +919,29 @@ function render() {
   if (goalInput) {
     goalInput.addEventListener("input", function(e) { state.draftGoal = e.target.value; persistState(); });
   }
-  const personaSelect = document.getElementById("persona-select");
-  if (personaSelect) {
-    personaSelect.addEventListener("change", function(e) { state.selectedPersona = e.target.value; persistState(); });
+  const quickModeSelect = document.getElementById("quick-mode-select");
+  if (quickModeSelect) {
+    quickModeSelect.addEventListener("change", function(e) {
+      state.selectedQuickMode = e.target.value;
+      state.selectedPersona = resolveQuickMode(state.selectedQuickMode).persona;
+      persistState();
+    });
+  }
+  const quickProviderSelect = document.getElementById("quick-provider-select");
+  if (quickProviderSelect) {
+    quickProviderSelect.addEventListener("change", function(e) {
+      state.selectedQuickProviderId = e.target.value;
+      normalizeQuickJobSelection();
+      persistState();
+      render();
+    });
+  }
+  const quickModelSelect = document.getElementById("quick-model-select");
+  if (quickModelSelect) {
+    quickModelSelect.addEventListener("change", function(e) {
+      state.selectedQuickModel = e.target.value;
+      persistState();
+    });
   }
   const debugIntentInput = document.getElementById("debug-intent-input");
   if (debugIntentInput) {
@@ -808,6 +1037,18 @@ root.addEventListener("click", function(event) {
     }
     state.settingsPage = page;
     state.providerForm = null;
+    if (page === "usage" && !state.usageData) {
+      state.usageLoading = true;
+      vscode.postMessage({ type: "requestUsageStats" });
+    }
+    render();
+    return;
+  }
+
+  if (action === "refreshUsage") {
+    state.usageLoading = true;
+    state.usageData = null;
+    vscode.postMessage({ type: "requestUsageStats" });
     render();
     return;
   }
@@ -906,7 +1147,16 @@ root.addEventListener("click", function(event) {
   if (action === "startSession") {
     const goal = state.draftGoal.trim();
     if (goal && !state.busyMessage) {
-      vscode.postMessage({ type: "startSession", goal, persona: state.selectedPersona });
+      normalizeQuickJobSelection();
+      vscode.postMessage({
+        type: "startSession",
+        goal,
+        persona: resolveQuickMode(state.selectedQuickMode).persona,
+        runtimeSelection: {
+          providerId: state.selectedQuickProviderId,
+          model: state.selectedQuickModel,
+        },
+      });
     }
     return;
   }
@@ -915,7 +1165,7 @@ root.addEventListener("click", function(event) {
     if (!state.busyMessage) {
       const wizardId = el.getAttribute("data-wizard-id");
       if (wizardId) {
-        vscode.postMessage({ type: "openWizard", wizardId, persona: state.selectedPersona });
+        vscode.postMessage({ type: "openWizard", wizardId, goal: state.draftGoal.trim(), persona: state.selectedPersona });
       }
     }
     return;
@@ -997,8 +1247,16 @@ window.addEventListener("message", function(event) {
     return;
   }
   if (message.type === "settings") {
-    state.settingsData = Object.assign({ providers: [] }, message.data || {});
-    if (state.settingsOpen) { render(); }
+    state.settingsData = Object.assign({ providers: [], activeProviderId: "" }, message.data || {});
+    normalizeQuickJobSelection();
+    persistState();
+    render();
+    return;
+  }
+  if (message.type === "usageStats") {
+    state.usageData = message.data || { providers: [], byPersona: [], byStage: [] };
+    state.usageLoading = false;
+    if (state.settingsOpen && state.settingsPage === "usage") { render(); }
     return;
   }
   if (message.type === "state") {
@@ -1022,3 +1280,4 @@ window.addEventListener("message", function(event) {
 });
 
 render();
+vscode.postMessage({ type: "requestSettings" });

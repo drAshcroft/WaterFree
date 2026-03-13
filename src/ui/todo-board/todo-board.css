@@ -153,23 +153,18 @@ p {
 }
 
 .summary-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .summary-card {
-  padding: 10px 12px;
+  padding: 5px 8px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  align-items: flex-start;
-}
-
-.summary-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  align-items: center;
+  gap: 6px;
 }
 
 .summary-label {
@@ -179,13 +174,13 @@ p {
 }
 
 .summary-value {
-  font-size: 18px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .summary-hint {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .workspace {
@@ -219,8 +214,8 @@ p {
 
 .tree-group-header {
   width: 100%;
-  min-height: 30px;
-  padding: 0;
+  min-height: 24px;
+  padding: 0 2px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -239,13 +234,20 @@ p {
 
 .tree-group-name {
   font-weight: 600;
+  font-size: 12px;
 }
 
 .tree-group-body {
-  margin-top: 8px;
+  margin-top: 4px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
+}
+
+.tree-group-arrow,
+.tree-group-count {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .tree-empty {
@@ -279,8 +281,8 @@ p {
 
 .tree-task-row {
   width: 100%;
-  min-height: 34px;
-  padding: 6px 8px;
+  min-height: 24px;
+  padding: 2px 6px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -300,9 +302,8 @@ p {
 
 .tree-task-main {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .tree-task-title-row {
@@ -310,11 +311,12 @@ p {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  width: 100%;
 }
 
 .tree-task-title {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -322,10 +324,12 @@ p {
 
 .tree-task-meta {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-left: auto;
+  padding-left: 8px;
 }
 
 .tree-task-badges {
@@ -334,6 +338,31 @@ p {
   gap: 6px;
   flex-shrink: 0;
 }
+
+.tree-priority {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.tree-priority.priority-P0 { color: var(--danger); }
+.tree-priority.priority-P1 { color: color-mix(in srgb, var(--danger) 45%, var(--warning)); }
+.tree-priority.priority-P2 { color: var(--accent); }
+.tree-priority.priority-spike { color: var(--warning); }
+
+.tree-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.tree-status-dot.complete { background: var(--success); }
+.tree-status-dot.executing { background: var(--accent); }
+.tree-status-dot.pending,
+.tree-status-dot.annotating,
+.tree-status-dot.negotiating { background: var(--warning); }
+.tree-status-dot.skipped { background: var(--danger); }
 
 .editor-panel {
   display: flex;
@@ -355,7 +384,7 @@ p {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .badge {
@@ -488,20 +517,19 @@ button.primary:hover:enabled {
 .editor-sections {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
+  margin-top: 8px;
 }
 
 .editor-section {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-alt);
-  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: transparent;
 }
 
 .editor-section summary {
   list-style: none;
   cursor: pointer;
-  padding: 9px 10px;
+  padding: 10px 0;
   font-weight: 600;
 }
 
@@ -510,11 +538,11 @@ button.primary:hover:enabled {
 }
 
 .editor-section summary:hover {
-  background: var(--list-hover);
+  color: var(--accent);
 }
 
 .editor-section-body {
-  padding: 0 10px 10px;
+  padding: 0 0 12px;
 }
 
 .section-hint {
@@ -562,10 +590,6 @@ button.primary:hover:enabled {
 }
 
 @media (max-width: 1080px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .workspace {
     grid-template-columns: 1fr;
   }
@@ -576,8 +600,7 @@ button.primary:hover:enabled {
     padding: 10px;
   }
 
-  .toolbar-grid,
-  .summary-grid {
+  .toolbar-grid {
     grid-template-columns: 1fr;
   }
 
@@ -588,4 +611,33 @@ button.primary:hover:enabled {
   .dependency-row select {
     grid-column: 2;
   }
+}
+
+body.compact-mode .page-subtitle,
+body.compact-mode .summary-hint,
+body.compact-mode .tree-task-meta {
+  display: none;
+}
+
+body.compact-mode .workspace {
+  grid-template-columns: 1fr;
+}
+
+body.compact-mode .editor-panel {
+  position: sticky;
+  bottom: 0;
+}
+
+body.compact-mode .editor-card-body {
+  max-height: 42vh;
+  overflow: auto;
+}
+
+body.compact-mode .tree-task-row {
+  min-height: 22px;
+  padding: 1px 4px;
+}
+
+body.compact-mode .summary-grid {
+  gap: 4px;
 }

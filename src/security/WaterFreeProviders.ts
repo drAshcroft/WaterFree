@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-export type ProviderType = "claude" | "openai" | "ollama" | "huggingface" | "mock";
+export type ProviderType = "claude" | "openai" | "groq" | "ollama" | "huggingface" | "mock";
 export type ProviderConnectionStyle = "native" | "compatible" | "local" | "none";
 export type ProviderStage =
   | "planning"
@@ -112,6 +112,7 @@ const PROVIDERS_FILENAME = "providers.json";
 const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6"],
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
+  groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
   ollama: ["llama3.2"],
   huggingface: [],
 };
@@ -129,6 +130,13 @@ const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string,
     annotation: "gpt-4o-mini",
     execution: "gpt-4o",
     debug: "gpt-4o-mini",
+  },
+  groq: {
+    default: "llama-3.3-70b-versatile",
+    planning: "llama-3.3-70b-versatile",
+    annotation: "llama-3.1-8b-instant",
+    execution: "llama-3.3-70b-versatile",
+    debug: "llama-3.1-8b-instant",
   },
   ollama: {
     default: "llama3.2",
@@ -682,6 +690,8 @@ function normalizeProviderType(value: unknown): ProviderType | null {
     case "chatgpt":
     case "codex":
       return "openai";
+    case "groq":
+      return "groq";
     case "ollama":
       return "ollama";
     case "huggingface":
@@ -703,6 +713,8 @@ function normalizeName(value: unknown, type: ProviderType): string {
       return "Claude";
     case "openai":
       return "OpenAI / ChatGPT";
+    case "groq":
+      return "Groq";
     case "ollama":
       return "Ollama";
     case "huggingface":

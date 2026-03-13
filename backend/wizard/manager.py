@@ -200,6 +200,60 @@ class WizardManager:
             "stageId": stage.id,
         }
 
+    def run_stage_clarify(
+        self,
+        *,
+        run_id: str,
+        stage_id: str,
+        runtime,
+        extra_context: str = "",
+    ) -> dict:
+        """Ask the LLM for clarifying questions about the current stage instead of generating drafts."""
+        run = self.load_run(run_id)
+        stage = self._require_stage(run, stage_id)
+        if not is_stage_unlocked(run, stage):
+            raise ValueError(f"Stage '{stage.title}' is locked until earlier stages are accepted.")
+
+        notes_map = self._renderer.load_notes_map(stage)
+        self._apply_notes_map(stage, notes_map)
+        if stage.id == MARKET_RESEARCH_TEMPLATE.id and extra_context.strip():
+            idea_chunk = stage.get_chunk("initial_goal")
+            normalized = _normalize_goal_text(extra_context)
+            if idea_chunk and normalized:
+                idea_chunk.notes_snapshot = normalized
+            if normalized:
+                run.goal = normalized
+        self._sync_run_goal_from_market_stage(run, stage)
+
+        stage_context = self._executor.build_stage_context(run, stage, extra_context=extra_context)
+        clarify_fn = getattr(runtime, "run_wizard_clarify", None)
+        if callable(clarify_fn):
+            questions = clarify_fn(
+                stage_kind=stage.kind,
+                stage_title=stage.title,
+                goal=run.goal,
+                context=stage_context,
+                workspace_path=run.workspace_path,
+                persona=stage.persona,
+            )
+        else:
+            questions = [
+                f"What is the primary problem '{run.goal}' solves?",
+                "Who is the most important user?",
+                "What is the single most important feature for v1?",
+            ]
+
+        if isinstance(questions, list):
+            stage.questions = [str(q).strip() for q in questions if str(q).strip()]
+        stage.updated_at = _now()
+        self._ensure_stage_doc(run, stage)
+        self.save_run(run)
+        return {
+            "wizard": run.to_dict(),
+            "openDocPath": stage.doc_path,
+            "stageId": stage.id,
+        }
+
     def accept_chunk(self, *, run_id: str, stage_id: str, chunk_id: str) -> dict:
         run = self.load_run(run_id)
         stage = self._require_stage(run, stage_id)

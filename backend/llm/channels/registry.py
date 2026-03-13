@@ -79,6 +79,6 @@ class ChannelRegistry:
             )
         return self._channels[cache_key]
 
-    def get_usage_stats(self) -> list[dict]:
+    def get_usage_stats(self) -> dict:
         """Return all persisted usage records for this workspace."""
         return self._usage_store.get_all()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.llm.provider_profiles import ProviderProfile, ProviderProfileDocument
+from backend.llm.provider_profiles import ProviderProfile, ProviderProfileDocument, SubagentProviderOverride
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ def resolve_provider(
     persona: str,
     preferred_runtime: str = "",
     provider_id: str = "",
+    subagent_id: str = "",
 ) -> ResolvedProvider | None:
     candidates = [
         item for item in ordered_providers(document)
@@ -28,6 +29,19 @@ def resolve_provider(
         and item.supports_persona(persona)
         and runtime_matches(item, preferred_runtime)
     ]
+
+    # Subagent overrides take priority over all other resolution, keeping
+    # subagents' token accounting isolated under their own provider/session.
+    if subagent_id:
+        override = _find_subagent_override(document, subagent_id)
+        if override is not None:
+            overridden = next((c for c in candidates if c.id == override.provider_id), None)
+            if overridden is not None:
+                return ResolvedProvider(
+                    profile=overridden,
+                    runtime_name=runtime_name_for_provider(overridden),
+                )
+
     if provider_id:
         explicit = next((item for item in candidates if item.id == provider_id), None)
         if explicit is not None:
@@ -38,6 +52,15 @@ def resolve_provider(
     if candidates:
         chosen = candidates[0]
         return ResolvedProvider(profile=chosen, runtime_name=runtime_name_for_provider(chosen))
+    return None
+
+
+def _find_subagent_override(
+    document: ProviderProfileDocument, subagent_id: str
+) -> SubagentProviderOverride | None:
+    for override in document.policies.subagent_overrides:
+        if override.subagent_id == subagent_id:
+            return override
     return None
 
 

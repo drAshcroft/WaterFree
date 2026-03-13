@@ -1,14 +1,10 @@
-import shutil
 import unittest
-import uuid
 from pathlib import Path
 
 import backend.llm.context_builder as context_builder_module
 from backend.llm.context_builder import ContextBuilder
 from backend.session.models import PlanDocument, Task
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_context_builder_design_inputs"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class FakeGraph:
@@ -38,10 +34,7 @@ class ContextBuilderDesignInputTests(unittest.TestCase):
         context_builder_module.knowledge_retriever.search_for_context = self._orig_search
 
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="context-builder-")
 
     def test_planning_context_includes_ranked_design_inputs(self) -> None:
         workspace = self.make_workspace()

@@ -1,8 +1,6 @@
-import shutil
 import sys
 import types
 import unittest
-import uuid
 from pathlib import Path
 
 if "anthropic" not in sys.modules:
@@ -10,17 +8,12 @@ if "anthropic" not in sys.modules:
 
 from backend.server import Server
 from backend.session.models import AIState, PlanDocument, Task, TaskStatus
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_server_finalize_execution"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class ServerFinalizeExecutionTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="server-finalize-")
 
     def make_server(self) -> Server:
         server = Server.__new__(Server)

@@ -1,22 +1,15 @@
-import shutil
 import json
 import unittest
-import uuid
 from pathlib import Path
 
 from backend.session.models import PlanDocument, Task, TaskDependency, TaskStatus
+from backend.test_support import make_temp_dir as make_test_dir
 from backend.todo.store import TaskStore
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_task_store_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class TaskStoreTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="todo-store-")
 
     def test_queue_todo_persists_and_deduplicates(self) -> None:
         workspace = self.make_workspace()

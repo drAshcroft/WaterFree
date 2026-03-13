@@ -6,7 +6,6 @@ description: Use the WaterFree task MCP tools to inspect the workspace backlog, 
 # WaterFree — Task / Todo Store Tools
 
 You have access to the workspace task backlog via the `waterfree-todos` MCP server.
-This is like a mini Jira board with hierarchical  todos, reoccuring checks, and search.
 Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite).
 
 ## When to Use
@@ -18,20 +17,51 @@ Use these tools when you need to:
 - Mark a task complete after finishing it — use `update_task` with `"status": "complete"`
 - Check what to work on next (highest-priority, no blockers) — use `get_next_task`
 - See only unblocked work — use `get_ready_tasks`
-- Build todos that need to be rechecked - use 
+- Create a recurring health check or review — use `add_task` then patch `timing` to `"recurring"`
 
 ## Task Model
 
 Each task has:
-- `id` — UUID
+
+**Identity & classification**
+- `id` — UUID (auto-generated)
 - `title` — one-line summary
-- `description` — full description
-- `priority` — `P0` (critical) | `P1` | `P2` (default) | `P3` | `spike`
-- `status` — `pending` | `ready` | `executing` | `complete` | `skipped`
+- `description` — full description of what needs to be done
+- `rationale` — *why* this task exists (motivation, not steps)
+- `taskType` — `impl` | `test` | `spike` | `review` | `refactor` | `protocol` | `bug_fix` | `feature` | `task`
+- `phase` — optional milestone/sprint label for grouping
+
+**Priority & status**
+- `priority` — `P0` (blocker) | `P1` (critical path) | `P2` (default, this session) | `P3` (backlog) | `spike` (research, no code)
+- `status` — `pending` | `executing` | `complete` | `skipped`
+
+**Scheduling & recurrence**
+- `timing` — `one_time` (default) | `recurring`
+  - **Recurring tasks auto-reset to `pending` when marked `complete`.** Use this for periodic checks, weekly reviews, or ongoing health monitors that should recur indefinitely.
+- `trigger` — free-text description of *what event or condition* should prompt re-evaluation (e.g. `"after each release"`, `"when coverage drops below 80%"`). Most useful with `recurring`.
+
+**Completion gate**
+- `acceptanceCriteria` — free-text definition of done. Describe what must be true for the task to be considered finished. Used in search and displayed to implementors.
+
+**Ownership**
 - `owner` — `{ type: "human"|"agent"|"unassigned", name: "..." }`
-- `phase` — optional milestone label
-- `targetCoord` — optional file/line the task applies to
-- `dependsOn` — list of blocking task IDs
+
+**Location anchors**
+- `targetCoord` — primary file/line the task applies to: `{ file, line, class, method, anchorType }`
+- `contextCoords` — additional file/line anchors for related context (array of same shape)
+
+**Dependencies**
+- `dependsOn` — list of `{ taskId, type }` entries
+  - `type: "blocks"` — hard dependency: cannot start until that task completes
+  - `type: "informs"` — soft: that task's output changes how this task is done
+  - `type: "shares-file"` — warns of conflict risk if worked in parallel
+
+**Effort tracking**
+- `estimatedMinutes` / `actualMinutes` — optional time tracking
+
+**Notes**
+- `humanNotes` — notes written by a human for the implementor
+- `aiNotes` — notes written by an agent (observations, blockers, progress)
 
 ## Tools
 
@@ -49,6 +79,7 @@ list_tasks(workspace_path="...", owner="agent", ready_only=true)
 search_tasks(workspace_path="/absolute/path/to/project", query="authentication")
 search_tasks(workspace_path="...", query="database migration")
 ```
+Searches title, description, rationale, file paths, owner, `acceptanceCriteria`, and `trigger`.
 
 ### Get the next task to work on
 ```
@@ -84,6 +115,9 @@ add_task(..., target_file="src/api/auth.py", target_line=-1)
 - `-1` — end of file
 - positive integer — that exact line number
 
+After creating a task, use `update_task` to set `taskType`, `timing`, `trigger`,
+`acceptanceCriteria`, or `dependsOn` if needed.
+
 ### Update a task
 ```
 update_task(
@@ -92,14 +126,53 @@ update_task(
     patch='{"status": "complete", "actualMinutes": 45}'
 )
 ```
-Supported patch keys: `title`, `description`, `rationale`, `priority`, `phase`, `status`,
-`owner` (object), `blockedReason`, `humanNotes`, `aiNotes`, `estimatedMinutes`, `actualMinutes`.
 
-Valid status values: `pending`, `ready`, `executing`, `complete`, `skipped`
+**All supported patch keys:**
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `title` | string | |
+| `description` | string | |
+| `rationale` | string | |
+| `priority` | string | `P0`\|`P1`\|`P2`\|`P3`\|`spike` |
+| `phase` | string | |
+| `status` | string | `pending`\|`executing`\|`complete`\|`skipped` |
+| `taskType` | string | `impl`\|`test`\|`spike`\|`review`\|`refactor`\|`protocol`\|`bug_fix`\|`feature`\|`task` |
+| `timing` | string | `one_time`\|`recurring` |
+| `trigger` | string | When/why the task recurs |
+| `acceptanceCriteria` | string | Definition of done |
+| `owner` | object | `{ "type": "agent", "name": "..." }` |
+| `blockedReason` | string | Why this task can't proceed |
+| `humanNotes` | string | Notes from a human |
+| `aiNotes` | string | Notes from the agent |
+| `estimatedMinutes` | int | |
+| `actualMinutes` | int | |
+| `targetCoord` | object | `{ "file": "...", "line": 42, "anchorType": "modify" }` |
+| `dependsOn` | array | `[{ "taskId": "...", "type": "blocks" }]` |
+| `contextCoords` | array | Additional file/line anchors |
+| `startedAt` | string | ISO timestamp |
+| `completedAt` | string | ISO timestamp |
 
 ### Delete a task
 ```
 delete_task(workspace_path="/absolute/path/to/project", task_id="<uuid>")
+```
+
+## Recurring task pattern
+
+To create a recurring check (e.g. review test coverage after every sprint):
+```
+# 1. Create the task
+add_task(workspace_path="...", title="Review test coverage", description="...")
+
+# 2. Make it recurring with a trigger
+update_task(workspace_path="...", task_id="<uuid>",
+    patch='{"timing": "recurring", "trigger": "after each release"}')
+
+# 3. When done for this cycle, mark complete — it auto-resets to pending
+update_task(workspace_path="...", task_id="<uuid>",
+    patch='{"status": "complete", "actualMinutes": 15}')
+# → status is immediately reset to "pending" by the server
 ```
 
 ## Tips
@@ -108,3 +181,6 @@ delete_task(workspace_path="/absolute/path/to/project", task_id="<uuid>")
 - Use `list_tasks(status="executing")` to see what's actively in progress.
 - When you finish a task, immediately update its status to `"complete"`.
 - Priority order: P0 > P1 > P2 > P3 > spike.
+- Use `acceptanceCriteria` when the definition of done is non-obvious — it surfaces in search.
+- Use `aiNotes` to leave breadcrumbs about what you discovered or why you stopped.
+- `dependsOn` with `type: "informs"` (soft) won't block scheduling but signals to read that task's output first.

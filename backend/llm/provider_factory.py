@@ -18,6 +18,8 @@ class ProviderRuntimeSpec:
     model_name: str
     model: Any
     supports_prompt_caching_middleware: bool = False
+    extended_thinking_enabled: bool = False
+    thinking_budget_tokens: int = 10_000
     summarization_enabled: bool = True
     summarization_threshold: int = 30_000
     usage_key: str = ""
@@ -39,6 +41,8 @@ def build_runtime_spec(
     threshold = policies.summarization_thresholds.get(stage.upper(), 30_000)
     metadata: dict[str, Any] = {}
     model: Any = f"{provider_type}:{model_name}" if model_name else profile.type
+    extended_thinking = False
+    thinking_budget = 0
 
     if provider_type == "openai":
         metadata = build_openai_metadata(profile, stage_key, persona, session_key)
@@ -58,17 +62,46 @@ def build_runtime_spec(
         except Exception:
             model = f"openai:{model_name}"
     elif provider_type == "anthropic":
+        anthropic_opts = profile.optimizations.anthropic
+        thinking_budget = int(anthropic_opts.get("thinkingBudgetTokens", 10_000))
+        # Extended thinking only applies to reasoning-heavy stages.
+        _thinking_stages = {"planning", "annotation", "question_answer", "alter_annotation"}
+        extended_thinking = (
+            bool(anthropic_opts.get("extendedThinking", False))
+            and stage_key in _thinking_stages
+        )
         try:
             from langchain_anthropic import ChatAnthropic
 
+            anthropic_model_kwargs: dict[str, Any] = {}
+            if extended_thinking:
+                # Extended thinking requires the interleaved-thinking beta.
+                # It is mutually exclusive with prompt caching — handled in
+                # _attach_middleware via supports_prompt_caching_middleware=False.
+                anthropic_model_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                }
             model = ChatAnthropic(
                 model_name=model_name,
                 api_key=profile.connection.api_key or None,
                 base_url=profile.connection.base_url or None,
                 stream_usage=True,
+                **({"model_kwargs": anthropic_model_kwargs} if anthropic_model_kwargs else {}),
             )
         except Exception:
             model = f"anthropic:{model_name}"
+            extended_thinking = False
+    elif provider_type == "groq":
+        try:
+            from langchain_groq import ChatGroq
+
+            model = ChatGroq(
+                model=model_name,
+                api_key=profile.connection.api_key or None,
+            )
+        except Exception:
+            model = f"groq:{model_name}"
     elif provider_type == "ollama":
         model = f"ollama:{model_name}"
 
@@ -79,8 +112,12 @@ def build_runtime_spec(
         runtime_name=runtime_name,
         model_name=model_name,
         model=model,
+        # Prompt caching and extended thinking are mutually exclusive for Anthropic.
         supports_prompt_caching_middleware=provider_type == "anthropic"
-        and bool(profile.optimizations.anthropic.get("enablePromptCaching", True)),
+        and bool(profile.optimizations.anthropic.get("enablePromptCaching", True))
+        and not extended_thinking,
+        extended_thinking_enabled=extended_thinking,
+        thinking_budget_tokens=thinking_budget,
         summarization_enabled=profile.features.summarization,
         summarization_threshold=threshold,
         usage_key=profile.id,
@@ -132,7 +169,7 @@ def extract_usage(result: Any, provider_type: str) -> dict[str, int]:
         prompt_details = usage.get("prompt_tokens_details", {}) or {}
         cache_read_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
         cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-        if provider_type == "openai":
+        if provider_type in {"openai", "groq"}:
             cache_read_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
             cache_creation_tokens = 0
         return {

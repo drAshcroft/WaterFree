@@ -1,19 +1,13 @@
-import shutil
 import unittest
-import uuid
 from pathlib import Path
 
 from backend.llm.skills import SkillAdapter, SkillRegistry
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_skill_adapter_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class SkillAdapterTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="skill-adapter-")
 
     def write_skill(self, workspace: Path, name: str, description: str) -> None:
         path = workspace / "skills" / name

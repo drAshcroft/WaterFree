@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-import tempfile
 import unittest
 
 from backend.llm.channels.deepagents_channel import DeepAgentsChannel
@@ -11,7 +9,9 @@ from backend.llm.provider_profiles import (
     normalize_provider_profile,
 )
 from backend.llm.provider_resolver import resolve_provider
+from backend.session.models import PlanDocument, RuntimeSelection
 from backend.server import Server
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class _DummySkillAdapter:
@@ -126,6 +126,17 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(usage["cache_read_tokens"], 80)
         self.assertEqual(usage["cache_creation_tokens"], 0)
 
+    def test_groq_default_profile_uses_groq_defaults(self) -> None:
+        profile = default_provider_profile_document("groq")
+        groq = profile.catalog[0]
+
+        self.assertEqual(profile.active_provider_id, "groq-default")
+        self.assertEqual(groq.id, "groq-default")
+        self.assertEqual(groq.type, "groq")
+        self.assertEqual(groq.label, "Groq")
+        self.assertEqual(groq.model_for_stage("planning"), "llama-3.3-70b-versatile")
+        self.assertEqual(groq.model_for_stage("annotation"), "llama-3.1-8b-instant")
+
     def test_channel_create_agent_handles_current_summarization_api(self) -> None:
         profile = default_provider_profile_document("claude")
         channel = DeepAgentsChannel(
@@ -154,8 +165,7 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(agent["name"], profile.catalog[0].id)
 
     def test_server_sync_profile_invalidates_runtime_cache(self) -> None:
-        workspace = tempfile.mkdtemp(prefix="waterfree-provider-profile-")
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
+        workspace = str(make_test_dir(self, prefix="provider-profile-"))
         server = Server()
         self.addCleanup(server.close)
 
@@ -165,3 +175,48 @@ class ProviderProfileTests(unittest.TestCase):
         second = server._get_runtime(workspace)
 
         self.assertIsNot(first, second)
+
+    def test_session_runtime_selection_overrides_provider_and_model(self) -> None:
+        workspace = str(make_test_dir(self, prefix="session-profile-"))
+        server = Server()
+        self.addCleanup(server.close)
+
+        profile = normalize_provider_profile({
+            "activeProviderId": "claude-primary",
+            "catalog": [
+                {
+                    "id": "claude-primary",
+                    "type": "claude",
+                    "enabled": True,
+                    "label": "Claude Primary",
+                    "connection": {"style": "native", "baseUrl": "", "secretRef": "claude", "apiKey": "ak"},
+                    "models": {"default": "claude-sonnet-4-6", "planning": "claude-sonnet-4-6"},
+                },
+                {
+                    "id": "openai-primary",
+                    "type": "openai",
+                    "enabled": True,
+                    "label": "OpenAI Primary",
+                    "connection": {"style": "native", "baseUrl": "", "secretRef": "openai", "apiKey": "sk"},
+                    "models": {"default": "o3-mini", "planning": "o3-mini"},
+                },
+            ],
+        })
+        server._set_provider_profile(workspace, profile)
+
+        doc = PlanDocument(
+            goal_statement="Fix the login flow",
+            workspace_path=workspace,
+            persona="architect",
+            runtime_selection=RuntimeSelection(
+                provider_id="openai-primary",
+                model="gpt-4o-mini",
+            ),
+        )
+
+        resolved = server._get_provider_profile_for_session(doc)
+        active = next(item for item in resolved.catalog if item.id == resolved.active_provider_id)
+
+        self.assertEqual(resolved.active_provider_id, "openai-primary")
+        self.assertEqual(active.model_for_stage("planning"), "gpt-4o-mini")
+        self.assertEqual(active.model_for_stage("execution"), "gpt-4o-mini")

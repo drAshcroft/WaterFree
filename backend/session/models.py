@@ -33,7 +33,7 @@ __all__ = [
     # annotation
     "AnnotationStatus", "IntentAnnotation",
     # session
-    "AIState", "SessionStatus", "SessionNote", "PlanDocument",
+    "AIState", "SessionStatus", "SessionNote", "RuntimeSelection", "PlanDocument",
 ]
 
 
@@ -76,11 +76,31 @@ class SessionNote:
 
 
 @dataclass
+class RuntimeSelection:
+    provider_id: str = ""
+    model: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "providerId": self.provider_id,
+            "model": self.model,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> RuntimeSelection:
+        return cls(
+            provider_id=str(d.get("providerId", "")).strip(),
+            model=str(d.get("model", "")).strip(),
+        )
+
+
+@dataclass
 class PlanDocument:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     goal_statement: str = ""
     workspace_path: str = ""
     persona: str = "default"
+    runtime_selection: RuntimeSelection = field(default_factory=RuntimeSelection)
     tasks: list[Task] = field(default_factory=list)
     status: SessionStatus = SessionStatus.PLANNING
     notes: list[SessionNote] = field(default_factory=list)
@@ -103,6 +123,7 @@ class PlanDocument:
             "goalStatement": self.goal_statement,
             "workspacePath": self.workspace_path,
             "persona": self.persona,
+            "runtimeSelection": self.runtime_selection.to_dict(),
             "tasks": [t.to_dict() for t in self.tasks],
             "status": self.status.value,
             "notes": [n.to_dict() for n in self.notes],
@@ -118,6 +139,7 @@ class PlanDocument:
             goal_statement=d.get("goalStatement", ""),
             workspace_path=d.get("workspacePath", ""),
             persona=d.get("persona", "default"),
+            runtime_selection=RuntimeSelection.from_dict(d.get("runtimeSelection", {})),
             tasks=[Task.from_dict(t) for t in d.get("tasks", [])],
             status=SessionStatus(d.get("status", "planning")),
             notes=[SessionNote.from_dict(n) for n in d.get("notes", [])],

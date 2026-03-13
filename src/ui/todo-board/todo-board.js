@@ -29,6 +29,8 @@ const treeCountEl = document.getElementById("tree-count");
 const searchInput = document.getElementById("search-input");
 const treeModeSelect = document.getElementById("tree-mode");
 
+window.addEventListener("resize", applyViewportMode);
+
 window.addEventListener("message", (event) => {
   const message = event.data || {};
   if (message.type !== "state") { return; }
@@ -124,6 +126,7 @@ document.addEventListener("change", (event) => {
 });
 
 function render() {
+  applyViewportMode();
   if (searchInput) { searchInput.value = state.searchQuery; }
   if (treeModeSelect) { treeModeSelect.value = state.treeMode; }
   renderSummary();
@@ -132,6 +135,7 @@ function render() {
 }
 
 function renderSummary() {
+  if (!summaryEl) { return; }
   const all = orderedTasks();
   const visible = filteredTasks();
   const blocked = all.filter((task) => task.dependsOn.length && task.status !== "complete").length;
@@ -280,10 +284,10 @@ function renderGroup(group) {
     '<section class="tree-group">',
     `<button type="button" class="tree-group-header" data-action="toggleGroup" data-group-id="${esc(group.id)}">`,
     '<div class="tree-group-title">',
-    `<span class="badge">${open ? "Hide" : "Show"}</span>`,
+    `<span class="tree-group-arrow">${open ? "v" : ">"}</span>`,
     `<span class="tree-group-name">${esc(group.label)}</span>`,
     '</div>',
-    `<span class="badge">${group.count}</span>`,
+    `<span class="tree-group-count">${group.count}</span>`,
     '</button>',
     open ? `<div class="tree-group-body">${group.content || '<div class="tree-empty">No tasks here.</div>'}</div>` : "",
     '</section>',
@@ -298,12 +302,14 @@ function renderTreeTask(task, depth, extra) {
     `<div class="tree-task depth-${Math.min(depth, 4)}">`,
     `<button type="button" class="tree-task-row${state.selectionId === task.id && state.editorMode === "task" ? " selected" : ""}" data-action="selectTask" data-task-id="${esc(task.id)}">`,
     '<div class="tree-task-main">',
-    `<div class="tree-task-title">${esc(task.title || "Untitled task")}</div>`,
-    `<div class="tree-task-meta">${esc(meta.filter(Boolean).join(" . "))}</div>`,
+    '<div class="tree-task-title-row">',
+    `<span class="tree-task-title">${esc(task.title || "Untitled task")}</span>`,
+    `<span class="tree-task-meta">${esc(meta.filter(Boolean).join(" . "))}</span>`,
+    '</div>',
     '</div>',
     '<div class="tree-task-badges">',
-    `<span class="badge priority-badge priority-${esc(task.priority)}">${esc(task.priority)}</span>`,
-    `<span class="badge status-badge ${esc(task.status)}">${esc(labelize(task.status))}</span>`,
+    `<span class="tree-priority priority-${esc(task.priority)}">${esc(task.priority)}</span>`,
+    `<span class="tree-status-dot ${esc(task.status)}" title="${esc(labelize(task.status))}"></span>`,
     '</div>',
     '</button>',
     '</div>',
@@ -330,11 +336,9 @@ function renderTaskEditor(task) {
     `<span class="badge">${annoCount} annotation${annoCount === 1 ? "" : "s"}</span>`,
     '</div>',
     '<div class="editor-sections">',
-    section("Work", true, workFields("detail", form)),
-    section("Scheduling", true, schedulingFields("detail", form)),
-    section("Ownership And Target", false, ownershipFields("detail", form)),
-    section("Dependencies", false, dependencyFields(task)),
-    section("Notes And Lifecycle", false, notesFields("detail", form)),
+    section("Core", true, workFields("detail", form)),
+    section("Routing And Ownership", false, routingFields("detail", form) + dependencyFields(task)),
+    section("Timing And Notes", false, timingNotesFields("detail", form)),
     '</div>',
     '<div class="button-row"><button type="button" class="primary" data-action="saveTask">Save Changes</button>',
     `<button type="button" data-action="openTask" data-task-id="${esc(task.id)}">Open Target</button>`,
@@ -351,10 +355,9 @@ function renderNewEditor() {
     '<div class="editor-header"><div><p class="eyebrow">Create</p><h2 class="editor-title">New Task</h2><p class="editor-subtitle">Add work without opening every detail until it matters.</p></div>',
     '<button type="button" data-action="cancelNewTask">Close</button></div>',
     '<div class="editor-sections">',
-    section("Work", true, workFields("new", form, true)),
-    section("Scheduling", true, schedulingFields("new", form, true)),
-    section("Ownership And Target", false, ownershipFields("new", form, true)),
-    section("Notes And Lifecycle", false, notesFields("new", form, true)),
+    section("Core", true, workFields("new", form, true)),
+    section("Routing", true, routingFields("new", form, true)),
+    section("Timing And Notes", false, timingNotesFields("new", form, true)),
     '</div>',
     '<div class="button-row"><button type="button" class="primary" data-action="createTask">Create Task</button><button type="button" data-action="cancelNewTask">Cancel</button></div>',
     '</div></section>',
@@ -431,7 +434,7 @@ function dependencyFields(task) {
         '</select></div>',
       ].join("");
     }).join("");
-  return rows || '<div class="empty-state">No other tasks available to link.</div>';
+  return `<p class="section-hint">Dependencies</p>${rows || '<div class="empty-state">No other tasks available to link.</div>'}`;
 }
 
 function notesFields(prefix, form, draft) {
@@ -445,12 +448,20 @@ function notesFields(prefix, form, draft) {
   ].join("");
 }
 
+function routingFields(prefix, form, draft) {
+  return schedulingFields(prefix, form, draft) + ownershipFields(prefix, form, draft);
+}
+
+function timingNotesFields(prefix, form, draft) {
+  return notesFields(prefix, form, draft);
+}
+
 function section(title, open, body) {
   return `<details class="editor-section"${open ? " open" : ""}><summary>${esc(title)}</summary><div class="editor-section-body">${body}</div></details>`;
 }
 
 function summaryCard(label, value, hint) {
-  return `<article class="summary-card"><div class="summary-copy"><span class="summary-label">${esc(label)}</span><span class="summary-value">${esc(String(value))}</span><span class="summary-hint">${esc(hint || "")}</span></div></article>`;
+  return `<article class="summary-card"><span class="summary-label">${esc(label)}</span><span class="summary-value">${esc(String(value))}</span><span class="summary-hint">${esc(hint || "")}</span></article>`;
 }
 
 function fieldText(label, id, value, draftField, placeholder) {
@@ -627,6 +638,10 @@ function persist() {
     treeMode: state.treeMode,
     collapsedGroups: state.collapsedGroups,
   });
+}
+
+function applyViewportMode() {
+  document.body.classList.toggle("compact-mode", window.innerWidth <= 900);
 }
 
 function esc(value) {

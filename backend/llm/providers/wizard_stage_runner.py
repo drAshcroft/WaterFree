@@ -98,6 +98,47 @@ class WizardStageRunner:
             )
         return payload
 
+    def run_wizard_clarify(
+        self,
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> list[str]:
+        """Ask the LLM for 3–5 clarifying questions to sharpen the stage without generating drafts."""
+        effective_persona = route_structural_persona(
+            persona, "planning", stage_kind, stage_title, goal, context, ""
+        )
+        bundle = self._skill_adapter.select(
+            persona=_normalize_persona(effective_persona), stage="planning"
+        )
+        prompt = (
+            "Return JSON only with shape: {\"questions\": [\"...\", \"...\"]}\n\n"
+            f"STAGE KIND: {stage_kind}\n"
+            f"STAGE TITLE: {stage_title}\n"
+            f"GOAL: {goal}\n"
+            "Task: Generate 3–5 concise clarifying questions that would meaningfully improve the quality of "
+            f"the '{stage_title}' stage output. Focus on the most important ambiguities in the goal and context. "
+            "Questions should be answerable with a short user response (one sentence or less).\n\n"
+            f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
+        )
+        result = self._executor._run_deepagents_structured(
+            stage="PLANNING",
+            prompt=prompt,
+            workspace_path=workspace_path,
+            persona=effective_persona,
+        )
+        if isinstance(result, dict) and isinstance(result.get("questions"), list):
+            return [str(q).strip() for q in result["questions"] if str(q).strip()]
+        return [
+            f"What is the primary problem '{goal}' solves and for whom?",
+            "What is the most important capability in the first release?",
+            "Are there existing constraints (tech stack, budget, timeline) that should shape the design?",
+        ]
+
     def _fallback_wizard_stage(
         self,
         *,

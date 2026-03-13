@@ -542,6 +542,30 @@ class MonitorRuntime:
         )
         return payload or {}
 
+    def run_wizard_clarify(
+        self,
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> list[str]:
+        system = build_system_prompt("WIZARD", persona)
+        user = (
+            f"STAGE KIND: {stage_kind}\nSTAGE TITLE: {stage_title}\n"
+            f"GOAL:\n{goal}\n\nCONTEXT:\n{context}\n\n"
+            "Return JSON only with shape: {\"questions\": [\"...\"]}\n"
+            "Generate 3-5 clarifying questions for this stage."
+        )
+        payload = self._capture_structured(
+            stage="WIZARD", persona=persona, system=system, user=user
+        )
+        if isinstance(payload, dict) and isinstance(payload.get("questions"), list):
+            return [str(q).strip() for q in payload["questions"] if str(q).strip()]
+        return []
+
     # ------------------------------------------------------------------
     # Checkpoint / resume (in-memory for monitor sessions)
     # ------------------------------------------------------------------

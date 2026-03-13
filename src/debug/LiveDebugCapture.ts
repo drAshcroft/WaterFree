@@ -5,6 +5,11 @@
  * Uses a DebugAdapterTrackerFactory to intercept the DAP 'stopped' event
  * and record the active threadId. Variable queries are deferred until
  * the developer explicitly triggers the command.
+ *
+ * Also provides:
+ *  - Auto-snapshot: writes live_state.json on every breakpoint hit
+ *  - Eval watcher: watches for eval_request.json and executes expressions
+ *    via DAP evaluate, enabling the MCP debug_eval tool
  */
 
 import * as path from "path";
@@ -32,12 +37,30 @@ export interface VarInfo {
   variablesReference: number;
 }
 
+interface EvalRequest {
+  requestId: string;
+  expression: string;
+  frameId?: number;
+  timestamp: string;
+}
+
+interface EvalResponse {
+  requestId: string;
+  result?: string;
+  resultType?: string;
+  error?: string;
+  timestamp: string;
+}
+
 // ------------------------------------------------------------------
 // Tracker — intercepts DAP messages to capture stopped thread
 // ------------------------------------------------------------------
 
 class PairDebugTracker implements vscode.DebugAdapterTracker {
-  constructor(private readonly _store: ThreadStore) {}
+  constructor(
+    private readonly _store: ThreadStore,
+    private readonly _onStopped?: () => void,
+  ) {}
 
   onDidSendMessage(message: Record<string, unknown>): void {
     if (message["type"] === "event" && message["event"] === "stopped") {
@@ -46,6 +69,7 @@ class PairDebugTracker implements vscode.DebugAdapterTracker {
       if (typeof threadId === "number") {
         this._store.setThreadId(threadId);
       }
+      this._onStopped?.();
     }
   }
 }
@@ -69,6 +93,10 @@ class ThreadStore {
 export class LiveDebugCapture implements vscode.DebugAdapterTrackerFactory, vscode.Disposable {
   private readonly _store = new ThreadStore();
   private readonly _registration: vscode.Disposable;
+  private _workspacePath: string | null = null;
+  private _evalWatcher: vscode.FileSystemWatcher | null = null;
+  private _topFrameId: number | null = null;
+  private _breakpointHitCallbacks: Array<(location: { file: string; line: number; qualifiedName: string; exceptionMessage?: string }) => void> = [];
 
   constructor() {
     // Register for all debug types ('*')
@@ -76,7 +104,152 @@ export class LiveDebugCapture implements vscode.DebugAdapterTrackerFactory, vsco
   }
 
   createDebugAdapterTracker(): vscode.DebugAdapterTracker {
-    return new PairDebugTracker(this._store);
+    return new PairDebugTracker(this._store, () => void this._handleBreakpointHit());
+  }
+
+  // ------------------------------------------------------------------
+  // Workspace / lifecycle
+  // ------------------------------------------------------------------
+
+  setWorkspacePath(workspacePath: string): void {
+    this._workspacePath = workspacePath;
+  }
+
+  onBreakpointHit(
+    callback: (location: { file: string; line: number; qualifiedName: string; exceptionMessage?: string }) => void,
+  ): vscode.Disposable {
+    this._breakpointHitCallbacks.push(callback);
+    return new vscode.Disposable(() => {
+      this._breakpointHitCallbacks = this._breakpointHitCallbacks.filter((cb) => cb !== callback);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Auto-snapshot on breakpoint
+  // ------------------------------------------------------------------
+
+  private async _handleBreakpointHit(): Promise<void> {
+    if (!this._workspacePath) {
+      return;
+    }
+    const session = vscode.debug.activeDebugSession;
+    if (!session) {
+      return;
+    }
+
+    try {
+      const frames = await this._getStackFrames(session);
+      this._topFrameId = (frames[0] as (StackFrameData & { id?: number }))?.id ?? null;
+
+      const exceptionMessage = await this._getExceptionMessage(session);
+      const location = {
+        file: frames[0]?.file ?? "",
+        line: frames[0]?.line ?? 0,
+        qualifiedName: frames[0]?.name ?? "",
+        exceptionMessage,
+      };
+
+      // Write lightweight live_state.json so debug_status shows active immediately
+      const liveState = {
+        capturedAt: new Date().toISOString(),
+        stopReason: exceptionMessage ? "exception" : "breakpoint",
+        location: {
+          file: location.file,
+          line: location.line,
+          qualifiedName: location.qualifiedName,
+        },
+        exceptionMessage: exceptionMessage ?? null,
+      };
+      await this._writeDebugFile("live_state.json", JSON.stringify(liveState, null, 2));
+
+      for (const cb of this._breakpointHitCallbacks) {
+        cb(location);
+      }
+    } catch {
+      // Don't disrupt the debug session on errors
+    }
+  }
+
+  clearLiveState(): void {
+    if (!this._workspacePath) {
+      return;
+    }
+    this._topFrameId = null;
+    const liveStatePath = vscode.Uri.file(
+      path.join(this._workspacePath, ".waterfree", "debug", "live_state.json"),
+    );
+    void vscode.workspace.fs.delete(liveStatePath, { useTrash: false }).then(
+      () => {},
+      () => {},
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Eval watcher — file-based RPC for debug_eval MCP tool
+  // ------------------------------------------------------------------
+
+  startEvalWatcher(): void {
+    if (!this._workspacePath || this._evalWatcher) {
+      return;
+    }
+    const debugDir = path.join(this._workspacePath, ".waterfree", "debug");
+    const pattern = new vscode.RelativePattern(debugDir, "eval_request.json");
+    this._evalWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+    this._evalWatcher.onDidCreate(() => void this._handleEvalRequest());
+    this._evalWatcher.onDidChange(() => void this._handleEvalRequest());
+  }
+
+  stopEvalWatcher(): void {
+    this._evalWatcher?.dispose();
+    this._evalWatcher = null;
+  }
+
+  private async _handleEvalRequest(): Promise<void> {
+    if (!this._workspacePath) {
+      return;
+    }
+    const session = vscode.debug.activeDebugSession;
+    if (!session) {
+      return;
+    }
+
+    const requestPath = vscode.Uri.file(
+      path.join(this._workspacePath, ".waterfree", "debug", "eval_request.json"),
+    );
+
+    let req: EvalRequest;
+    try {
+      const raw = await vscode.workspace.fs.readFile(requestPath);
+      req = JSON.parse(Buffer.from(raw).toString("utf8")) as EvalRequest;
+    } catch {
+      return;
+    }
+
+    // Use stored top frame id if not specified
+    const frameId = req.frameId ?? this._topFrameId ?? 0;
+
+    let response: EvalResponse;
+    try {
+      const evalResp = await session.customRequest("evaluate", {
+        expression: req.expression,
+        frameId,
+        context: "repl",
+      }) as { result: string; type?: string };
+      response = {
+        requestId: req.requestId,
+        result: evalResp.result,
+        resultType: evalResp.type,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err) {
+      response = {
+        requestId: req.requestId,
+        error: err instanceof Error ? err.message : String(err),
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    await this._writeDebugFile("eval_response.json", JSON.stringify(response, null, 2));
   }
 
   // ------------------------------------------------------------------
@@ -265,9 +438,8 @@ export class LiveDebugCapture implements vscode.DebugAdapterTrackerFactory, vsco
       exceptionMessage: ctx.exceptionMessage ?? null,
     };
 
-    const debugDir = vscode.Uri.file(path.join(workspacePath, ".waterfree", "debug"));
-    await vscode.workspace.fs.createDirectory(debugDir);
     const snapshotUri = vscode.Uri.file(path.join(workspacePath, ".waterfree", "debug", "snapshot.json"));
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(snapshotUri.fsPath)));
     await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(JSON.stringify(snapshot, null, 2), "utf8"));
     return snapshotUri.fsPath;
   }
@@ -320,7 +492,22 @@ export class LiveDebugCapture implements vscode.DebugAdapterTrackerFactory, vsco
     }
   }
 
+  // ------------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------------
+
+  private async _writeDebugFile(filename: string, content: string): Promise<void> {
+    if (!this._workspacePath) {
+      return;
+    }
+    const debugDir = vscode.Uri.file(path.join(this._workspacePath, ".waterfree", "debug"));
+    await vscode.workspace.fs.createDirectory(debugDir);
+    const fileUri = vscode.Uri.file(path.join(this._workspacePath, ".waterfree", "debug", filename));
+    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, "utf8"));
+  }
+
   dispose(): void {
     this._registration.dispose();
+    this.stopEvalWatcher();
   }
 }

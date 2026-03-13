@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.llm.channels.base import UsageStats
@@ -70,6 +70,40 @@ class ProviderUsage:
         }
 
 
+@dataclass
+class DimensionUsage:
+    """Token usage bucketed by a single dimension (persona or stage)."""
+
+    label: str
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    call_count: int = 0
+
+    def add(self, stats: UsageStats) -> None:
+        self.total_input_tokens += stats.input_tokens
+        self.total_output_tokens += stats.output_tokens
+        self.total_cache_read_tokens += stats.cache_read_tokens
+        self.total_cache_creation_tokens += stats.cache_creation_tokens
+        self.call_count += 1
+
+    @property
+    def total_processed_input_tokens(self) -> int:
+        return self.total_input_tokens + self.total_cache_creation_tokens + self.total_cache_read_tokens
+
+    def to_dict(self) -> dict:
+        return {
+            "label": self.label,
+            "totalInputTokens": self.total_input_tokens,
+            "totalOutputTokens": self.total_output_tokens,
+            "totalCacheReadTokens": self.total_cache_read_tokens,
+            "totalCacheCreationTokens": self.total_cache_creation_tokens,
+            "totalProcessedInputTokens": self.total_processed_input_tokens,
+            "callCount": self.call_count,
+        }
+
+
 class UsageStore:
     """
     Persists cumulative usage to .waterfree/usage.json.
@@ -80,33 +114,62 @@ class UsageStore:
 
     def __init__(self, workspace_path: str) -> None:
         self._path = Path(workspace_path) / ".waterfree" / "usage.json"
-        self._by_provider: dict[str, ProviderUsage] = self._load()
+        self._by_provider: dict[str, ProviderUsage] = {}
+        self._by_persona: dict[str, DimensionUsage] = {}
+        self._by_stage: dict[str, DimensionUsage] = {}
+        self._load()
 
-    def record(self, provider: str, stats: UsageStats, *, provider_type: str = "", model: str = "") -> None:
+    def record(
+        self,
+        provider: str,
+        stats: UsageStats,
+        *,
+        provider_type: str = "",
+        model: str = "",
+        persona: str = "",
+        stage: str = "",
+    ) -> None:
         """Add stats to the named provider's running totals and flush to disk."""
         if provider not in self._by_provider:
             self._by_provider[provider] = ProviderUsage(provider=provider)
         self._by_provider[provider].add(stats, provider_type=provider_type, model=model)
+
+        if persona:
+            key = persona.strip().lower() or "default"
+            if key not in self._by_persona:
+                self._by_persona[key] = DimensionUsage(label=key)
+            self._by_persona[key].add(stats)
+
+        if stage:
+            key = stage.strip().lower() or "unknown"
+            if key not in self._by_stage:
+                self._by_stage[key] = DimensionUsage(label=key)
+            self._by_stage[key].add(stats)
+
         self._flush()
 
-    def get_all(self) -> list[dict]:
-        return [pu.to_dict() for pu in self._by_provider.values()]
+    def get_all(self) -> dict:
+        return {
+            "providers": [pu.to_dict() for pu in self._by_provider.values()],
+            "byPersona": [du.to_dict() for du in self._by_persona.values()],
+            "byStage": [du.to_dict() for du in self._by_stage.values()],
+        }
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
 
-    def _load(self) -> dict[str, ProviderUsage]:
+    def _load(self) -> None:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {}
-        result: dict[str, ProviderUsage] = {}
+            return
+
         for entry in raw.get("providers", []):
             p = entry.get("provider", "")
             if not p:
                 continue
-            result[p] = ProviderUsage(
+            self._by_provider[p] = ProviderUsage(
                 provider=p,
                 provider_type=str(entry.get("providerType", "") or ""),
                 model=str(entry.get("model", "") or ""),
@@ -116,13 +179,38 @@ class UsageStore:
                 total_cache_creation_tokens=int(entry.get("totalCacheCreationTokens", 0)),
                 call_count=int(entry.get("callCount", 0)),
             )
-        return result
+
+        for entry in raw.get("byPersona", []):
+            lbl = entry.get("label", "")
+            if not lbl:
+                continue
+            self._by_persona[lbl] = DimensionUsage(
+                label=lbl,
+                total_input_tokens=int(entry.get("totalInputTokens", 0)),
+                total_output_tokens=int(entry.get("totalOutputTokens", 0)),
+                total_cache_read_tokens=int(entry.get("totalCacheReadTokens", 0)),
+                total_cache_creation_tokens=int(entry.get("totalCacheCreationTokens", 0)),
+                call_count=int(entry.get("callCount", 0)),
+            )
+
+        for entry in raw.get("byStage", []):
+            lbl = entry.get("label", "")
+            if not lbl:
+                continue
+            self._by_stage[lbl] = DimensionUsage(
+                label=lbl,
+                total_input_tokens=int(entry.get("totalInputTokens", 0)),
+                total_output_tokens=int(entry.get("totalOutputTokens", 0)),
+                total_cache_read_tokens=int(entry.get("totalCacheReadTokens", 0)),
+                total_cache_creation_tokens=int(entry.get("totalCacheCreationTokens", 0)),
+                call_count=int(entry.get("callCount", 0)),
+            )
 
     def _flush(self) -> None:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(
-                json.dumps({"providers": self.get_all()}, indent=2),
+                json.dumps(self.get_all(), indent=2),
                 encoding="utf-8",
             )
         except OSError as exc:

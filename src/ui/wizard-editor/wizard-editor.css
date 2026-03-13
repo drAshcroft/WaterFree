@@ -266,7 +266,41 @@ button.secondary {
   display: none;
 }
 
-/* Body locked state (when current chunk has been submitted and is processing) */
+/* ---- Stage progress bar ---- */
+
+.stage-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 8px 0 0;
+}
+
+.stage-progress-label {
+  font: 600 11px/1.2 var(--vscode-editor-font-family, Consolas, monospace);
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.stage-progress-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--accepted-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.stage-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--button-bg);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ---- Body locked state (when current chunk has been submitted and is processing) ---- */
 .body-editor[aria-readonly="true"] {
   opacity: 0.6;
   pointer-events: none;

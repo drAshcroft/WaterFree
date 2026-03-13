@@ -1,15 +1,11 @@
 import os
-import shutil
 import textwrap
 import unittest
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 from backend.graph.engine import GraphEngine, _project_name
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_graph_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 @contextmanager
@@ -24,10 +20,7 @@ def working_directory(path: Path):
 
 class GraphEngineP0Tests(unittest.TestCase):
     def make_temp_root(self) -> Path:
-        root = _TMP_ROOT / uuid.uuid4().hex
-        root.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
-        return root
+        return make_test_dir(self, prefix="graph-engine-")
 
     def make_repo(self, root: Path, relative_path: str, files: dict[str, str]) -> Path:
         repo = root / relative_path

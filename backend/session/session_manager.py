@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from backend.session.models import PlanDocument, SessionStatus, AIState
+from backend.session.models import AIState, PlanDocument, RuntimeSelection, SessionStatus
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +34,18 @@ class SessionManager:
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    def create_session(self, goal: str, persona: str = "default") -> PlanDocument:
+    def create_session(
+        self,
+        goal: str,
+        persona: str = "default",
+        runtime_selection: RuntimeSelection | None = None,
+    ) -> PlanDocument:
         now = _now()
         doc = PlanDocument(
             goal_statement=goal,
             workspace_path=str(self._workspace),
             persona=persona,
+            runtime_selection=runtime_selection or RuntimeSelection(),
             status=SessionStatus.PLANNING,
             ai_state=AIState.PLANNING,
             created_at=now,

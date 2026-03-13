@@ -135,6 +135,19 @@ class DeepAgentsChannel:
         text = _extract_text(result)
         usage = self._extract_usage(result, resolved.profile.provider_kind())
         self._total_usage = self._total_usage + usage
+        log.info(
+            "LLM call complete: lane=%s provider=%s stage=%s model=%s "
+            "in=%d out=%d cache_create=%d cache_read=%d hit_rate=%.1f%%",
+            self._lane,
+            resolved.profile.id,
+            stage,
+            resolved.profile.model_for_stage(stage),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_tokens,
+            usage.cache_read_tokens,
+            usage.cache_hit_rate * 100,
+        )
         if self._usage_store:
             usage_key = self._agent_usage_keys.get(key, resolved.profile.id)
             self._usage_store.record(
@@ -142,6 +155,8 @@ class DeepAgentsChannel:
                 usage,
                 provider_type=resolved.profile.provider_kind(),
                 model=resolved.profile.model_for_stage(stage),
+                persona=persona,
+                stage=stage,
             )
         return ChannelResult(text=text, usage=usage)
 

@@ -119,13 +119,57 @@ def handle_list_subagents(server, params: dict) -> dict:
     return {"subagents": list_subagents()}
 
 
+def handle_get_provider_capabilities(server, params: dict) -> dict:
+    """Return active-provider capability metadata for UI/runtime consumers."""
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    profile_doc = server._get_provider_profile(workspace_path)
+    active = next(
+        (p for p in profile_doc.catalog if p.id == profile_doc.active_provider_id),
+        profile_doc.catalog[0] if profile_doc.catalog else None,
+    )
+    if active is None:
+        return {"capabilities": None}
+    stages = ["planning", "annotation", "execution", "debug", "question_answer"]
+    return {
+        "capabilities": {
+            "providerId": active.id,
+            "providerType": active.type,
+            "providerKind": active.provider_kind(),
+            "label": active.label,
+            "runtimeFamily": "anthropic" if active.type == "claude" else active.type,
+            "models": {stage: active.model_for_stage(stage) for stage in stages},
+            "features": {
+                "tools": active.features.tools,
+                "skills": active.features.skills,
+                "checkpoints": active.features.checkpoints,
+                "subagents": active.features.subagents,
+                "summarization": active.features.summarization,
+            },
+            "cachePolicy": {
+                "enablePromptCaching": active.optimizations.anthropic.get("enablePromptCaching", False)
+                if active.type == "claude" else False,
+                "sessionKeyStrategy": profile_doc.policies.session_key_strategy,
+                "flushOnTaskComplete": profile_doc.policies.flush_on_task_complete,
+                "flushOnProviderSwitch": profile_doc.policies.flush_on_provider_switch,
+            },
+            "summarizationThresholds": dict(profile_doc.policies.summarization_thresholds),
+            "supportedStages": list(active.routing.use_for_stages),
+            "activeProfileHash": profile_doc.profile_hash,
+        }
+    }
+
+
 def handle_get_usage_stats(server, params: dict) -> dict:
     workspace_path = os.path.abspath(params.get("workspacePath", "."))
     runtime = server._get_runtime(workspace_path)
     get_usage = getattr(runtime, "get_usage_stats", None)
     if not callable(get_usage):
-        return {"providers": []}
-    return {"providers": get_usage(workspace_path)}
+        return {"providers": [], "byPersona": [], "byStage": []}
+    result = get_usage(workspace_path)
+    if isinstance(result, dict):
+        return result
+    # Legacy: runtime returned a flat list of providers
+    return {"providers": result, "byPersona": [], "byStage": []}
 
 
 def handle_delegate_to_subagent(server, params: dict) -> dict:

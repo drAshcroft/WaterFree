@@ -1,10 +1,9 @@
-import shutil
 import unittest
-import uuid
 from pathlib import Path
 
 from backend.session.models import CodeCoord, TaskDependency, TaskPriority, TaskType
 from backend.session.session_manager import SessionManager
+from backend.test_support import make_temp_dir as make_test_dir
 from backend.todo.store import TaskStore
 from backend.wizard.definitions import CODING_TEMPLATE
 from backend.wizard.manager import WizardManager
@@ -12,9 +11,6 @@ from backend.wizard.models import (
     WizardStageStatus,
     WizardTodoExport,
 )
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_wizard_manager_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class _FakeRuntime:
@@ -70,10 +66,7 @@ class _FakeRuntime:
 
 class WizardManagerTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="wizard-manager-")
 
     def test_create_or_resume_run_writes_market_doc(self) -> None:
         workspace = self.make_workspace()

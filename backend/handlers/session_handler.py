@@ -3,15 +3,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.session.models import PlanDocument
+from backend.session.models import PlanDocument, RuntimeSelection
 
 
 def handle_create_session(server, params: dict) -> dict:
     goal = params["goal"]
     workspace_path = params.get("workspacePath", ".")
     persona = params.get("persona", "default")
+    runtime_selection = RuntimeSelection.from_dict(params.get("runtimeSelection", {}))
     sm = server._get_session_manager(workspace_path)
-    doc = sm.create_session(goal, persona=persona)
+    doc = sm.create_session(goal, persona=persona, runtime_selection=runtime_selection)
     server._sessions[doc.id] = doc
     return doc.to_dict()
 

@@ -1,21 +1,14 @@
 import json
-import shutil
 import unittest
-import uuid
 from pathlib import Path
 
 from backend.llm.context_lifecycle import ContextLifecycleManager
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_context_lifecycle_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class ContextLifecycleTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="context-lifecycle-")
 
     def test_low_value_chunk_is_compressed_after_two_turns(self) -> None:
         workspace = self.make_workspace()

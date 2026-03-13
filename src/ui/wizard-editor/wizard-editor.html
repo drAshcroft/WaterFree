@@ -11,6 +11,11 @@
   <main class="editor-shell">
     <article class="document">
 
+      <div class="stage-progress" id="stage-progress" hidden>
+        <span class="stage-progress-label" id="stage-progress-label"></span>
+        <span class="stage-progress-bar"><span class="stage-progress-fill" id="stage-progress-fill"></span></span>
+      </div>
+
       <section id="accepted-chunks" class="accepted-history" hidden></section>
 
       <header class="document-header">
@@ -40,9 +45,24 @@
           <span class="separator-label" id="separator-label">Draft</span>
           <span class="separator-line"></span>
         </div>
-        <div class="actions">
+        <!-- Chunk-level actions: generate draft or accept generated draft -->
+        <div class="actions" id="chunk-actions">
           <button id="refine" class="secondary" type="button">Refine Prompt</button>
-          <button id="submit" class="primary" type="button">Accept and Continue</button>
+          <button id="submit" class="primary" type="button">Generate</button>
+        </div>
+        <!-- Stage-level actions: shown when all chunks are accepted -->
+        <div class="actions stage-actions" id="stage-actions" hidden>
+          <button id="promote-todos" class="secondary" type="button">Promote Todos</button>
+          <button id="accept-stage" class="primary" type="button">Accept Stage</button>
+        </div>
+        <!-- Coding stage actions -->
+        <div class="actions coding-actions" id="coding-actions" hidden>
+          <button id="promote-todos-coding" class="secondary" type="button">Promote Todos</button>
+          <button id="start-coding" class="primary" type="button">Start Coding</button>
+        </div>
+        <!-- Review stage actions -->
+        <div class="actions review-actions" id="review-actions" hidden>
+          <button id="run-review" class="primary" type="button">Run Review</button>
         </div>
       </footer>
     </article>

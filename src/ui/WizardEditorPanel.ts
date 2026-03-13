@@ -12,7 +12,7 @@ import type { WizardDocContext } from "../wizard/WizardDocState.js";
 
 export type WizardEditorAction =
   | {
-      type: "submit";
+      type: "generate";
       context: WizardDocContext;
       body: string;
     }
@@ -20,6 +20,28 @@ export type WizardEditorAction =
       type: "refine";
       context: WizardDocContext;
       body: string;
+    }
+  | {
+      type: "acceptChunk";
+      context: WizardDocContext;
+      chunkId: string;
+      body: string;
+    }
+  | {
+      type: "acceptStage";
+      context: WizardDocContext;
+    }
+  | {
+      type: "startCoding";
+      context: WizardDocContext;
+    }
+  | {
+      type: "runReview";
+      context: WizardDocContext;
+    }
+  | {
+      type: "promoteTodos";
+      context: WizardDocContext;
     }
   | {
       type: "reopenChunk";
@@ -39,6 +61,14 @@ type WizardEditorViewModel = {
   guidance: string;
   body: string;
   chunkStatus: string;
+  chunkId: string;
+  hasDraft: boolean;
+  allChunksAccepted: boolean;
+  stageStatus: string;
+  stageKind: string;
+  stageTitle: string;
+  stageIndex: number;
+  stageCount: number;
   questions: string[];
   acceptedChunks: AcceptedChunkSummary[];
 };
@@ -150,9 +180,9 @@ export class WizardEditorPanel implements vscode.Disposable {
     }
 
     const body = typeof message.body === "string" ? message.body : this._draftBody;
-    if (message.type === "submit") {
+    if (message.type === "generate") {
       this._actionEmitter.fire({
-        type: "submit",
+        type: "generate",
         context: this._viewModel.context,
         body,
       });
@@ -163,6 +193,43 @@ export class WizardEditorPanel implements vscode.Disposable {
         type: "refine",
         context: this._viewModel.context,
         body,
+      });
+      return;
+    }
+    if (message.type === "acceptChunk" && typeof message.chunkId === "string") {
+      this._actionEmitter.fire({
+        type: "acceptChunk",
+        context: this._viewModel.context,
+        chunkId: message.chunkId,
+        body,
+      });
+      return;
+    }
+    if (message.type === "acceptStage") {
+      this._actionEmitter.fire({
+        type: "acceptStage",
+        context: this._viewModel.context,
+      });
+      return;
+    }
+    if (message.type === "startCoding") {
+      this._actionEmitter.fire({
+        type: "startCoding",
+        context: this._viewModel.context,
+      });
+      return;
+    }
+    if (message.type === "runReview") {
+      this._actionEmitter.fire({
+        type: "runReview",
+        context: this._viewModel.context,
+      });
+      return;
+    }
+    if (message.type === "promoteTodos") {
+      this._actionEmitter.fire({
+        type: "promoteTodos",
+        context: this._viewModel.context,
       });
       return;
     }
@@ -186,6 +253,9 @@ export class WizardEditorPanel implements vscode.Disposable {
       return null;
     }
 
+    const allChunksAccepted = stage.chunks.every((c) => c.status === "accepted");
+    const hasDraft = Boolean(chunk.draftText?.trim() || chunk.acceptedText?.trim());
+
     const acceptedChunks: AcceptedChunkSummary[] = stage.chunks
       .filter((c) => c.status === "accepted" && c.id !== chunk.id)
       .map((c) => ({
@@ -193,6 +263,8 @@ export class WizardEditorPanel implements vscode.Disposable {
         title: c.title ?? "",
         body: this._chunkBody(c),
       }));
+
+    const stageIndex = wizard.stages.indexOf(stage);
 
     return {
       context: {
@@ -205,6 +277,14 @@ export class WizardEditorPanel implements vscode.Disposable {
       guidance: chunk.guidance?.trim() ?? "",
       body: this._chunkBody(chunk),
       chunkStatus: chunk.status ?? "draft",
+      chunkId: chunk.id,
+      hasDraft,
+      allChunksAccepted,
+      stageStatus: stage.status ?? "pending",
+      stageKind: stage.kind ?? "",
+      stageTitle: stage.title ?? "",
+      stageIndex,
+      stageCount: wizard.stages.length,
       questions: stage.questions ?? [],
       acceptedChunks,
     };

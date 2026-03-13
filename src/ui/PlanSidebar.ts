@@ -80,8 +80,13 @@ export interface BacklogSummaryData {
   totalReady: number;
 }
 
+export interface SessionRuntimeSelection {
+  providerId?: string;
+  model?: string;
+}
+
 export type SidebarAction =
-  | { type: "startSession"; goal: string; persona: string }
+  | { type: "startSession"; goal: string; persona: string; runtimeSelection?: SessionRuntimeSelection }
   | { type: "openWizard"; wizardId: string; goal: string; persona: string }
   | { type: "openTask"; taskId: string }
   | { type: "generateAnnotation"; taskId: string }
@@ -102,7 +107,8 @@ export type SidebarAction =
   | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
   | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; modes: string[]; useWith: string; enabled: boolean }
   | { type: "removeProvider"; id: string }
-  | { type: "toggleProvider"; id: string };
+  | { type: "toggleProvider"; id: string }
+  | { type: "requestUsageStats" };
 
 type SidebarViewState = {
   plan: PlanData | null;
@@ -218,6 +224,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     void this._view?.webview.postMessage({ type: "settings", data });
   }
 
+  sendUsageStats(data: unknown): void {
+    void this._view?.webview.postMessage({ type: "usageStats", data });
+  }
+
   sendHistory(sessions: unknown[]): void {
     void this._view?.webview.postMessage({ type: "history", sessions });
   }
@@ -248,10 +258,23 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     switch (message.type) {
       case "startSession":
         if (typeof message.goal === "string" && message.goal.trim()) {
+          const runtimeSelection = isRecord(message.runtimeSelection)
+            ? {
+                providerId: typeof message.runtimeSelection.providerId === "string"
+                  ? message.runtimeSelection.providerId.trim()
+                  : undefined,
+                model: typeof message.runtimeSelection.model === "string"
+                  ? message.runtimeSelection.model.trim()
+                  : undefined,
+              }
+            : undefined;
           this._actionEmitter.fire({
             type: "startSession",
             goal: message.goal.trim(),
             persona: typeof message.persona === "string" ? message.persona : "architect",
+            runtimeSelection: runtimeSelection && (runtimeSelection.providerId || runtimeSelection.model)
+              ? runtimeSelection
+              : undefined,
           });
         }
         return;
@@ -362,6 +385,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       case "requestSettings":
         this._actionEmitter.fire({ type: "requestSettings" });
+        return;
+      case "requestUsageStats":
+        this._actionEmitter.fire({ type: "requestUsageStats" });
         return;
       case "addProvider":
         this._actionEmitter.fire({

@@ -9,6 +9,18 @@ const submit = document.getElementById("submit");
 const refine = document.getElementById("refine");
 const acceptedChunksEl = document.getElementById("accepted-chunks");
 const separatorLabel = document.getElementById("separator-label");
+const stageProgress = document.getElementById("stage-progress");
+const stageProgressLabel = document.getElementById("stage-progress-label");
+const stageProgressFill = document.getElementById("stage-progress-fill");
+const chunkActions = document.getElementById("chunk-actions");
+const stageActions = document.getElementById("stage-actions");
+const codingActions = document.getElementById("coding-actions");
+const reviewActions = document.getElementById("review-actions");
+const acceptStageBtn = document.getElementById("accept-stage");
+const promoteTodosBtn = document.getElementById("promote-todos");
+const promoteTodosCodingBtn = document.getElementById("promote-todos-coding");
+const startCodingBtn = document.getElementById("start-coding");
+const runReviewBtn = document.getElementById("run-review");
 
 let currentState = null;
 const clarificationState = new Map();
@@ -28,12 +40,42 @@ body.addEventListener("input", () => {
 });
 
 submit.addEventListener("click", () => {
+  if (!currentState) { return; }
   setProcessing(true);
-  vscode.postMessage({ type: "submit", body: buildSubmissionBody() });
+  if (currentState.hasDraft && currentState.chunkStatus !== "accepted") {
+    // Accept the generated draft
+    vscode.postMessage({ type: "acceptChunk", chunkId: currentState.chunkId, body: buildSubmissionBody() });
+  } else {
+    // Generate a draft using the typed text as context
+    vscode.postMessage({ type: "generate", body: buildSubmissionBody() });
+  }
 });
 
 refine.addEventListener("click", () => {
   vscode.postMessage({ type: "refine", body: buildSubmissionBody() });
+});
+
+acceptStageBtn.addEventListener("click", () => {
+  setProcessing(true);
+  vscode.postMessage({ type: "acceptStage" });
+});
+
+promoteTodosBtn.addEventListener("click", () => {
+  vscode.postMessage({ type: "promoteTodos" });
+});
+
+promoteTodosCodingBtn.addEventListener("click", () => {
+  vscode.postMessage({ type: "promoteTodos" });
+});
+
+startCodingBtn.addEventListener("click", () => {
+  setProcessing(true);
+  vscode.postMessage({ type: "startCoding" });
+});
+
+runReviewBtn.addEventListener("click", () => {
+  setProcessing(true);
+  vscode.postMessage({ type: "runReview" });
 });
 
 const persisted = vscode.getState();
@@ -52,7 +94,46 @@ function renderState(state) {
   renderQuestions(Array.isArray(state.questions) ? state.questions : []);
   renderAcceptedChunks(Array.isArray(state.acceptedChunks) ? state.acceptedChunks : []);
   updateSeparatorLabel(state.chunkStatus);
+  renderStageProgress(state);
+  renderActionButtons(state);
   setProcessing(false);
+}
+
+function renderStageProgress(state) {
+  if (!state.stageCount || state.stageCount <= 1) {
+    stageProgress.hidden = true;
+    return;
+  }
+  stageProgress.hidden = false;
+  const idx = typeof state.stageIndex === "number" ? state.stageIndex : 0;
+  const total = state.stageCount;
+  stageProgressLabel.textContent = `${state.stageTitle || "Stage"} (${idx + 1} / ${total})`;
+  const pct = Math.round(((idx + 1) / total) * 100);
+  stageProgressFill.style.width = `${pct}%`;
+}
+
+function renderActionButtons(state) {
+  const allAccepted = Boolean(state.allChunksAccepted);
+  const stageKind = state.stageKind || "";
+  const stageStatus = state.stageStatus || "pending";
+
+  // Decide which action group to show
+  const showReview = allAccepted && stageKind === "review";
+  const showCoding = allAccepted && stageKind === "coding_agents" && stageStatus !== "accepted";
+  const showStageAccept = allAccepted && !showReview && !showCoding && stageStatus !== "accepted";
+  const showChunk = !allAccepted || stageStatus === "accepted";
+
+  chunkActions.hidden = !showChunk;
+  stageActions.hidden = !showStageAccept;
+  codingActions.hidden = !showCoding;
+  reviewActions.hidden = !showReview;
+
+  // Update the Generate/Accept label dynamically
+  if (state.hasDraft && state.chunkStatus !== "accepted") {
+    submit.textContent = "Accept Chunk";
+  } else {
+    submit.textContent = "Generate";
+  }
 }
 
 function updateSeparatorLabel(status) {
@@ -62,6 +143,8 @@ function updateSeparatorLabel(status) {
     separatorLabel.textContent = "Needs clarification";
   } else if (status === "resolved") {
     separatorLabel.textContent = "Ready to accept";
+  } else if (status === "accepted") {
+    separatorLabel.textContent = "Accepted";
   } else {
     separatorLabel.textContent = status;
   }
@@ -72,7 +155,15 @@ function setProcessing(on) {
   body.contentEditable = on ? "false" : "true";
   submit.disabled = on;
   refine.disabled = on;
-  submit.textContent = on ? "Processing…" : "Accept and Continue";
+  acceptStageBtn.disabled = on;
+  startCodingBtn.disabled = on;
+  runReviewBtn.disabled = on;
+  if (on) {
+    submit.textContent = "Processing…";
+    acceptStageBtn.textContent = "Processing…";
+    startCodingBtn.textContent = "Processing…";
+    runReviewBtn.textContent = "Processing…";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +193,7 @@ function renderAcceptedChunks(chunks) {
     const editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "accepted-edit-btn";
-    editBtn.textContent = "Edit";
+    editBtn.textContent = "Revise";
     editBtn.addEventListener("click", () => {
       vscode.postMessage({ type: "reopenChunk", chunkId: chunk.id });
     });

@@ -44,7 +44,7 @@ def handle_generate_plan(server, params: dict) -> dict:
     ctx = ContextBuilder(server._graph)
     context_str = ctx.build_planning_context(goal, doc)
 
-    runtime = server._get_runtime(workspace_path)
+    runtime = server._get_runtime_for_session(doc)
     tasks, questions = runtime.generate_plan(
         goal,
         context_str,
@@ -83,7 +83,7 @@ def handle_generate_annotation(server, params: dict) -> dict:
     ctx = ContextBuilder(server._graph)
     context_str = ctx.build_annotation_context(task, doc)
 
-    runtime = server._get_runtime(doc.workspace_path)
+    runtime = server._get_runtime_for_session(doc)
     annotation = runtime.generate_annotation(
         task,
         context_str,
@@ -130,7 +130,7 @@ def handle_alter_annotation(server, params: dict) -> dict:
         doc,
         TurnManager(doc, sm),
         sm,
-        server._get_runtime(doc.workspace_path),
+        server._get_runtime_for_session(doc),
         ContextBuilder(server._graph),
     )
     return ctrl.alter_annotation(task_id, annotation_id, feedback)
@@ -186,7 +186,7 @@ def handle_finalize_execution(server, params: dict) -> dict:
         tm.finish()
     except InvalidTransitionError:
         tm.force(AIState.IDLE)
-    runtime = server._get_runtime(doc.workspace_path)
+    runtime = server._get_runtime_for_session(doc)
     flush_session = getattr(runtime, "flush_session", None)
     profile = server._get_provider_profile(doc.workspace_path)
     if callable(flush_session) and profile.policies.flush_on_task_complete:
@@ -210,7 +210,7 @@ def handle_redirect_task(server, params: dict) -> dict:
         doc,
         TurnManager(doc, sm),
         sm,
-        server._get_runtime(doc.workspace_path),
+        server._get_runtime_for_session(doc),
         ContextBuilder(server._graph),
     )
     return ctrl.redirect_task(task_id, instruction)
@@ -226,7 +226,7 @@ def handle_skip_task(server, params: dict) -> dict:
         doc,
         TurnManager(doc, sm),
         sm,
-        server._get_runtime(doc.workspace_path),
+        server._get_runtime_for_session(doc),
         ContextBuilder(server._graph),
     )
     return ctrl.skip_task(task_id)
@@ -271,7 +271,7 @@ def handle_execute_task(server, params: dict) -> dict:
         if not task.started_at:
             task.started_at = datetime.now(timezone.utc).isoformat()
 
-        runtime = server._get_runtime(doc.workspace_path)
+        runtime = server._get_runtime_for_session(doc)
         edits = runtime.execute_task(
             task,
             context_str,
@@ -335,7 +335,7 @@ def handle_queue_todo_instruction(server, params: dict) -> dict:
             doc,
             TurnManager(doc, sm),
             sm,
-            server._get_runtime(doc.workspace_path),
+            server._get_runtime_for_session(doc),
             ContextBuilder(server._graph),
         )
         session_result = ctrl.queue_todo_instruction(file_, line, instruction)

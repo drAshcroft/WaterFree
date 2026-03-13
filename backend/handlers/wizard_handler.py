@@ -40,8 +40,16 @@ def handle_run_wizard_step(server, params: dict) -> dict:
     stage_id = str(params.get("stageId", "")).strip()
     if not run_id or not stage_id:
         raise ValueError("runId and stageId are required")
+    mode = str(params.get("mode", "")).strip()
     manager = server._get_wizard_manager(workspace_path)
     runtime = server._get_runtime(workspace_path)
+    if mode == "clarify":
+        return manager.run_stage_clarify(
+            run_id=run_id,
+            stage_id=stage_id,
+            runtime=runtime,
+            extra_context=str(params.get("extraContext", "")).strip(),
+        )
     return manager.run_stage(
         run_id=run_id,
         stage_id=stage_id,

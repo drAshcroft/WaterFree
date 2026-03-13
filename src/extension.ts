@@ -30,6 +30,7 @@ import {
   getTaskTargetLine,
   getTaskTargetPath,
   type PlanData,
+  type SessionRuntimeSelection,
   type SidebarAction,
   type TaskData,
 } from "./ui/PlanSidebar.js";
@@ -210,9 +211,18 @@ export class WaterFreeController implements vscode.Disposable {
     this._todoWatcher.onTodosFound((todos) => this._onTodosFound(todos));
 
     // Debug session state — update sidebar when debug starts/stops
+    this._liveDebug.setWorkspacePath(this._workspacePath);
     this._disposables.push(
-      vscode.debug.onDidStartDebugSession(() => this._updateDebugState()),
-      vscode.debug.onDidTerminateDebugSession(() => this._updateDebugState()),
+      this._liveDebug.onBreakpointHit((loc) => this._onBreakpointHit(loc)),
+      vscode.debug.onDidStartDebugSession(() => {
+        this._liveDebug.startEvalWatcher();
+        this._updateDebugState();
+      }),
+      vscode.debug.onDidTerminateDebugSession(() => {
+        this._liveDebug.stopEvalWatcher();
+        this._liveDebug.clearLiveState();
+        this._updateDebugState();
+      }),
       vscode.window.onDidChangeActiveTextEditor((editor) => this._updateWizardEditorContext(editor)),
       vscode.workspace.onDidOpenTextDocument((document) => {
         if (vscode.window.activeTextEditor?.document === document) {
@@ -278,7 +288,11 @@ export class WaterFreeController implements vscode.Disposable {
     void vscode.window.showInformationMessage("WaterFree: API key stored securely.");
   }
 
-  async cmdStart(goalOverride?: string, personaOverride?: string): Promise<void> {
+  async cmdStart(
+    goalOverride?: string,
+    personaOverride?: string,
+    runtimeSelection?: SessionRuntimeSelection,
+  ): Promise<void> {
     const goal = goalOverride ?? await vscode.window.showInputBox({
       prompt: "What do you want to build or fix?",
       placeHolder: "e.g. Add user authentication using JWT tokens",
@@ -296,6 +310,7 @@ export class WaterFreeController implements vscode.Disposable {
         goal: trimmedGoal,
         workspacePath: this._workspacePath,
         persona: personaOverride ?? "default",
+        runtimeSelection,
       });
       this._sessionId = session.id;
 
@@ -1190,13 +1205,119 @@ export class WaterFreeController implements vscode.Disposable {
 
   private async _onWizardEditorAction(action: WizardEditorAction): Promise<void> {
     if (action.type === "reopenChunk") {
-      void vscode.window.showInformationMessage(
-        "To edit an accepted section, use WaterFree: Revise Chunk or make changes in the document and re-run the stage.",
-      );
+      const revisionNote = await vscode.window.showInputBox({
+        prompt: "What should change in this chunk?",
+        placeHolder: "e.g. focus on the B2B audience, cut the enterprise assumptions",
+      });
+      if (revisionNote === undefined) {
+        return;
+      }
+      this._sidebarProvider.setBusyMessage("Revising chunk...");
+      try {
+        const result = await this._bridge.runWizardStep({
+          runId: action.context.runId,
+          stageId: action.context.stageId,
+          chunkId: action.chunkId,
+          revisionNote: revisionNote.trim(),
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Revise chunk failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
       return;
     }
 
-    const busyMsg = action.type === "submit" ? "Running wizard stage..." : "Getting clarifying questions...";
+    if (action.type === "acceptChunk") {
+      this._sidebarProvider.setBusyMessage("Accepting chunk...");
+      try {
+        const result = await this._bridge.acceptWizardChunk({
+          runId: action.context.runId,
+          stageId: action.context.stageId,
+          chunkId: action.chunkId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Accept chunk failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    if (action.type === "acceptStage") {
+      this._sidebarProvider.setBusyMessage("Accepting stage...");
+      try {
+        const result = await this._bridge.acceptWizardStep({
+          runId: action.context.runId,
+          stageId: action.context.stageId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Accept stage failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    if (action.type === "startCoding") {
+      this._sidebarProvider.setBusyMessage("Starting coding handoff...");
+      try {
+        const result = await this._bridge.startWizardCoding({
+          runId: action.context.runId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+        void vscode.window.showInformationMessage("WaterFree: coding session created from accepted wizard outputs.");
+      } catch (err) {
+        this._handleError("Start coding failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    if (action.type === "runReview") {
+      this._sidebarProvider.setBusyMessage("Running review...");
+      try {
+        const result = await this._bridge.runWizardReview({
+          runId: action.context.runId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Run review failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    if (action.type === "promoteTodos") {
+      this._sidebarProvider.setBusyMessage("Promoting todos...");
+      try {
+        const result = await this._bridge.promoteWizardTodos({
+          runId: action.context.runId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+        await this._refreshBacklogSummary();
+        const count = result.count ?? result.createdTaskIds?.length ?? 0;
+        void vscode.window.showInformationMessage(`WaterFree: promoted ${count} wizard todo(s) to the backlog.`);
+      } catch (err) {
+        this._handleError("Promote todos failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    const busyMsg = action.type === "generate" ? "Running wizard stage..." : "Getting clarifying questions...";
     this._sidebarProvider.setBusyMessage(busyMsg);
     try {
       const result = await this._bridge.runWizardStep({
@@ -1208,7 +1329,7 @@ export class WaterFreeController implements vscode.Disposable {
       });
       await this._handleWizardResponse(result, false);
     } catch (err) {
-      this._handleError(action.type === "submit" ? "Accept and continue failed" : "Refine prompt failed", err);
+      this._handleError(action.type === "generate" ? "Generate failed" : "Refine prompt failed", err);
     } finally {
       this._sidebarProvider.setBusyMessage(null);
     }
@@ -1415,7 +1536,7 @@ export class WaterFreeController implements vscode.Disposable {
   private async _onSidebarAction(action: SidebarAction): Promise<void> {
     switch (action.type) {
       case "startSession":
-        await this.cmdStart(action.goal, action.persona);
+        await this.cmdStart(action.goal, action.persona, action.runtimeSelection);
         return;
       case "openWizard": {
         await this.cmdOpenWizard({
@@ -1483,8 +1604,14 @@ export class WaterFreeController implements vscode.Disposable {
         return;
       }
       case "requestSettings": {
-        const statuses = await this._providers.getStatuses();
-        this._sidebarProvider.sendSettings({ providers: statuses });
+        await this._sendProviderSettings();
+        return;
+      }
+      case "requestUsageStats": {
+        const usage = await this._bridge.request<Record<string, unknown>>("getUsageStats", {
+          workspacePath: this._workspacePath,
+        });
+        this._sidebarProvider.sendUsageStats(usage);
         return;
       }
       case "addProvider": {
@@ -1498,8 +1625,6 @@ export class WaterFreeController implements vscode.Disposable {
           enabled: action.enabled,
         }, action.apiKey);
         await this._syncProviderProfile({ restartBackend: true });
-        const statuses = await this._providers.getStatuses();
-        this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
       case "updateProvider": {
@@ -1513,22 +1638,16 @@ export class WaterFreeController implements vscode.Disposable {
           enabled: action.enabled,
         }, action.apiKey);
         await this._syncProviderProfile({ restartBackend: true });
-        const statuses = await this._providers.getStatuses();
-        this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
       case "removeProvider": {
         await this._providers.remove(action.id);
         await this._syncProviderProfile({ restartBackend: true });
-        const statuses = await this._providers.getStatuses();
-        this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
       case "toggleProvider": {
         await this._providers.toggle(action.id);
         await this._syncProviderProfile({ restartBackend: true });
-        const statuses = await this._providers.getStatuses();
-        this._sidebarProvider.sendSettings({ providers: statuses });
         return;
       }
     }
@@ -1615,9 +1734,19 @@ export class WaterFreeController implements vscode.Disposable {
       await this._bridge.syncProviderProfile(backendProfile);
     }
     if (profile) {
-      const statuses = await this._providers.getStatuses();
-      this._sidebarProvider.sendSettings({ providers: statuses });
+      await this._sendProviderSettings(profile);
     }
+  }
+
+  private async _sendProviderSettings(
+    profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>,
+  ): Promise<void> {
+    const resolvedProfile = profile ?? await this._providers.getProfile();
+    const statuses = await this._providers.getStatuses();
+    this._sidebarProvider.sendSettings({
+      providers: statuses,
+      activeProviderId: resolvedProfile.activeProviderId,
+    });
   }
 
   private async _onTodoBoardAction(action: TodoBoardAction): Promise<void> {
@@ -1690,6 +1819,20 @@ export class WaterFreeController implements vscode.Disposable {
       selection: new vscode.Range(selectionLine, 0, selectionLine, 0),
       preview: true,
     });
+  }
+
+  private _onBreakpointHit(loc: { file: string; line: number; qualifiedName: string; exceptionMessage?: string }): void {
+    const shortFile = loc.file.split(/[/\\]/).pop() ?? loc.file;
+    const where = `${shortFile}:${loc.line}`;
+    const label = loc.exceptionMessage
+      ? `Exception at ${where} — Claude can inspect`
+      : `Paused at ${where} — Claude can inspect`;
+    this._sidebarProvider.setDebugState(true, label);
+    void vscode.window.showInformationMessage(
+      loc.exceptionMessage
+        ? `WaterFree: Exception at ${where}. Claude has debug access — ask it what's wrong.`
+        : `WaterFree: Paused at ${where}. Claude has debug access.`,
+    );
   }
 
   private _updateDebugState(): void {

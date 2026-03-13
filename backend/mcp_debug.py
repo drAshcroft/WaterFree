@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +35,8 @@ mcp = FastMCP("waterfree-debug")
 log, LOG_FILE = configure_mcp_logger("waterfree-debug")
 
 _MAX_RESPONSE_CHARS = 2000
+_EVAL_TIMEOUT_SECONDS = 8.0
+_EVAL_POLL_INTERVAL = 0.15
 
 
 # ------------------------------------------------------------------
@@ -41,16 +45,19 @@ _MAX_RESPONSE_CHARS = 2000
 
 def _debug_status_impl(workspace_path: str) -> str:
     """
-    Check if a debug snapshot is available in the workspace.
+    Check if a debug session is active in the workspace.
 
-    Returns whether the snapshot is active, when it was captured, the user's
-    investigation intent, the stop reason, and the current location.
-    Call this first before any other debug tools.
+    Returns whether a snapshot or live state is available, when it was captured,
+    the stop reason, and the current location. Call this first before any other
+    debug tools. If active=true but hasSnapshot=false, only debug_eval is available
+    (no variable list) — prompt the user to "Push to Agent" for full variable access.
     """
+    # 1. Try the full snapshot (user pushed to agent)
     try:
         snap = DebugSnapshot.load_latest(workspace_path)
         return json.dumps({
             "active": True,
+            "hasSnapshot": True,
             "capturedAt": snap.captured_at,
             "stale": snap.is_stale(),
             "intent": snap.intent,
@@ -61,9 +68,39 @@ def _debug_status_impl(workspace_path: str) -> str:
                 "qualifiedName": snap.location.qualified_name,
             },
             "scopeNames": snap.all_scope_names(),
+            "evalAvailable": True,
         })
-    except FileNotFoundError as e:
-        return json.dumps({"active": False, "reason": str(e)})
+    except FileNotFoundError:
+        pass
+
+    # 2. Fall back to live_state.json (auto-written on every breakpoint)
+    live_path = Path(workspace_path) / ".waterfree" / "debug" / "live_state.json"
+    if live_path.exists():
+        try:
+            data = json.loads(live_path.read_text(encoding="utf-8"))
+            loc = data.get("location", {})
+            return json.dumps({
+                "active": True,
+                "hasSnapshot": False,
+                "capturedAt": data.get("capturedAt", ""),
+                "stale": False,
+                "intent": None,
+                "stopReason": data.get("stopReason", "breakpoint"),
+                "location": {
+                    "file": loc.get("file", ""),
+                    "line": loc.get("line", 0),
+                    "qualifiedName": loc.get("qualifiedName", ""),
+                },
+                "scopeNames": [],
+                "evalAvailable": True,
+                "hint": "Auto-captured on breakpoint. Use debug_eval to inspect state. "
+                        "For full variable list, ask user to click 'Push to Agent' in the WaterFree sidebar.",
+                "exceptionMessage": data.get("exceptionMessage"),
+            })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return json.dumps({"active": False, "reason": "No active debug session. Start debugging and pause at a breakpoint."})
 
 
 # ------------------------------------------------------------------
@@ -194,6 +231,105 @@ def _get_variable_value_impl(
     return json.dumps(_format_value(var, path, start, end))
 
 
+# ------------------------------------------------------------------
+# Tool: debug_eval
+# ------------------------------------------------------------------
+
+def _debug_eval_impl(workspace_path: str, expression: str, frame_id: int = 0) -> str:
+    """
+    Evaluate an arbitrary expression in the paused debug session's REPL.
+
+    The expression is executed in the current stack frame via the VS Code Debug
+    Adapter Protocol 'evaluate' request. Especially powerful for Python — run
+    type(), dir(), df.shape, inspect.getsource(), or any expression you'd type
+    in the Debug Console.
+
+    Requires an active debug session paused at a breakpoint (check debug_status first).
+
+    Args:
+        workspace_path: Absolute path to the project root.
+        expression: Expression to evaluate (e.g. "type(x)", "df.describe()", "list(obj.__dict__.keys())").
+        frame_id: Optional stack frame ID (0 = top frame, default). Only needed if
+                  you want to evaluate in a different frame from the call stack.
+
+    Returns: {result, resultType} on success, {error} on failure.
+
+    Examples (Python):
+        debug_eval(wp, "type(batch)")            → "<class 'torch.Tensor'>"
+        debug_eval(wp, "batch.shape")            → "torch.Size([32, 3, 224, 224])"
+        debug_eval(wp, "list(self.__dict__)")    → list of instance attributes
+        debug_eval(wp, "df.dtypes.to_dict()")    → column types of a DataFrame
+        debug_eval(wp, "traceback.format_exc()") → full traceback string
+    """
+    debug_dir = Path(workspace_path) / ".waterfree" / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    request_id = str(uuid.uuid4())
+    request_path = debug_dir / "eval_request.json"
+    response_path = debug_dir / "eval_response.json"
+
+    # Remove stale response from a previous call
+    if response_path.exists():
+        try:
+            response_path.unlink()
+        except OSError:
+            pass
+
+    # Write the eval request — the extension's file watcher picks this up
+    payload: dict[str, Any] = {
+        "requestId": request_id,
+        "expression": expression,
+        "timestamp": _now_iso(),
+    }
+    if frame_id:
+        payload["frameId"] = frame_id
+    request_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    # Poll for the response
+    deadline = time.monotonic() + _EVAL_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_EVAL_POLL_INTERVAL)
+        if not response_path.exists():
+            continue
+        try:
+            resp_data = json.loads(response_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if resp_data.get("requestId") != request_id:
+            continue
+
+        # Clean up
+        try:
+            response_path.unlink()
+            request_path.unlink()
+        except OSError:
+            pass
+
+        if "error" in resp_data:
+            return json.dumps({"error": resp_data["error"], "expression": expression})
+        return json.dumps({
+            "result": resp_data.get("result", ""),
+            "resultType": resp_data.get("resultType", ""),
+            "expression": expression,
+        })
+
+    # Timeout — clean up request
+    try:
+        request_path.unlink()
+    except OSError:
+        pass
+    return json.dumps({
+        "error": f"Eval timed out after {_EVAL_TIMEOUT_SECONDS}s. "
+                 "Ensure the debugger is paused at a breakpoint in VS Code.",
+        "expression": expression,
+    })
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 debug_status = mcp.tool()(instrument_tool(log, "debug_status", _debug_status_impl))
 get_execution_context = mcp.tool()(
     instrument_tool(log, "get_execution_context", _get_execution_context_impl)
@@ -205,6 +341,7 @@ get_variable_schema = mcp.tool()(
 get_variable_value = mcp.tool()(
     instrument_tool(log, "get_variable_value", _get_variable_value_impl)
 )
+debug_eval = mcp.tool()(instrument_tool(log, "debug_eval", _debug_eval_impl))
 
 
 # ------------------------------------------------------------------

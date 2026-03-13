@@ -24,7 +24,7 @@ def handle_live_debug(server, params: dict) -> dict:
     doc = server._sessions.get(session_id) if session_id else None
     persona = doc.persona if doc else "default"
 
-    runtime = server._get_runtime(workspace_path)
+    runtime = server._get_runtime_for_session(doc) if doc else server._get_runtime(workspace_path)
     analysis = runtime.analyze_debug_context(
         context_str,
         workspace_path=workspace_path,

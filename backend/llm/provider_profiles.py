@@ -34,6 +34,13 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "execution": "gpt-4o",
         "debug": "gpt-4o-mini",
     },
+    "groq": {
+        "default": "llama-3.3-70b-versatile",
+        "planning": "llama-3.3-70b-versatile",
+        "annotation": "llama-3.1-8b-instant",
+        "execution": "llama-3.3-70b-versatile",
+        "debug": "llama-3.1-8b-instant",
+    },
     "ollama": {
         "default": "llama3.2",
         "planning": "llama3.2",
@@ -113,7 +120,17 @@ class ProviderProfile:
         return persona.strip().lower() in {item.lower() for item in self.routing.personas}
 
     def provider_kind(self) -> str:
-        return "anthropic" if self.type == "claude" else self.type
+        if self.type == "claude":
+            return "anthropic"
+        return self.type
+
+
+@dataclass(frozen=True)
+class SubagentProviderOverride:
+    """Maps a named subagent to a preferred provider and isolated session key prefix."""
+    subagent_id: str
+    provider_id: str
+    session_key_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -124,6 +141,7 @@ class ProviderPolicies:
     flush_on_provider_switch: bool
     reload_mode: str
     summarization_thresholds: dict[str, int]
+    subagent_overrides: tuple[SubagentProviderOverride, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -150,6 +168,14 @@ class ProviderProfileDocument:
                 "flushOnProviderSwitch": self.policies.flush_on_provider_switch,
                 "reloadMode": self.policies.reload_mode,
                 "summarizationThresholds": dict(self.policies.summarization_thresholds),
+                "subagentOverrides": [
+                    {
+                        "subagentId": o.subagent_id,
+                        "providerId": o.provider_id,
+                        "sessionKeyPrefix": o.session_key_prefix,
+                    }
+                    for o in self.policies.subagent_overrides
+                ],
             },
         }
 
@@ -159,6 +185,7 @@ def default_provider_profile_document(provider_type: str) -> ProviderProfileDocu
     provider_id = {
         "claude": "anthropic-default",
         "openai": "openai-default",
+        "groq": "groq-default",
         "ollama": "ollama-default",
         "huggingface": "huggingface-default",
         "mock": "mock-default",
@@ -260,6 +287,9 @@ def normalize_provider_profile(raw: Any) -> ProviderProfileDocument:
         summarization_thresholds=normalize_summarization_thresholds(
             policies_raw.get("summarizationThresholds", {})
         ),
+        subagent_overrides=_normalize_subagent_overrides(
+            policies_raw.get("subagentOverrides", []), catalog
+        ),
     )
     return ProviderProfileDocument(
         version=1,
@@ -324,6 +354,8 @@ def normalize_provider_type(raw: Any) -> str:
         return "claude"
     if value in {"openai", "codex", "chatgpt"}:
         return "openai"
+    if value in {"groq"}:
+        return "groq"
     if value == "ollama":
         return "ollama"
     if value in {"huggingface", "hf"}:
@@ -395,8 +427,17 @@ def normalize_openai_optimizations(raw: Any) -> dict[str, Any]:
 
 def normalize_anthropic_optimizations(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
+    budget = source.get("thinkingBudgetTokens", 10_000)
+    try:
+        budget_int = int(budget)
+    except (TypeError, ValueError):
+        budget_int = 10_000
     return {
         "enablePromptCaching": source.get("enablePromptCaching", True) is not False,
+        # Extended thinking — off by default; enable in providers.json for planning stages.
+        # NOTE: extended thinking and prompt caching are mutually exclusive per Anthropic docs.
+        "extendedThinking": source.get("extendedThinking", False) is True,
+        "thinkingBudgetTokens": max(1_024, budget_int),
     }
 
 
@@ -414,10 +455,39 @@ def normalize_summarization_thresholds(raw: Any) -> dict[str, int]:
     return result or dict(DEFAULT_SUMMARIZATION_THRESHOLDS)
 
 
+def _normalize_subagent_overrides(
+    raw: Any, catalog: tuple[ProviderProfile, ...]
+) -> tuple[SubagentProviderOverride, ...]:
+    if not isinstance(raw, list):
+        return ()
+    valid_ids = {p.id for p in catalog}
+    overrides: list[SubagentProviderOverride] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        subagent_id = str(item.get("subagentId", "") or "").strip()
+        provider_id = str(item.get("providerId", "") or "").strip()
+        if not subagent_id or not provider_id:
+            continue
+        if provider_id not in valid_ids:
+            continue
+        if subagent_id in seen:
+            continue
+        seen.add(subagent_id)
+        overrides.append(SubagentProviderOverride(
+            subagent_id=subagent_id,
+            provider_id=provider_id,
+            session_key_prefix=str(item.get("sessionKeyPrefix", "") or "").strip(),
+        ))
+    return tuple(overrides)
+
+
 def default_provider_label(provider_type: str) -> str:
     return {
         "claude": "Claude",
         "openai": "OpenAI",
+        "groq": "Groq",
         "ollama": "Ollama",
         "huggingface": "Hugging Face",
         "mock": "Mock",

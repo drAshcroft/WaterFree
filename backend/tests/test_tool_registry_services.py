@@ -1,13 +1,9 @@
-import shutil
 import unittest
-import uuid
 from pathlib import Path
 
 from backend.llm.tools.registry import build_default_tool_registry
+from backend.test_support import make_temp_dir as make_test_dir
 from backend.todo.store import TaskStore
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_tool_registry_service_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class FakeKnowledgeEntry:
@@ -64,10 +60,7 @@ class FakeKnowledgeStore:
 
 class ToolRegistryServiceTests(unittest.TestCase):
     def make_workspace(self) -> Path:
-        workspace = _TMP_ROOT / uuid.uuid4().hex
-        workspace.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(workspace, ignore_errors=True))
-        return workspace
+        return make_test_dir(self, prefix="tool-registry-")
 
     def make_registry(self):
         return build_default_tool_registry(

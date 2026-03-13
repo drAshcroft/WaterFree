@@ -468,6 +468,25 @@ class DeepAgentsRuntime:
             metadata=metadata,
         )
 
+    def run_wizard_clarify(
+        self,
+        *,
+        stage_kind: str,
+        stage_title: str,
+        goal: str,
+        context: str,
+        workspace_path: str = "",
+        persona: str = "default",
+    ) -> list[str]:
+        return self._wizard_runner.run_wizard_clarify(
+            stage_kind=stage_kind,
+            stage_title=stage_title,
+            goal=goal,
+            context=context,
+            workspace_path=workspace_path,
+            persona=persona,
+        )
+
     # ------------------------------------------------------------------
     # Subagent management
     # ------------------------------------------------------------------
@@ -521,7 +540,7 @@ class DeepAgentsRuntime:
     # Usage stats
     # ------------------------------------------------------------------
 
-    def get_usage_stats(self, workspace_path: str = "") -> list[dict]:
+    def get_usage_stats(self, workspace_path: str = "") -> dict:
         """Return cumulative token usage per provider for this workspace."""
         return self._channel_registry.get_usage_stats()
 

@@ -1,23 +1,17 @@
 import json
 import os
-import shutil
 import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
 
 from backend.mcp_logging import configure_mcp_logger, instrument_tool, resolve_mcp_log_dir
-
-_TMP_ROOT = Path(__file__).resolve().parents[2] / ".tmp_mcp_logging_tests"
-_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+from backend.test_support import make_temp_dir as make_test_dir
 
 
 class MCPLoggingTests(unittest.TestCase):
     def make_temp_dir(self) -> Path:
-        path = _TMP_ROOT / uuid.uuid4().hex
-        path.mkdir(parents=True, exist_ok=False)
-        self.addCleanup(lambda: shutil.rmtree(path, ignore_errors=True))
-        return path
+        return make_test_dir(self, prefix="mcp-logging-")
 
     def test_resolve_mcp_log_dir_prefers_explicit_env(self) -> None:
         tmp = self.make_temp_dir()
