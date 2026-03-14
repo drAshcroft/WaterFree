@@ -109,6 +109,13 @@ class ProviderProfile:
     features: ProviderFeatures
     optimizations: ProviderOptimizations
     routing: ProviderRouting
+    # Tier-based model selection (overrides models dict when present).
+    # Maps stage name → ModelTier ("apex" | "balanced" | "efficient" | "micro").
+    # Tier aliases ("smartest", "cheap") are also accepted and normalised at
+    # runtime via model_catalog.normalize_tier().
+    stage_tiers: dict[str, str] = field(default_factory=dict)
+    # Explicit model overrides per stage — higher priority than stage_tiers.
+    model_overrides: dict[str, str] = field(default_factory=dict)
 
     def model_for_stage(self, stage: str) -> str:
         stage_key = stage.strip().lower()
@@ -292,6 +299,9 @@ def provider_to_dict(profile: ProviderProfile) -> dict[str, Any]:
     raw["connection"]["secretRef"] = raw["connection"].pop("secret_ref")
     raw["routing"]["useForStages"] = list(raw["routing"].pop("use_for_stages"))
     raw["routing"]["personas"] = list(raw["routing"]["personas"])
+    # Rename snake_case new fields to camelCase for JSON serialization
+    raw["stageTiers"] = raw.pop("stage_tiers", {})
+    raw["modelOverrides"] = raw.pop("model_overrides", {})
     return raw
 
 
@@ -388,6 +398,18 @@ def normalize_provider_entry(raw: Any, fallback_id: str) -> ProviderProfile | No
     )
     features_raw = raw.get("features", {}) if isinstance(raw.get("features"), dict) else {}
     optimizations_raw = raw.get("optimizations", {}) if isinstance(raw.get("optimizations"), dict) else {}
+    stage_tiers_raw = raw.get("stageTiers", {}) if isinstance(raw.get("stageTiers"), dict) else {}
+    stage_tiers: dict[str, str] = {
+        str(k).strip().lower(): str(v).strip().lower()
+        for k, v in stage_tiers_raw.items()
+        if str(k).strip() and str(v).strip()
+    }
+    model_overrides_raw = raw.get("modelOverrides", {}) if isinstance(raw.get("modelOverrides"), dict) else {}
+    model_overrides: dict[str, str] = {
+        str(k).strip().lower(): str(v).strip()
+        for k, v in model_overrides_raw.items()
+        if str(k).strip() and str(v).strip()
+    }
     return ProviderProfile(
         id=provider_id,
         type=provider_type,
@@ -407,6 +429,8 @@ def normalize_provider_entry(raw: Any, fallback_id: str) -> ProviderProfile | No
             anthropic=normalize_anthropic_optimizations(optimizations_raw.get("anthropic", {})) if provider_type == "claude" else {},
         ),
         routing=ProviderRouting(use_for_stages=stages, personas=personas),
+        stage_tiers=stage_tiers,
+        model_overrides=model_overrides,
     )
 
 

@@ -1,5 +1,5 @@
 """
-Persona registry backed by a global SKILL.md catalog in AppData.
+Persona registry backed by an install-seeded SKILL.md catalog in AppData.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PERSONA = "architect"
 PERSONA_METADATA_FILENAME = "waterfree.persona.json"
-_BUNDLED_ROOT = Path(__file__).resolve().parent / "bundled"
+_INITIAL_PERSONAS_ROOT = Path(__file__).resolve().parent / "initial_personas"
 
 
 @dataclass(frozen=True)
@@ -114,7 +114,7 @@ def reload_personas(force_seed: bool = False) -> dict[str, PersonaDef]:
             try:
                 persona = _load_persona_dir(skill_md.parent)
             except Exception as exc:
-                log.warning("Skipping invalid seeded persona folder '%s': %s", skill_md.parent, exc)
+                log.warning("Skipping invalid initial persona folder '%s': %s", skill_md.parent, exc)
                 continue
             loaded[persona.id] = persona
 
@@ -200,32 +200,27 @@ def save_persona_documents(personas: list[dict[str, Any]]) -> list[dict[str, Any
     return [PERSONAS[persona_id].to_dict() for persona_id in saved_ids if persona_id in PERSONAS]
 
 
-def _register(*personas: PersonaDef) -> None:
-    for persona in personas:
-        PERSONAS[persona.id] = persona
-
-
 def _ensure_loaded() -> None:
     if not PERSONAS:
         reload_personas()
 
 
 def _seed_catalog_if_needed(root: Path, *, force_seed: bool = False) -> None:
-    if not _BUNDLED_ROOT.exists():
+    if not _INITIAL_PERSONAS_ROOT.exists():
         return
     root.mkdir(parents=True, exist_ok=True)
     existing = {child.name for child in root.iterdir() if child.is_dir()}
     if not existing or force_seed:
-        for bundled_persona in sorted(_BUNDLED_ROOT.iterdir()):
-            if not bundled_persona.is_dir():
+        for initial_persona in sorted(_INITIAL_PERSONAS_ROOT.iterdir()):
+            if not initial_persona.is_dir():
                 continue
-            target = root / bundled_persona.name
+            target = root / initial_persona.name
             if target.exists():
                 continue
-            shutil.copytree(bundled_persona, target)
+            shutil.copytree(initial_persona, target)
         return
     if DEFAULT_PERSONA not in existing:
-        architect_default = _BUNDLED_ROOT / DEFAULT_PERSONA
+        architect_default = _INITIAL_PERSONAS_ROOT / DEFAULT_PERSONA
         if architect_default.exists() and not (root / DEFAULT_PERSONA).exists():
             shutil.copytree(architect_default, root / DEFAULT_PERSONA)
 
@@ -369,12 +364,16 @@ def _normalize_metadata(
 def _normalize_preferred_model_tiers(raw: Any) -> dict[str, list[str]]:
     if not isinstance(raw, dict):
         return {}
+    # Deferred import avoids circular dependency
+    from backend.llm.model_catalog import normalize_tier  # noqa: PLC0415
     normalized: dict[str, list[str]] = {}
     for stage, tiers in raw.items():
         stage_key = _normalize_stage_name(stage)
         if not stage_key:
             continue
-        normalized[stage_key] = _normalize_string_list(tiers, lower=True)
+        tier_list = _normalize_string_list(tiers, lower=True)
+        # Normalise tier aliases: "smartest" → "apex", "cheap" → "efficient", etc.
+        normalized[stage_key] = [normalize_tier(t) for t in tier_list]
     return {stage: tiers for stage, tiers in normalized.items() if tiers}
 
 

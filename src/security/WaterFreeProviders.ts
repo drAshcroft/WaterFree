@@ -13,6 +13,51 @@ export type ProviderStage =
   | "alter_annotation"
   | "knowledge";
 export type ProviderReloadMode = "manual" | "on_change";
+
+// ── Model abstraction types ───────────────────────────────────────────────
+// canonical tier names; "smartest"/"cheap" are accepted as aliases in Python
+export type ModelTier = "apex" | "balanced" | "efficient" | "micro";
+export type ModelCapability =
+  | "tools"
+  | "vision"      // image / screenshot input — essential for visual search
+  | "reasoning"   // extended thinking / chain-of-thought
+  | "caching"     // prompt caching support
+  | "streaming"
+  | "json_mode"
+  | "long_context";
+export type ModelOptimization = "extendedThinking" | "promptCaching" | "responsesAPI";
+
+export interface ModelDescriptor {
+  id: string;
+  aliases?: string[];
+  provider: ProviderType;
+  tier: ModelTier;
+  capabilities: ModelCapability[];
+  contextWindow: number;    // tokens
+  maxOutput: number;        // tokens
+  inputCostPer1M: number;   // USD per 1 M input tokens (0 = local / free)
+  outputCostPer1M: number;
+  requestsPerMinute?: number;
+  tokensPerMinute?: number;
+  tokensPerDay?: number;
+  optimizations?: ModelOptimization[];
+}
+
+export interface ModelQuery {
+  tier?: ModelTier | ModelTier[];
+  capabilities?: ModelCapability[];
+  minContextWindow?: number;
+  maxCostPer1M?: number;
+  provider?: ProviderType;
+  optimizations?: ModelOptimization[];
+  preferLowestCost?: boolean;
+  preferHighestContext?: boolean;
+}
+
+export interface ModelSelection {
+  model: ModelDescriptor;
+  providerId: string;
+}
 export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
   "planning",
   "annotation",
@@ -87,6 +132,10 @@ export interface ProviderProfileEntry {
     anthropic?: AnthropicProviderOptimizations;
   };
   routing: ProviderProfileRouting;
+  /** Tier preference per stage — overrides models dict when present. */
+  stageTiers?: Partial<Record<ProviderStage, ModelTier>>;
+  /** Explicit model override per stage — highest priority after persona pins. */
+  modelOverrides?: Partial<Record<ProviderStage, string>>;
 }
 
 export interface ProviderPersonaAssignment {
@@ -136,6 +185,81 @@ export interface BackendProviderProfileEntry extends Omit<ProviderProfileEntry, 
 
 export interface BackendProviderProfileDocument extends Omit<ProviderProfileDocument, "catalog"> {
   catalog: BackendProviderProfileEntry[];
+}
+
+// ── Model catalog (TypeScript side) ──────────────────────────────────────
+// This catalog is used for UI display and config generation only.
+// The Python model_catalog.py is the authoritative RUNTIME source.
+// Keep both in sync when adding new models.
+export const MODEL_CATALOG: ModelDescriptor[] = [
+  // Anthropic / Claude
+  { id: "claude-opus-4-6",   provider: "claude",  tier: "apex",      capabilities: ["tools","vision","reasoning","caching","streaming","json_mode","long_context"], contextWindow: 200000, maxOutput: 32000,   inputCostPer1M: 15.00, outputCostPer1M: 75.00,  optimizations: ["extendedThinking","promptCaching"] },
+  { id: "claude-sonnet-4-6", provider: "claude",  tier: "balanced",  capabilities: ["tools","vision","caching","streaming","json_mode","long_context"],             contextWindow: 200000, maxOutput: 16000,   inputCostPer1M: 3.00,  outputCostPer1M: 15.00,  optimizations: ["promptCaching"] },
+  { id: "claude-haiku-3-5",  provider: "claude",  tier: "efficient", capabilities: ["tools","vision","caching","streaming","json_mode","long_context"],             contextWindow: 200000, maxOutput: 8192,    inputCostPer1M: 0.80,  outputCostPer1M: 4.00,   optimizations: ["promptCaching"] },
+  // OpenAI
+  { id: "o3",                provider: "openai",  tier: "apex",      capabilities: ["tools","reasoning","streaming","json_mode","long_context"],                    contextWindow: 200000, maxOutput: 100000,  inputCostPer1M: 10.00, outputCostPer1M: 40.00,  optimizations: ["responsesAPI"] },
+  { id: "o1",                provider: "openai",  tier: "apex",      capabilities: ["tools","reasoning","streaming","json_mode","long_context"],                    contextWindow: 200000, maxOutput: 100000,  inputCostPer1M: 15.00, outputCostPer1M: 60.00,  optimizations: ["responsesAPI"] },
+  { id: "gpt-4o",            provider: "openai",  tier: "balanced",  capabilities: ["tools","vision","caching","streaming","json_mode","long_context"],             contextWindow: 128000, maxOutput: 16384,   inputCostPer1M: 2.50,  outputCostPer1M: 10.00,  optimizations: ["promptCaching","responsesAPI"] },
+  { id: "o3-mini",           provider: "openai",  tier: "balanced",  capabilities: ["tools","reasoning","streaming","json_mode","long_context"],                    contextWindow: 200000, maxOutput: 100000,  inputCostPer1M: 1.10,  outputCostPer1M: 4.40,   optimizations: ["responsesAPI"] },
+  { id: "gpt-4o-mini",       provider: "openai",  tier: "efficient", capabilities: ["tools","vision","caching","streaming","json_mode","long_context"],             contextWindow: 128000, maxOutput: 16384,   inputCostPer1M: 0.15,  outputCostPer1M: 0.60,   optimizations: ["promptCaching","responsesAPI"] },
+  // Groq — no vision support
+  { id: "llama-3.3-70b-versatile", provider: "groq", tier: "balanced",  capabilities: ["tools","streaming","json_mode"], contextWindow: 128000, maxOutput: 32768, inputCostPer1M: 0.59, outputCostPer1M: 0.79, tokensPerMinute: 6000,  tokensPerDay: 100000 },
+  { id: "llama-3.1-8b-instant",    provider: "groq", tier: "efficient", capabilities: ["tools","streaming","json_mode"], contextWindow: 128000, maxOutput: 8000,  inputCostPer1M: 0.05, outputCostPer1M: 0.08, tokensPerMinute: 20000, tokensPerDay: 500000 },
+  // Ollama (local, free)
+  { id: "llama3.2", provider: "ollama", tier: "efficient", capabilities: ["tools","streaming"], contextWindow: 128000, maxOutput: 8192, inputCostPer1M: 0, outputCostPer1M: 0 },
+  { id: "llama3.1", provider: "ollama", tier: "balanced",  capabilities: ["tools","streaming"], contextWindow: 128000, maxOutput: 8192, inputCostPer1M: 0, outputCostPer1M: 0 },
+  { id: "phi3",     provider: "ollama", tier: "micro",     capabilities: ["streaming"],         contextWindow: 4096,   maxOutput: 4096, inputCostPer1M: 0, outputCostPer1M: 0 },
+];
+
+const TIER_ALIASES: Record<string, ModelTier> = {
+  smartest: "apex",
+  cheap: "efficient",
+  fast: "efficient",
+  small: "micro",
+};
+
+function normalizeTier(tier: string): ModelTier {
+  const t = tier.trim().toLowerCase() as ModelTier;
+  return TIER_ALIASES[t] ?? t;
+}
+
+/**
+ * Return the best model matching the query from the enabled providers.
+ * Provider is resolved from the matching ModelDescriptor.provider field.
+ */
+export function selectModel(
+  query: ModelQuery,
+  availableProviders: ProviderProfileEntry[],
+): ModelSelection | null {
+  const enabledTypes = new Set(
+    availableProviders.filter((p) => p.enabled).map((p) => p.type),
+  );
+  const tiers = query.tier
+    ? (Array.isArray(query.tier) ? query.tier : [query.tier]).map(normalizeTier)
+    : null;
+
+  let candidates = MODEL_CATALOG.filter((m) => {
+    if (!enabledTypes.has(m.provider)) { return false; }
+    if (query.provider && m.provider !== query.provider) { return false; }
+    if (tiers && !tiers.includes(m.tier)) { return false; }
+    if (query.capabilities?.some((c) => !m.capabilities.includes(c))) { return false; }
+    if (query.minContextWindow && m.contextWindow < query.minContextWindow) { return false; }
+    if (query.maxCostPer1M && m.inputCostPer1M > query.maxCostPer1M) { return false; }
+    if (query.optimizations?.some((o) => !m.optimizations?.includes(o))) { return false; }
+    return true;
+  });
+
+  if (candidates.length === 0) { return null; }
+  if (query.preferLowestCost) {
+    candidates = [...candidates].sort((a, b) => a.inputCostPer1M - b.inputCostPer1M);
+  } else if (query.preferHighestContext) {
+    candidates = [...candidates].sort((a, b) => b.contextWindow - a.contextWindow);
+  }
+
+  const best = candidates[0];
+  const provider = availableProviders.find((p) => p.type === best.provider && p.enabled);
+  if (!provider) { return null; }
+  return { model: best, providerId: provider.id };
 }
 
 const PROVIDERS_KEY = "waterfree.providers.v1";
@@ -559,6 +683,8 @@ function normalizeProfileEntry(raw: unknown, fallbackId: string): ProviderProfil
   const routing = normalizeRouting(raw.routing, raw.modes, raw.useWith);
   const features = normalizeFeatures(raw.features);
   const optimizations = normalizeOptimizations(type, raw.optimizations);
+  const stageTiers = normalizeStageTiers(raw.stageTiers);
+  const modelOverrides = normalizeModelOverrides(raw.modelOverrides);
   return {
     id,
     type,
@@ -575,6 +701,8 @@ function normalizeProfileEntry(raw: unknown, fallbackId: string): ProviderProfil
     features,
     optimizations,
     routing,
+    ...(Object.keys(stageTiers).length > 0 ? { stageTiers } : {}),
+    ...(Object.keys(modelOverrides).length > 0 ? { modelOverrides } : {}),
   };
 }
 
@@ -608,6 +736,30 @@ function normalizeStageModels(
     };
   }
   return { ...defaults };
+}
+
+function normalizeStageTiers(raw: unknown): Partial<Record<ProviderStage, ModelTier>> {
+  if (!isRecord(raw)) { return {}; }
+  const result: Partial<Record<ProviderStage, ModelTier>> = {};
+  const validTiers = new Set<string>(["apex", "balanced", "efficient", "micro"]);
+  for (const [stage, tier] of Object.entries(raw)) {
+    const t = String(tier ?? "").trim().toLowerCase();
+    const canonical = (TIER_ALIASES[t] ?? t) as ModelTier;
+    if (validTiers.has(canonical)) {
+      result[stage as ProviderStage] = canonical;
+    }
+  }
+  return result;
+}
+
+function normalizeModelOverrides(raw: unknown): Partial<Record<ProviderStage, string>> {
+  if (!isRecord(raw)) { return {}; }
+  const result: Partial<Record<ProviderStage, string>> = {};
+  for (const [stage, model] of Object.entries(raw)) {
+    const m = String(model ?? "").trim();
+    if (m) { result[stage as ProviderStage] = m; }
+  }
+  return result;
 }
 
 function normalizeRouting(

@@ -148,7 +148,43 @@ def _find_persona_tier_route(
 
 
 def _resolved(profile: ProviderProfile, *, stage: str, model_name: str = "") -> ResolvedProvider:
-    selected_model = model_name.strip() or profile.model_for_stage(stage)
+    # Priority 1: explicit model pin (from persona assignment or caller)
+    if model_name.strip():
+        return ResolvedProvider(
+            profile=profile,
+            runtime_name=runtime_name_for_provider(profile),
+            model_name=model_name.strip(),
+        )
+
+    stage_key = stage.strip().lower()
+
+    # Priority 2: per-stage model override on the provider profile
+    override = profile.model_overrides.get(stage_key, "")
+    if override:
+        return ResolvedProvider(
+            profile=profile,
+            runtime_name=runtime_name_for_provider(profile),
+            model_name=override,
+        )
+
+    # Priority 3: tier-based catalog lookup via stage_tiers mapping
+    stage_tier = profile.stage_tiers.get(stage_key, "")
+    if stage_tier:
+        # Deferred import avoids circular dependency (catalog → profiles → resolver)
+        from backend.llm.model_catalog import select_model_with_fallback  # noqa: PLC0415
+        descriptor = select_model_with_fallback(
+            [stage_tier],
+            provider=profile.type,
+        )
+        if descriptor is not None:
+            return ResolvedProvider(
+                profile=profile,
+                runtime_name=runtime_name_for_provider(profile),
+                model_name=descriptor.id,
+            )
+
+    # Priority 4: legacy models dict fallback (unchanged behaviour)
+    selected_model = profile.model_for_stage(stage)
     return ResolvedProvider(
         profile=profile,
         runtime_name=runtime_name_for_provider(profile),

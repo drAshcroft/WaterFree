@@ -2,6 +2,7 @@ import json
 import os
 import unittest
 
+import backend.llm.personas.registry as persona_registry
 from backend.llm.personas import persona_catalog_root, reload_personas, save_persona_documents
 from backend.llm.prompt_templates import build_system_prompt
 from backend.test_support import make_temp_dir as make_test_dir
@@ -21,12 +22,16 @@ class PersonaCatalogTests(unittest.TestCase):
             os.environ["APPDATA"] = self._old_appdata
         reload_personas(force_seed=True)
 
-    def test_reload_personas_seeds_bundled_defaults(self) -> None:
+    def test_reload_personas_seeds_initial_personas_defaults(self) -> None:
         personas = reload_personas(force_seed=True)
 
         self.assertIn("architect", personas)
         planning = build_system_prompt("PLANNING", "architect")
         self.assertIn("Translate the user's business goal into explicit technical requirements.", planning)
+
+    def test_registry_points_to_initial_personas_seed_source(self) -> None:
+        self.assertEqual(persona_registry._INITIAL_PERSONAS_ROOT.name, "initial_personas")
+        self.assertTrue((persona_registry._INITIAL_PERSONAS_ROOT / "architect" / "SKILL.md").exists())
 
     def test_save_persona_documents_writes_skill_markdown_and_metadata(self) -> None:
         skill_markdown = """---
