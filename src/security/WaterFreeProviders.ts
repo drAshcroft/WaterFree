@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-export type ProviderType = "claude" | "openai" | "groq" | "ollama" | "huggingface" | "mock";
+export type ProviderType = "claude" | "openai" | "groq" | "ollama" | "huggingface" | "gemini" | "qwen" | "mock";
 export type ProviderConnectionStyle = "native" | "compatible" | "local" | "none";
 export type ProviderStage =
   | "planning"
@@ -25,7 +25,7 @@ export type ModelCapability =
   | "streaming"
   | "json_mode"
   | "long_context";
-export type ModelOptimization = "extendedThinking" | "promptCaching" | "responsesAPI";
+export type ModelOptimization = "extendedThinking" | "promptCaching" | "responsesAPI" | "implicitCaching";
 
 export interface ModelDescriptor {
   id: string;
@@ -119,6 +119,15 @@ export interface AnthropicProviderOptimizations {
   enablePromptCaching: boolean;
 }
 
+export interface GeminiProviderOptimizations {
+  /** Enable automatic/implicit context caching (default: true). */
+  enableImplicitCaching: boolean;
+}
+
+export interface QwenProviderOptimizations {
+  streamUsage: boolean;
+}
+
 export interface ProviderProfileEntry {
   id: string;
   type: ProviderType;
@@ -130,6 +139,8 @@ export interface ProviderProfileEntry {
   optimizations: {
     openai?: OpenAIProviderOptimizations;
     anthropic?: AnthropicProviderOptimizations;
+    gemini?: GeminiProviderOptimizations;
+    qwen?: QwenProviderOptimizations;
   };
   routing: ProviderProfileRouting;
   /** Tier preference per stage — overrides models dict when present. */
@@ -205,6 +216,14 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
   // Groq — no vision support
   { id: "llama-3.3-70b-versatile", provider: "groq", tier: "balanced",  capabilities: ["tools","streaming","json_mode"], contextWindow: 128000, maxOutput: 32768, inputCostPer1M: 0.59, outputCostPer1M: 0.79, tokensPerMinute: 6000,  tokensPerDay: 100000 },
   { id: "llama-3.1-8b-instant",    provider: "groq", tier: "efficient", capabilities: ["tools","streaming","json_mode"], contextWindow: 128000, maxOutput: 8000,  inputCostPer1M: 0.05, outputCostPer1M: 0.08, tokensPerMinute: 20000, tokensPerDay: 500000 },
+  // Google Gemini — implicit context caching, no extra config needed
+  { id: "gemini-2.5-pro",       provider: "gemini", tier: "apex",      capabilities: ["tools","vision","reasoning","caching","streaming","json_mode","long_context"], contextWindow: 1000000, maxOutput: 65536, inputCostPer1M: 1.25,  outputCostPer1M: 10.00, optimizations: ["implicitCaching"] },
+  { id: "gemini-2.0-flash",     provider: "gemini", tier: "balanced",  capabilities: ["tools","vision","caching","streaming","json_mode","long_context"],             contextWindow: 1000000, maxOutput: 8192,  inputCostPer1M: 0.10,  outputCostPer1M: 0.40,  optimizations: ["implicitCaching"] },
+  { id: "gemini-2.0-flash-lite",provider: "gemini", tier: "efficient", capabilities: ["tools","vision","streaming","json_mode","long_context"],                       contextWindow: 1000000, maxOutput: 8192,  inputCostPer1M: 0.075, outputCostPer1M: 0.30 },
+  // Alibaba Qwen (Dashscope OpenAI-compatible) — transparent prefix caching
+  { id: "qwen-max",   provider: "qwen", tier: "apex",      capabilities: ["tools","vision","streaming","json_mode","long_context"], contextWindow: 32768,   maxOutput: 8192, inputCostPer1M: 1.60, outputCostPer1M: 6.40 },
+  { id: "qwen-plus",  provider: "qwen", tier: "balanced",  capabilities: ["tools","streaming","json_mode","long_context"],          contextWindow: 131072,  maxOutput: 8192, inputCostPer1M: 0.40, outputCostPer1M: 1.20 },
+  { id: "qwen-turbo", provider: "qwen", tier: "efficient", capabilities: ["tools","streaming","json_mode","long_context"],          contextWindow: 1000000, maxOutput: 8192, inputCostPer1M: 0.05, outputCostPer1M: 0.15 },
   // Ollama (local, free)
   { id: "llama3.2", provider: "ollama", tier: "efficient", capabilities: ["tools","streaming"], contextWindow: 128000, maxOutput: 8192, inputCostPer1M: 0, outputCostPer1M: 0 },
   { id: "llama3.1", provider: "ollama", tier: "balanced",  capabilities: ["tools","streaming"], contextWindow: 128000, maxOutput: 8192, inputCostPer1M: 0, outputCostPer1M: 0 },
@@ -270,6 +289,8 @@ const DEFAULT_PROVIDER_URLS: Partial<Record<ProviderType, string>> = {
   groq: "https://api.groq.com/openai/v1",
   ollama: "http://localhost:11434",
   huggingface: "https://router.huggingface.co/v1",
+  gemini: "https://generativelanguage.googleapis.com",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 };
 const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
   claude: ["claude-opus-4-6", "claude-sonnet-4-6"],
@@ -277,6 +298,8 @@ const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
   groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
   ollama: ["llama3.2"],
   huggingface: [],
+  gemini: ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+  qwen: ["qwen-max", "qwen-plus", "qwen-turbo"],
 };
 const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string, string>> = {
   claude: {
@@ -313,6 +336,20 @@ const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string,
     annotation: "",
     execution: "",
     debug: "",
+  },
+  gemini: {
+    default: "gemini-2.0-flash",
+    planning: "gemini-2.5-pro",
+    annotation: "gemini-2.0-flash",
+    execution: "gemini-2.0-flash",
+    debug: "gemini-2.0-flash-lite",
+  },
+  qwen: {
+    default: "qwen-plus",
+    planning: "qwen-max",
+    annotation: "qwen-plus",
+    execution: "qwen-plus",
+    debug: "qwen-turbo",
   },
 };
 const DEFAULT_POLICIES: ProviderProfilePolicies = {

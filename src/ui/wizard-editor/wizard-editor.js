@@ -4,6 +4,9 @@ const chunkTitle = document.getElementById("chunk-title");
 const guidance = document.getElementById("guidance");
 const body = document.getElementById("body");
 const clarifications = document.getElementById("clarifications");
+const intake = document.getElementById("intake");
+const intakeFieldsEl = document.getElementById("intake-fields");
+const questionsBlock = document.getElementById("questions-block");
 const questions = document.getElementById("questions");
 const submit = document.getElementById("submit");
 const refine = document.getElementById("refine");
@@ -24,34 +27,49 @@ const runReviewBtn = document.getElementById("run-review");
 
 let currentState = null;
 const clarificationState = new Map();
+const intakeState = new Map();
 
 window.addEventListener("message", (event) => {
   const message = event.data;
   if (!message || message.type !== "state") {
     return;
   }
-  currentState = message.state;
+  const incomingState = isRecord(message.state) ? message.state : {};
+  const persistedState = vscode.getState();
+  const reuseDraftState = sameWizardContext(incomingState.context, persistedState && persistedState.context);
+  currentState = {
+    ...incomingState,
+    intakeAnswers: {
+      ...normalizeAnswerMap(incomingState.intakeAnswers),
+      ...normalizeAnswerMap(persistedState && persistedState.intakeAnswers),
+    },
+    questionAnswers: reuseDraftState ? normalizeAnswerMap(persistedState && persistedState.questionAnswers) : {},
+  };
   renderState(currentState);
-  vscode.setState(currentState);
+  persistState();
 });
 
 body.addEventListener("input", () => {
   vscode.postMessage({ type: "draftChanged", body: getEditorText() });
+  persistState();
 });
 
 submit.addEventListener("click", () => {
-  if (!currentState) { return; }
+  if (!currentState) {
+    return;
+  }
   setProcessing(true);
   if (currentState.hasDraft && currentState.chunkStatus !== "accepted") {
-    // Accept the generated draft
     vscode.postMessage({ type: "acceptChunk", chunkId: currentState.chunkId, body: buildSubmissionBody() });
   } else {
-    // Generate a draft using the typed text as context
     vscode.postMessage({ type: "generate", body: buildSubmissionBody() });
   }
 });
 
 refine.addEventListener("click", () => {
+  if (!currentState) {
+    return;
+  }
   vscode.postMessage({ type: "refine", body: buildSubmissionBody() });
 });
 
@@ -80,12 +98,9 @@ runReviewBtn.addEventListener("click", () => {
 
 const persisted = vscode.getState();
 if (persisted) {
+  currentState = persisted;
   renderState(persisted);
 }
-
-// ---------------------------------------------------------------------------
-// Render
-// ---------------------------------------------------------------------------
 
 function renderState(state) {
   chunkTitle.textContent = state.chunkTitle || "What is the idea?";
@@ -93,7 +108,17 @@ function renderState(state) {
   guidance.textContent = guidanceText;
   guidance.hidden = !guidanceText;
   setEditorText(state.body || "");
-  renderQuestions(Array.isArray(state.questions) ? state.questions : []);
+
+  const hasIntake = renderIntakeForm(
+    Array.isArray(state.intakeFields) ? state.intakeFields : [],
+    normalizeAnswerMap(state.intakeAnswers),
+  );
+  const hasQuestions = renderQuestions(
+    Array.isArray(state.questions) ? state.questions : [],
+    normalizeAnswerMap(state.questionAnswers),
+  );
+  clarifications.hidden = !hasIntake && !hasQuestions;
+
   renderAcceptedChunks(Array.isArray(state.acceptedChunks) ? state.acceptedChunks : []);
   updateSeparatorLabel(state.chunkStatus);
   renderStageProgress(state);
@@ -119,7 +144,6 @@ function renderActionButtons(state) {
   const stageKind = state.stageKind || "";
   const stageStatus = state.stageStatus || "pending";
 
-  // Decide which action group to show
   const showReview = allAccepted && stageKind === "review";
   const showCoding = allAccepted && stageKind === "coding_agents" && stageStatus !== "accepted";
   const showStageAccept = allAccepted && !showReview && !showCoding && stageStatus !== "accepted";
@@ -130,7 +154,6 @@ function renderActionButtons(state) {
   codingActions.hidden = !showCoding;
   reviewActions.hidden = !showReview;
 
-  // Update the Generate/Accept label dynamically
   const isInitialIdea = stageKind === "market_research" && state.chunkId === "initial_goal";
   if (state.hasDraft && state.chunkStatus !== "accepted") {
     submit.textContent = "Accept Chunk";
@@ -163,6 +186,13 @@ function setProcessing(on) {
   acceptStageBtn.disabled = on;
   startCodingBtn.disabled = on;
   runReviewBtn.disabled = on;
+
+  document.querySelectorAll(".clarification-answer, .intake-select").forEach((el) => {
+    if ("disabled" in el) {
+      el.disabled = on;
+    }
+  });
+
   if (on) {
     submit.textContent = "Processing…";
     acceptStageBtn.textContent = "Processing…";
@@ -170,10 +200,6 @@ function setProcessing(on) {
     runReviewBtn.textContent = "Processing…";
   }
 }
-
-// ---------------------------------------------------------------------------
-// Accepted chunk history
-// ---------------------------------------------------------------------------
 
 function renderAcceptedChunks(chunks) {
   acceptedChunksEl.innerHTML = "";
@@ -211,7 +237,6 @@ function renderAcceptedChunks(chunks) {
     bodyEl.textContent = chunk.body || "";
     section.appendChild(bodyEl);
 
-    // Expand on click if body is long
     bodyEl.addEventListener("click", () => {
       bodyEl.classList.toggle("expanded");
     });
@@ -220,51 +245,126 @@ function renderAcceptedChunks(chunks) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Questions / clarifications
-// ---------------------------------------------------------------------------
+function renderIntakeForm(fieldList, savedAnswers) {
+  intakeFieldsEl.innerHTML = "";
+  intakeState.clear();
+  if (fieldList.length === 0) {
+    intake.hidden = true;
+    return false;
+  }
 
-function renderQuestions(questionList) {
+  intake.hidden = false;
+
+  for (const field of fieldList) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "intake-field";
+
+    const label = document.createElement("span");
+    label.className = "intake-label";
+    label.textContent = field.label;
+    wrapper.appendChild(label);
+
+    const select = document.createElement("select");
+    select.className = "intake-select";
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = field.placeholder || "Choose an option";
+    select.appendChild(placeholder);
+
+    const optionLabels = new Map();
+    for (const option of Array.isArray(field.options) ? field.options : []) {
+      optionLabels.set(option.value, option.label);
+      const optionEl = document.createElement("option");
+      optionEl.value = option.value;
+      optionEl.textContent = option.label;
+      select.appendChild(optionEl);
+    }
+
+    const savedValue = typeof savedAnswers[field.id] === "string" ? savedAnswers[field.id] : "";
+    if (savedValue && optionLabels.has(savedValue)) {
+      select.value = savedValue;
+    }
+
+    intakeState.set(field.id, {
+      prompt: field.label,
+      answer: select.value || "",
+      answerLabel: optionLabels.get(select.value) || "",
+      remember: Boolean(field.remember),
+    });
+
+    select.addEventListener("change", () => {
+      const state = intakeState.get(field.id);
+      if (!state) {
+        return;
+      }
+      state.answer = select.value;
+      state.answerLabel = optionLabels.get(select.value) || "";
+      intakeState.set(field.id, state);
+
+      if (state.remember) {
+        vscode.postMessage({
+          type: "rememberIntakeDefaults",
+          values: {
+            teamSize: intakeState.get("teamSize")?.answer || "",
+            skillLevel: intakeState.get("skillLevel")?.answer || "",
+          },
+        });
+      }
+      persistState();
+    });
+
+    wrapper.appendChild(select);
+    intakeFieldsEl.appendChild(wrapper);
+  }
+
+  return true;
+}
+
+function renderQuestions(questionList, savedAnswers) {
   questions.innerHTML = "";
   clarificationState.clear();
   if (questionList.length === 0) {
-    clarifications.hidden = true;
-    return;
+    questionsBlock.hidden = true;
+    return false;
   }
 
-  // Show only the first question — one at a time
-  clarifications.hidden = false;
-  const item = questionList[0];
-  const questionKey = "q0";
-  clarificationState.set(questionKey, { prompt: item, answer: "" });
+  questionsBlock.hidden = false;
 
-  const block = document.createElement("section");
-  block.className = "question-block";
+  questionList.forEach((item, index) => {
+    const questionKey = `q${index}`;
 
-  const prompt = document.createElement("p");
-  prompt.className = "question";
-  prompt.textContent = item;
-  block.appendChild(prompt);
+    const block = document.createElement("section");
+    block.className = "question-block";
 
-  const answerEl = document.createElement("textarea");
-  answerEl.className = "clarification-answer";
-  answerEl.placeholder = "Your answer…";
-  answerEl.rows = 3;
-  answerEl.addEventListener("input", () => {
-    const state = clarificationState.get(questionKey);
-    if (state) {
-      state.answer = answerEl.value.trim();
-      clarificationState.set(questionKey, state);
-    }
+    const prompt = document.createElement("p");
+    prompt.className = "question";
+    prompt.textContent = item;
+    block.appendChild(prompt);
+
+    const answerEl = document.createElement("textarea");
+    answerEl.className = "clarification-answer";
+    answerEl.placeholder = "Your answer…";
+    answerEl.rows = 3;
+    answerEl.value = typeof savedAnswers[questionKey] === "string" ? savedAnswers[questionKey] : "";
+
+    clarificationState.set(questionKey, { prompt: item, answer: answerEl.value.trim() });
+
+    answerEl.addEventListener("input", () => {
+      const state = clarificationState.get(questionKey);
+      if (state) {
+        state.answer = answerEl.value.trim();
+        clarificationState.set(questionKey, state);
+      }
+      persistState();
+    });
+    block.appendChild(answerEl);
+
+    questions.appendChild(block);
   });
-  block.appendChild(answerEl);
 
-  questions.appendChild(block);
+  return true;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function getEditorText() {
   return body.innerText.replace(/\u00A0/g, " ").trim();
@@ -276,6 +376,17 @@ function setEditorText(value) {
 
 function buildSubmissionBody() {
   const base = getEditorText();
+  const parts = [];
+
+  if (base) {
+    parts.push(base);
+  }
+
+  const intakeSummary = buildIntakeSummary();
+  if (base && intakeSummary) {
+    parts.push(intakeSummary);
+  }
+
   const answers = [];
   for (const state of clarificationState.values()) {
     if (!state.answer) {
@@ -283,11 +394,71 @@ function buildSubmissionBody() {
     }
     answers.push(`${state.prompt}\n${state.answer}`);
   }
-
-  if (answers.length === 0) {
-    return base;
+  if (answers.length > 0) {
+    parts.push(answers.join("\n\n"));
   }
-  const answersText = answers.join("\n\n");
-  return base ? `${base}\n\n${answersText}` : answersText;
+
+  return parts.join("\n\n").trim();
 }
 
+function buildIntakeSummary() {
+  const lines = [];
+  for (const state of intakeState.values()) {
+    if (!state.answer || !state.answerLabel) {
+      continue;
+    }
+    lines.push(`- ${state.prompt}: ${state.answerLabel}`);
+  }
+  if (lines.length === 0) {
+    return "";
+  }
+  return ["Project profile:", ...lines].join("\n");
+}
+
+function persistState() {
+  if (!currentState) {
+    return;
+  }
+  vscode.setState({
+    ...currentState,
+    body: getEditorText(),
+    intakeAnswers: serializeAnswerState(intakeState),
+    questionAnswers: serializeAnswerState(clarificationState),
+  });
+}
+
+function serializeAnswerState(source) {
+  const result = {};
+  for (const [key, value] of source.entries()) {
+    if (!value || typeof value.answer !== "string") {
+      continue;
+    }
+    result[key] = value.answer;
+  }
+  return result;
+}
+
+function normalizeAnswerMap(value) {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") {
+      normalized[key] = entry;
+    }
+  }
+  return normalized;
+}
+
+function sameWizardContext(left, right) {
+  return isRecord(left)
+    && isRecord(right)
+    && left.runId === right.runId
+    && left.stageId === right.stageId
+    && left.wizardId === right.wizardId;
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}

@@ -82,6 +82,52 @@ body {
   padding: 14px 16px;
   border-left: 2px solid var(--border);
   background: var(--question-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.clarification-group[hidden] {
+  display: none;
+}
+
+.section-label {
+  margin: 0 0 12px;
+  font: 600 11px/1.2 var(--vscode-editor-font-family, Consolas, monospace);
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.intake-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.intake-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.intake-label {
+  font: 600 12px/1.4 var(--vscode-font-family);
+}
+
+.intake-select,
+.clarification-answer {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font: 13px/1.6 var(--vscode-font-family);
+}
+
+.intake-select {
+  min-height: 36px;
 }
 
 .question {
@@ -98,13 +144,6 @@ body {
 }
 
 .clarification-answer {
-  width: 100%;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
-  border-radius: 4px;
-  padding: 8px 10px;
-  font: 13px/1.6 var(--vscode-font-family);
   resize: vertical;
   min-height: 72px;
 }
@@ -161,8 +200,6 @@ button.secondary {
   color: var(--button-secondary-fg);
 }
 
-/* ---- Accepted chunk history ---- */
-
 .accepted-history {
   margin-bottom: 8px;
 }
@@ -216,7 +253,7 @@ button.secondary {
   color: var(--accepted-fg);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 4.8em; /* ~3 lines */
+  max-height: 4.8em;
   overflow: hidden;
   position: relative;
 }
@@ -239,8 +276,6 @@ button.secondary {
 .accepted-chunk-body.expanded::after {
   display: none;
 }
-
-/* ---- Stage progress bar ---- */
 
 .stage-progress {
   display: flex;
@@ -274,7 +309,6 @@ button.secondary {
   transition: width 0.3s ease;
 }
 
-/* ---- Body locked state (when current chunk has been submitted and is processing) ---- */
 .body-editor[aria-readonly="true"] {
   opacity: 0.6;
   pointer-events: none;
@@ -282,4 +316,14 @@ button.secondary {
 
 .body-editor[aria-readonly="true"]::after {
   content: "";
+}
+
+@media (max-width: 700px) {
+  .document {
+    padding: 20px 18px 28px;
+  }
+
+  .intake-fields {
+    grid-template-columns: 1fr;
+  }
 }

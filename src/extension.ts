@@ -148,7 +148,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._quickActions = new QuickActionsProvider();
     this._decorations = new DecorationRenderer();
     this._wizardLenses = new WizardCodeLensProvider();
-    this._wizardEditor = new WizardEditorPanel(context.extensionUri);
+    this._wizardEditor = new WizardEditorPanel(context.extensionUri, context.workspaceState);
     this._todoBoard = new TodoBoardPanel(context.extensionUri);
     this._knowledgePanel = new KnowledgePanel(context.extensionUri);
     this._personaStudio = new PersonaStudioPanel(context.extensionUri);

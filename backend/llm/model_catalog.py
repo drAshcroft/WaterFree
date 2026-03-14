@@ -215,6 +215,78 @@ MODEL_CATALOG: list[ModelDescriptor] = [
         tokens_per_day=500_000,
     ),
 
+    # ── Google Gemini ──────────────────────────────────────────────────────
+    # Caching: automatic/implicit — no per-request config required.
+    # cached_content_token_count is reported inside prompt_token_count.
+
+    ModelDescriptor(
+        id="gemini-2.5-pro",
+        provider="gemini",
+        tier="apex",
+        capabilities=("tools", "vision", "reasoning", "caching", "streaming", "json_mode", "long_context"),
+        context_window=1_000_000,
+        max_output=65_536,
+        input_cost_per_1m=1.25,    # ≤200 k tokens; $2.50 beyond
+        output_cost_per_1m=10.00,
+        optimizations=("implicitCaching",),
+    ),
+    ModelDescriptor(
+        id="gemini-2.0-flash",
+        provider="gemini",
+        tier="balanced",
+        capabilities=("tools", "vision", "caching", "streaming", "json_mode", "long_context"),
+        context_window=1_000_000,
+        max_output=8_192,
+        input_cost_per_1m=0.10,
+        output_cost_per_1m=0.40,
+        optimizations=("implicitCaching",),
+    ),
+    ModelDescriptor(
+        id="gemini-2.0-flash-lite",
+        provider="gemini",
+        tier="efficient",
+        capabilities=("tools", "vision", "streaming", "json_mode", "long_context"),
+        context_window=1_000_000,
+        max_output=8_192,
+        input_cost_per_1m=0.075,
+        output_cost_per_1m=0.30,
+    ),
+
+    # ── Alibaba Qwen (Dashscope OpenAI-compatible endpoint) ────────────────
+    # Caching: transparent server-side prefix cache; no explicit opt-in.
+    # Uses ChatOpenAI pointed at dashscope.aliyuncs.com/compatible-mode/v1.
+
+    ModelDescriptor(
+        id="qwen-max",
+        provider="qwen",
+        tier="apex",
+        capabilities=("tools", "vision", "streaming", "json_mode", "long_context"),
+        context_window=32_768,
+        max_output=8_192,
+        input_cost_per_1m=1.60,
+        output_cost_per_1m=6.40,
+    ),
+    ModelDescriptor(
+        id="qwen-plus",
+        provider="qwen",
+        tier="balanced",
+        capabilities=("tools", "streaming", "json_mode", "long_context"),
+        context_window=131_072,
+        max_output=8_192,
+        input_cost_per_1m=0.40,
+        output_cost_per_1m=1.20,
+    ),
+    ModelDescriptor(
+        id="qwen-turbo",
+        provider="qwen",
+        tier="efficient",
+        capabilities=("tools", "streaming", "json_mode", "long_context"),
+        context_window=1_000_000,
+        max_output=8_192,
+        input_cost_per_1m=0.05,
+        output_cost_per_1m=0.15,
+    ),
+
     # ── Ollama (local — cost is always 0) ─────────────────────────────────
 
     ModelDescriptor(

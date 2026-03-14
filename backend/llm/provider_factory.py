@@ -66,6 +66,9 @@ def build_runtime_spec(
         elif provider_type == "openai":
             metadata = OpenAIAdapter.build_metadata(profile, stage_key, persona, session_key)
             config.update(metadata)
+        elif provider_type == "gemini":
+            gemini_opts = profile.optimizations.gemini
+            config["enable_implicit_caching"] = bool(gemini_opts.get("enableImplicitCaching", True))
         model = adapter.create_llm(model_name, config)
         if provider_type == "anthropic" and isinstance(model, str):
             # create_llm fell back to string — disable extended thinking

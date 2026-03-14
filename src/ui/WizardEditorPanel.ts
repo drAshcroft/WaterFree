@@ -55,6 +55,19 @@ type AcceptedChunkSummary = {
   body: string;
 };
 
+type WizardIntakeOption = {
+  value: string;
+  label: string;
+};
+
+type WizardIntakeField = {
+  id: string;
+  label: string;
+  placeholder?: string;
+  remember?: boolean;
+  options: WizardIntakeOption[];
+};
+
 type WizardEditorViewModel = {
   context: WizardDocContext;
   chunkTitle: string;
@@ -69,22 +82,31 @@ type WizardEditorViewModel = {
   stageTitle: string;
   stageIndex: number;
   stageCount: number;
+  intakeFields: WizardIntakeField[];
+  intakeAnswers: Record<string, string>;
   questions: string[];
   acceptedChunks: AcceptedChunkSummary[];
+};
+
+const INTAKE_PREFERENCE_KEYS: Record<string, string> = {
+  teamSize: "waterfree.wizard.intake.teamSize",
+  skillLevel: "waterfree.wizard.intake.skillLevel",
 };
 
 export class WizardEditorPanel implements vscode.Disposable {
   private readonly _actionEmitter = new vscode.EventEmitter<WizardEditorAction>();
   private readonly _disposables: vscode.Disposable[] = [];
   private readonly _extensionUri: vscode.Uri;
+  private readonly _storage: vscode.Memento;
   private _panel: vscode.WebviewPanel | null = null;
   private _viewModel: WizardEditorViewModel | null = null;
   private _draftBody = "";
 
   readonly onDidTriggerAction = this._actionEmitter.event;
 
-  constructor(extensionUri: vscode.Uri) {
+  constructor(extensionUri: vscode.Uri, storage: vscode.Memento) {
     this._extensionUri = extensionUri;
+    this._storage = storage;
   }
 
   async showResponse(result: WizardResponse): Promise<void> {
@@ -171,6 +193,23 @@ export class WizardEditorPanel implements vscode.Disposable {
       this._draftBody = message.body;
       if (this._viewModel) {
         this._viewModel = { ...this._viewModel, body: message.body };
+      }
+      return;
+    }
+
+    if (message.type === "rememberIntakeDefaults" && isRecord(message.values)) {
+      const nextAnswers = this._viewModel ? { ...this._viewModel.intakeAnswers } : {};
+      for (const [fieldId, key] of Object.entries(INTAKE_PREFERENCE_KEYS)) {
+        const value = message.values[fieldId];
+        if (typeof value !== "string") {
+          continue;
+        }
+        const normalized = value.trim();
+        nextAnswers[fieldId] = normalized;
+        void this._storage.update(key, normalized);
+      }
+      if (this._viewModel) {
+        this._viewModel = { ...this._viewModel, intakeAnswers: nextAnswers };
       }
       return;
     }
@@ -265,6 +304,7 @@ export class WizardEditorPanel implements vscode.Disposable {
       }));
 
     const stageIndex = wizard.stages.indexOf(stage);
+    const intakeFields = this._buildIntakeFields(stage, chunk);
 
     return {
       context: {
@@ -285,9 +325,134 @@ export class WizardEditorPanel implements vscode.Disposable {
       stageTitle: stage.title ?? "",
       stageIndex,
       stageCount: wizard.stages.length,
+      intakeFields,
+      intakeAnswers: this._loadIntakeAnswers(intakeFields),
       questions: stage.questions ?? [],
       acceptedChunks,
     };
+  }
+
+  private _buildIntakeFields(stage: WizardStageData, chunk: WizardChunkData): WizardIntakeField[] {
+    if (stage.kind !== "market_research" || chunk.id !== "initial_goal") {
+      return [];
+    }
+    return [
+      {
+        id: "whoFor",
+        label: "Who is this for?",
+        placeholder: "Choose the closest fit",
+        options: [
+          { value: "self", label: "Self / personal use" },
+          { value: "home", label: "Home / household" },
+          { value: "internal_tool", label: "Internal team tool" },
+          { value: "small_business", label: "Small business / local service" },
+          { value: "saas", label: "SaaS product" },
+          { value: "startup", label: "Startup venture" },
+          { value: "client_service", label: "Agency / client delivery" },
+          { value: "creator", label: "Creator / community product" },
+          { value: "ecommerce", label: "Ecommerce / marketplace" },
+          { value: "education", label: "Education / training" },
+          { value: "open_source", label: "Open source utility" },
+          { value: "game_mod", label: "Game mod / server community" },
+        ],
+      },
+      {
+        id: "teamSize",
+        label: "How big is your team?",
+        placeholder: "Select team size",
+        remember: true,
+        options: [
+          { value: "solo", label: "Solo" },
+          { value: "2_3", label: "2-3 people" },
+          { value: "4_8", label: "4-8 people" },
+          { value: "9_20", label: "9-20 people" },
+          { value: "21_plus", label: "21+ people" },
+        ],
+      },
+      {
+        id: "skillLevel",
+        label: "What is your skill level?",
+        placeholder: "Select skill level",
+        remember: true,
+        options: [
+          { value: "new_to_software", label: "New to software" },
+          { value: "beginner", label: "Beginner builder" },
+          { value: "intermediate", label: "Intermediate" },
+          { value: "professional", label: "Professional engineer" },
+          { value: "expert", label: "Expert / specialist team" },
+        ],
+      },
+      {
+        id: "startingPoint",
+        label: "What are you starting from?",
+        placeholder: "Select current state",
+        options: [
+          { value: "idea_only", label: "Just an idea" },
+          { value: "notes", label: "Rough notes or sketches" },
+          { value: "manual_process", label: "Existing manual workflow" },
+          { value: "prototype", label: "Prototype already exists" },
+          { value: "existing_product", label: "Existing product to expand" },
+        ],
+      },
+      {
+        id: "primaryPlatform",
+        label: "What do you want to ship first?",
+        placeholder: "Select first target",
+        options: [
+          { value: "web_app", label: "Web app" },
+          { value: "mobile_app", label: "Mobile app" },
+          { value: "desktop_app", label: "Desktop app" },
+          { value: "api_backend", label: "API / backend service" },
+          { value: "automation_agent", label: "Automation / AI agent" },
+          { value: "integration_plugin", label: "Integration / plugin" },
+          { value: "vscode_extension", label: "VS Code extension" },
+          { value: "game_mod", label: "Game mod / plugin" },
+        ],
+      },
+      {
+        id: "timeline",
+        label: "What timeline are you targeting?",
+        placeholder: "Select timeline",
+        options: [
+          { value: "weekend", label: "A weekend prototype" },
+          { value: "few_weeks", label: "2-6 weeks" },
+          { value: "quarter", label: "1-3 months" },
+          { value: "longer", label: "3+ months" },
+          { value: "no_deadline", label: "No hard deadline yet" },
+        ],
+      },
+      {
+        id: "successMetric",
+        label: "What matters most right now?",
+        placeholder: "Select main goal",
+        options: [
+          { value: "save_time", label: "Save time / remove busywork" },
+          { value: "validate_demand", label: "Validate real demand" },
+          { value: "get_users", label: "Get first users or customers" },
+          { value: "ship_mvp", label: "Ship the fastest MVP" },
+          { value: "learn", label: "Learn while building" },
+          { value: "portfolio", label: "Create a strong demo / portfolio piece" },
+        ],
+      },
+    ];
+  }
+
+  private _loadIntakeAnswers(fields: WizardIntakeField[]): Record<string, string> {
+    const answers: Record<string, string> = {};
+    for (const field of fields) {
+      if (!field.remember) {
+        continue;
+      }
+      const key = INTAKE_PREFERENCE_KEYS[field.id];
+      if (!key) {
+        continue;
+      }
+      const saved = this._storage.get<string>(key, "").trim();
+      if (saved) {
+        answers[field.id] = saved;
+      }
+    }
+    return answers;
   }
 
   private _currentChunk(stage: WizardStageData): WizardChunkData | null {

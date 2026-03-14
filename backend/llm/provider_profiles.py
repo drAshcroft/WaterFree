@@ -58,6 +58,20 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "execution": "llama3.2",
         "debug": "llama3.2",
     },
+    "gemini": {
+        "default": "gemini-2.0-flash",
+        "planning": "gemini-2.5-pro",
+        "annotation": "gemini-2.0-flash",
+        "execution": "gemini-2.0-flash",
+        "debug": "gemini-2.0-flash-lite",
+    },
+    "qwen": {
+        "default": "qwen-plus",
+        "planning": "qwen-max",
+        "annotation": "qwen-plus",
+        "execution": "qwen-plus",
+        "debug": "qwen-turbo",
+    },
     "huggingface": {"default": ""},
     "mock": {"default": ""},
 }
@@ -90,6 +104,8 @@ class ProviderRouting:
 class ProviderOptimizations:
     openai: dict[str, Any] = field(default_factory=dict)
     anthropic: dict[str, Any] = field(default_factory=dict)
+    gemini: dict[str, Any] = field(default_factory=dict)
+    qwen: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
