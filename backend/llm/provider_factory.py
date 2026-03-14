@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.llm.adapters import get_adapter
+from backend.llm.adapters.openai_adapter import OpenAIAdapter
 from backend.llm.provider_profiles import ProviderPolicies, ProviderProfile
 
 
@@ -45,66 +46,30 @@ def build_runtime_spec(
     extended_thinking = False
     thinking_budget = 0
 
-    if provider_type == "openai":
-        metadata = build_openai_metadata(profile, stage_key, persona, session_key)
-        try:
-            from langchain_openai import ChatOpenAI
-
-            model_kwargs = dict(metadata.get("model_kwargs", {}))
-            model = ChatOpenAI(
-                model=model_name,
-                api_key=profile.connection.api_key or None,
-                base_url=profile.connection.base_url or None,
-                stream_usage=bool(metadata.get("streamUsage", True)),
-                use_responses_api=bool(metadata.get("useResponsesApi", True)),
-                use_previous_response_id=bool(metadata.get("usePreviousResponseId", True)),
-                model_kwargs=model_kwargs,
+    adapter = get_adapter(provider_type)
+    if adapter is not None:
+        config: dict[str, Any] = {
+            "api_key": profile.connection.api_key or None,
+            "base_url": profile.connection.base_url or None,
+        }
+        if provider_type == "anthropic":
+            anthropic_opts = profile.optimizations.anthropic
+            thinking_budget = int(anthropic_opts.get("thinkingBudgetTokens", 10_000))
+            # Extended thinking only applies to reasoning-heavy stages.
+            _thinking_stages = {"planning", "annotation", "question_answer", "alter_annotation"}
+            extended_thinking = (
+                bool(anthropic_opts.get("extendedThinking", False))
+                and stage_key in _thinking_stages
             )
-        except Exception:
-            model = f"openai:{model_name}"
-    elif provider_type == "anthropic":
-        anthropic_opts = profile.optimizations.anthropic
-        thinking_budget = int(anthropic_opts.get("thinkingBudgetTokens", 10_000))
-        # Extended thinking only applies to reasoning-heavy stages.
-        _thinking_stages = {"planning", "annotation", "question_answer", "alter_annotation"}
-        extended_thinking = (
-            bool(anthropic_opts.get("extendedThinking", False))
-            and stage_key in _thinking_stages
-        )
-        try:
-            from langchain_anthropic import ChatAnthropic
-
-            anthropic_model_kwargs: dict[str, Any] = {}
-            if extended_thinking:
-                # Extended thinking requires the interleaved-thinking beta.
-                # It is mutually exclusive with prompt caching — handled in
-                # _attach_middleware via supports_prompt_caching_middleware=False.
-                anthropic_model_kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": thinking_budget,
-                }
-            model = ChatAnthropic(
-                model_name=model_name,
-                api_key=profile.connection.api_key or None,
-                base_url=profile.connection.base_url or None,
-                stream_usage=True,
-                **({"model_kwargs": anthropic_model_kwargs} if anthropic_model_kwargs else {}),
-            )
-        except Exception:
-            model = f"anthropic:{model_name}"
+            config["extended_thinking_enabled"] = extended_thinking
+            config["thinking_budget_tokens"] = thinking_budget
+        elif provider_type == "openai":
+            metadata = OpenAIAdapter.build_metadata(profile, stage_key, persona, session_key)
+            config.update(metadata)
+        model = adapter.create_llm(model_name, config)
+        if provider_type == "anthropic" and isinstance(model, str):
+            # create_llm fell back to string — disable extended thinking
             extended_thinking = False
-    elif provider_type == "groq":
-        try:
-            from langchain_groq import ChatGroq
-
-            model = ChatGroq(
-                model=model_name,
-                api_key=profile.connection.api_key or None,
-            )
-        except Exception:
-            model = f"groq:{model_name}"
-    elif provider_type == "ollama":
-        model = f"ollama:{model_name}"
 
     return ProviderRuntimeSpec(
         provider_id=profile.id,
@@ -126,59 +91,10 @@ def build_runtime_spec(
     )
 
 
-def build_openai_metadata(
-    profile: ProviderProfile,
-    stage: str,
-    persona: str,
-    session_key: str,
-) -> dict[str, Any]:
-    opts = profile.optimizations.openai
-    strategy = str(opts.get("promptCacheKeyStrategy", "session_stage_persona")).strip()
-    cache_parts = [profile.id]
-    if strategy in {"session_stage_persona", "session_stage_persona_provider"}:
-        cache_parts.extend([session_key, stage, persona])
-    elif strategy == "session":
-        cache_parts.append(session_key)
-    elif strategy == "stage_persona":
-        cache_parts.extend([stage, persona])
-    cache_key = hashlib.sha1("::".join(part for part in cache_parts if part).encode("utf-8")).hexdigest()
-    model_kwargs: dict[str, Any] = {"prompt_cache_key": cache_key}
-    retention = opts.get("promptCacheRetention")
-    if retention:
-        model_kwargs["prompt_cache_retention"] = retention
-    return {
-        "useResponsesApi": opts.get("useResponsesApi", True) is not False,
-        "usePreviousResponseId": opts.get("usePreviousResponseId", True) is not False,
-        "streamUsage": opts.get("streamUsage", True) is not False,
-        "promptCacheKey": cache_key,
-        "model_kwargs": model_kwargs,
-    }
-
-
 def extract_usage(result: Any, provider_type: str) -> dict[str, int]:
-    if not isinstance(result, dict):
-        return {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
-    for message in reversed(result.get("messages", [])):
-        meta = (
-            message.get("response_metadata", {})
-            if isinstance(message, dict)
-            else getattr(message, "response_metadata", {})
-        ) or {}
-        usage = meta.get("usage", meta.get("token_usage", {})) or {}
-        if not usage:
-            continue
-        prompt_details = usage.get("prompt_tokens_details", {}) or {}
-        cache_read_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
-        cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
-        if provider_type in {"openai", "groq"}:
-            cache_read_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
-            cache_creation_tokens = 0
-        return {
-            "input_tokens": int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0),
-            "output_tokens": int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0),
-            "cache_read_tokens": cache_read_tokens,
-            "cache_creation_tokens": cache_creation_tokens,
-        }
+    adapter = get_adapter(provider_type)
+    if adapter is not None:
+        return adapter.extract_usage(result)
     return {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0}
 
 

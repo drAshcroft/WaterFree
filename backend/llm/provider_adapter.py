@@ -1,18 +1,14 @@
 """
 ProviderAdapter Protocol — the interface all provider backends must satisfy.
 
-This is a typing-only module.  The existing build_runtime_spec() / extract_usage()
-logic in provider_factory.py satisfies this contract; the Protocol makes it
-explicit so type checkers and future implementations have a clear target.
+Concrete adapters live in backend.llm.adapters:
+  AnthropicAdapter, OpenAIAdapter, GroqAdapter, OllamaAdapter
 
-A concrete adapter is identified by its provider_type string and implements:
+Each adapter is identified by its provider_type string and implements:
   create_llm()          → LangChain BaseChatModel (or compatible)
   extract_usage()       → token-usage dict from a raw response
   supports_model()      → True if the adapter can serve a given model id
   supports_capability() → True if the adapter can provide a capability at runtime
-
-Future work: extract AnthropicAdapter, OpenAIAdapter, GroqAdapter, OllamaAdapter
-from provider_factory.py and register them here.
 """
 from __future__ import annotations
 
