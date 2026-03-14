@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import os
 
+from backend.knowledge.store import KnowledgeStore
 from backend.llm.personas import list_personas
 from backend.llm.provider_profiles import normalize_provider_profile
 from backend.llm.runtime_registry import (
     list_runtime_descriptors,
     resolve_runtime_name,
 )
+from backend.llm.tools import build_default_tool_registry
+from backend.todo.store import TaskStore
 
 
 def handle_list_runtimes(server, params: dict) -> dict:
@@ -39,8 +42,25 @@ def handle_sync_provider_profile(server, params: dict) -> dict:
 
 
 def handle_list_personas(server, params: dict) -> dict:
-    _ = server, params
-    return {"personas": list_personas()}
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    runtime = server._get_runtime(workspace_path)
+    registry = getattr(runtime, "_tool_registry", None)
+    if registry is None:
+        registry = build_default_tool_registry(
+            graph=None,
+            task_store_factory=lambda target_workspace: TaskStore(target_workspace),
+            knowledge_store_factory=lambda: KnowledgeStore(),
+            enable_optional_web_tools=bool(os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip()),
+        )
+    personas = []
+    for persona in list_personas():
+        entry = dict(persona)
+        entry["tools"] = registry.describe_persona_tools(
+            persona=str(persona.get("id", "")),
+            include_optional=False,
+        )
+        personas.append(entry)
+    return {"personas": personas}
 
 
 def handle_list_skills(server, params: dict) -> dict:

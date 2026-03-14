@@ -59,6 +59,7 @@ class PersonaPromptTests(unittest.TestCase):
         self.assertIn("market_researcher", PERSONAS)
         self.assertIn("bdd_test_designer", PERSONAS)
         self.assertIn("coding_agent", PERSONAS)
+        self.assertIn("tutorializer", PERSONAS)
         self.assertIn("reviewer", PERSONAS)
 
     def test_market_researcher_and_reviewer_have_stage_prompts(self) -> None:
@@ -67,6 +68,14 @@ class PersonaPromptTests(unittest.TestCase):
 
         self.assertIn("external research", market.lower())
         self.assertIn("findings", reviewer.lower())
+
+    def test_tutorializer_has_question_answer_and_knowledge_prompting(self) -> None:
+        question_answer = build_system_prompt("QUESTION_ANSWER", "tutorializer")
+        knowledge = build_system_prompt("KNOWLEDGE", "tutorializer")
+
+        self.assertIn("reproduction guidance", question_answer)
+        self.assertIn("replicate it", knowledge)
+        self.assertIn("teachable and reusable", knowledge)
 
     def test_coding_agent_escalates_bad_guidance_and_demands_real_backlog(self) -> None:
         planning = build_system_prompt("PLANNING", "coding_agent")

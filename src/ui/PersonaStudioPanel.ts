@@ -2,6 +2,14 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 
+export interface PersonaStudioTool {
+  name: string;
+  title: string;
+  category: string;
+  readOnly: boolean;
+  serverId: string;
+}
+
 export interface PersonaStudioAssignment {
   providerId: string;
   model: string;
@@ -20,6 +28,7 @@ export interface PersonaStudioPersona {
   tagline: string;
   systemFragment: string;
   stageFragments?: Record<string, string>;
+  tools?: PersonaStudioTool[];
 }
 
 export interface PersonaStudioProvider {
@@ -30,10 +39,17 @@ export interface PersonaStudioProvider {
   models: string[];
 }
 
+export interface PersonaStudioDefaultRoute {
+  providerId: string;
+  providerName: string;
+  model: string;
+}
+
 export interface PersonaStudioState {
   personas: PersonaStudioPersona[];
   providers: PersonaStudioProvider[];
   customizations: PersonaStudioCustomization[];
+  defaultRoute: PersonaStudioDefaultRoute | null;
 }
 
 export type PersonaStudioAction =

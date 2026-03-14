@@ -6,8 +6,7 @@ description: Use the WaterFree knowledge MCP tools to search shared code snippet
 # WaterFree — Knowledge / Snippet Store Tools
 
 You have access to a global cross-project knowledge store via the `waterfree-knowledge`
-MCP server. It contains code snippets, patterns, utilities, and conventions extracted
-from indexed repositories using LLM classification, and entries added directly by agents.
+MCP server. It contains code snippets, patterns, utilities, gotchas, styles and conventions extractedfrom indexed repositories using LLM classification, and entries added directly by agents.
 
 Knowledge is shared across all workspaces and stored at `~/.waterfree/global/knowledge.db`.
 
@@ -19,6 +18,7 @@ Use these tools when you need to:
 - Look for prior implementations of a concept across projects — use `search_knowledge`
 - Check what has already been indexed — use `list_knowledge_sources`
 - Understand how many snippets are available — use `knowledge_stats`
+ 
 
 Use the hierarchy first for broad domains and search for precise lookups. Always consult
 the knowledge store before writing boilerplate or reaching for external docs. User preferences and style guides should be pushed to this store. Make it so the user does not have to repeat preferences for prompts. Preferences should be small, terse and few
@@ -38,6 +38,9 @@ across **any** project. Good candidates:
   quirks, gotchas, or non-obvious initialization (save as `api_usage`)
 - **You're about to write boilerplate that already lives elsewhere** — if you can't
   find it in the store but just wrote it, add it so the next session can
+- **Market Research that will be common** Save time and effort, the market research will be referenced again with new features
+- **API preferences** users tend to like to reuse certain API's remember their preferences
+- **Coding styles** users like certain styles and designs.  Remember their preferences
 
 **Before adding:** run `search_knowledge` first to avoid duplicates.
 

@@ -110,6 +110,39 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(execution.profile.id, "openai-primary")
         self.assertEqual(execution.model_name, "gpt-4o-mini")
 
+    def test_resolve_provider_defaults_to_first_ordered_provider_when_unassigned(self) -> None:
+        profile = normalize_provider_profile({
+            "activeProviderId": "openai-primary",
+            "catalog": [
+                {
+                    "id": "openai-primary",
+                    "type": "openai",
+                    "enabled": True,
+                    "label": "OpenAI Primary",
+                    "connection": {"style": "native", "baseUrl": "", "secretRef": "x", "apiKey": "sk"},
+                    "models": {"default": "o3-mini"},
+                },
+                {
+                    "id": "claude-cheap",
+                    "type": "claude",
+                    "enabled": True,
+                    "label": "Claude Cheap",
+                    "connection": {"style": "native", "baseUrl": "", "secretRef": "y", "apiKey": "ak"},
+                    "models": {"default": "claude-sonnet-4-6"},
+                },
+            ],
+            "policies": {
+                "fallbackProviderOrder": ["claude-cheap", "openai-primary"],
+            },
+        })
+
+        resolved = resolve_provider(profile, stage="QUESTION_ANSWER", persona="tutorializer", preferred_runtime="deep_agents")
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved.profile.id, "claude-cheap")
+        self.assertEqual(resolved.model_name, "claude-sonnet-4-6")
+
     def test_openai_runtime_spec_preserves_cache_metadata_and_usage_extraction(self) -> None:
         profile = default_provider_profile_document("openai").catalog[0]
         spec = build_runtime_spec(

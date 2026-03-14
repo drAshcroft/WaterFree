@@ -631,29 +631,35 @@ function normalizePersonaAssignments(
   catalog: ProviderProfileEntry[],
 ): ProviderPersonaAssignment[] {
   const validIds = new Set(catalog.map((entry) => entry.id));
-  if (Array.isArray(raw)) {
-    return raw
+  const assignments = Array.isArray(raw)
+    ? raw
       .map((entry) => normalizePersonaAssignment(entry, validIds))
-      .filter((entry): entry is ProviderPersonaAssignment => entry !== null);
-  }
+      .filter((entry): entry is ProviderPersonaAssignment => entry !== null)
+    : [];
+  const seenPairs = new Set(assignments.map((entry) => `${entry.personaId}::${entry.providerId}`));
 
-  const migrated: ProviderPersonaAssignment[] = [];
   for (const entry of catalog) {
     if (!entry.routing.personas.length) {
       continue;
     }
     for (const personaId of entry.routing.personas) {
-      migrated.push({
-        personaId: personaId.trim().toLowerCase(),
+      const normalizedPersonaId = personaId.trim().toLowerCase();
+      const key = `${normalizedPersonaId}::${entry.id}`;
+      if (seenPairs.has(key)) {
+        continue;
+      }
+      assignments.push({
+        personaId: normalizedPersonaId,
         providerId: entry.id,
         model: entry.models.default || "",
         stages: entry.routing.useForStages.length > 0
           ? [...entry.routing.useForStages]
           : [...DEFAULT_PROVIDER_STAGES],
       });
+      seenPairs.add(key);
     }
   }
-  return migrated;
+  return assignments;
 }
 
 function normalizePersonaAssignment(

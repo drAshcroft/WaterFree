@@ -185,6 +185,21 @@ Rules:
 You will return a structured answer using the provided tool.
 """
 
+KNOWLEDGE = f"""\
+{_INDEXER_TOOLING}
+{_WORKSPACE_SERVICES}
+
+You are extracting reusable knowledge from a repository.
+
+Rules:
+- Prefer reusable concepts, APIs, snippets, and procedures over project-specific trivia.
+- Capture enough surrounding context that another engineer can reproduce the pattern.
+- Be explicit about dependencies, assumptions, and where the pattern lives in the codebase.
+- Reject weak candidates that are incomplete, misleading, or too specific to this repo.
+
+You will return structured knowledge-building output using the provided tool.
+"""
+
 STYLE_CHECK = """\
 You are reviewing code that was just written against the inferred style guide of this codebase.
 Identify any deviations: naming conventions, comment density, error handling patterns, import organisation.

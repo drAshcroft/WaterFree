@@ -15,7 +15,9 @@ from backend.todo.store import TaskStore
 
 from .filesystem_tools import filesystem_tool_descriptors
 from .graph_tools import graph_tool_descriptors
+from .debug_tools import debug_tool_descriptors
 from .knowledge_tools import knowledge_tool_descriptors
+from .lint_tools import lint_tool_descriptors
 from .task_tools import task_tool_descriptors
 from .testing_tools import testing_tool_descriptors
 from .types import ToolDescriptor
@@ -23,13 +25,14 @@ from .web_tools import web_tool_descriptors
 
 _PERSONA_TOOL_CATEGORIES: dict[str, set[str]] = {
     "architect": {"graph", "knowledge", "backlog"},
-    "pattern_expert": {"graph", "knowledge", "backlog"},
-    "stub_wireframer": {"graph", "backlog", "filesystem", "testing"},
-    "debug_detective": {"graph", "knowledge"},
+    "pattern_expert": {"graph", "knowledge", "backlog", "lint"},
+    "stub_wireframer": {"graph", "backlog", "filesystem", "testing", "lint"},
+    "debug_detective": {"graph", "knowledge", "debug"},
     "market_researcher": {"graph", "knowledge", "web"},
     "bdd_test_designer": {"backlog", "testing"},
-    "coding_agent": {"graph", "knowledge", "backlog", "filesystem", "testing"},
-    "reviewer": {"graph", "knowledge", "backlog", "testing"},
+    "coding_agent": {"graph", "knowledge", "backlog", "filesystem", "testing", "lint"},
+    "reviewer": {"graph", "knowledge", "backlog", "testing", "lint"},
+    "tutorializer": {"graph", "knowledge", "filesystem"},
 }
 
 
@@ -80,6 +83,22 @@ class ToolRegistry:
             for descriptor in self.list_descriptors(include_optional=include_optional)
         ]
 
+    def describe_persona_tools(
+        self,
+        *,
+        persona: str = "",
+        preferred_categories: Optional[list[str]] = None,
+        include_optional: bool = True,
+    ) -> list[dict[str, Any]]:
+        allowed_categories = _allowed_categories(persona, preferred_categories)
+        descriptors = self.list_descriptors(include_optional=include_optional)
+        if allowed_categories is not None:
+            descriptors = [
+                descriptor for descriptor in descriptors
+                if descriptor.policy.category in allowed_categories
+            ]
+        return [descriptor.to_policy_dict() for descriptor in descriptors]
+
     def invoke(self, name: str, args: dict[str, Any], workspace_path: str) -> dict[str, Any]:
         descriptor = self.get(name)
         if descriptor is None:
@@ -99,6 +118,8 @@ def build_default_tool_registry(
     descriptors.extend(task_tool_descriptors(task_store_factory))
     descriptors.extend(knowledge_tool_descriptors(knowledge_store_factory))
     descriptors.extend(filesystem_tool_descriptors())
+    descriptors.extend(debug_tool_descriptors())
+    descriptors.extend(lint_tool_descriptors())
     descriptors.extend(testing_tool_descriptors())
     descriptors.extend(web_tool_descriptors(enabled=enable_optional_web_tools))
     return ToolRegistry(descriptors=descriptors)
@@ -116,8 +137,12 @@ def _allowed_categories(persona: str, preferred_categories: Optional[list[str]])
 
 
 def _stage_allows_descriptor(stage: str, descriptor: ToolDescriptor) -> bool:
+    if descriptor.policy.category == "debug":
+        return stage == "live_debug"
     if stage == "execution":
         return True
+    if descriptor.policy.category == "lint":
+        return descriptor.policy.read_only
     if descriptor.policy.category == "filesystem":
         return descriptor.policy.read_only
     if descriptor.policy.category == "testing":

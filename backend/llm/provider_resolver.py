@@ -51,9 +51,6 @@ def resolve_provider(
         item for item in eligible
         if item.supports_stage(stage) and item.supports_persona(persona)
     ]
-    active = next((item for item in candidates if item.id == document.active_provider_id), None)
-    if active is not None:
-        return _resolved(active, stage=stage)
     if candidates:
         chosen = candidates[0]
         return _resolved(chosen, stage=stage)

@@ -1820,7 +1820,9 @@ export class WaterFreeController implements vscode.Disposable {
   ): Promise<PersonaStudioState> {
     const resolvedProfile = profile ?? await this._providers.getProfile();
     const statuses = await this._providers.getStatuses();
-    const personaResult = await this._bridge.request<{ personas: Array<Record<string, unknown>> }>("listPersonas", {});
+    const personaResult = await this._bridge.request<{ personas: Array<Record<string, unknown>> }>("listPersonas", {
+      workspacePath: this._workspacePath,
+    });
     const assignmentsByPersona = new Map<string, Array<{ providerId: string; model: string; stages: string[] }>>();
     for (const entry of resolvedProfile.policies.personaAssignments) {
       const existing = assignmentsByPersona.get(entry.personaId) ?? [];
@@ -1840,6 +1842,15 @@ export class WaterFreeController implements vscode.Disposable {
       stageFragments: typeof persona.stageFragments === "object" && persona.stageFragments !== null
         ? Object.fromEntries(Object.entries(persona.stageFragments).map(([key, value]) => [key, String(value)]))
         : {},
+      tools: Array.isArray(persona.tools)
+        ? persona.tools.map((tool) => ({
+          name: String((tool as Record<string, unknown>).name ?? ""),
+          title: String((tool as Record<string, unknown>).title ?? (tool as Record<string, unknown>).name ?? ""),
+          category: String((tool as Record<string, unknown>).category ?? ""),
+          readOnly: Boolean((tool as Record<string, unknown>).readOnly),
+          serverId: String((tool as Record<string, unknown>).serverId ?? ""),
+        }))
+        : [],
     }));
 
     const customizations = personas.map((persona) => ({
@@ -1847,6 +1858,17 @@ export class WaterFreeController implements vscode.Disposable {
       prompt: resolvedProfile.policies.personaPromptOverrides[persona.id] ?? persona.systemFragment,
       assignments: assignmentsByPersona.get(persona.id) ?? [],
     }));
+
+    const statusById = new Map(statuses.map((provider) => [provider.id, provider]));
+    const orderedProviderIds = Array.from(new Set([
+      ...resolvedProfile.policies.fallbackProviderOrder,
+      ...statuses.map((provider) => provider.id),
+    ]));
+    const defaultProvider = orderedProviderIds
+      .map((providerId) => statusById.get(providerId))
+      .find((provider) => Boolean(provider && provider.enabled))
+      ?? statuses.find((provider) => provider.enabled)
+      ?? null;
 
     return {
       personas,
@@ -1858,6 +1880,13 @@ export class WaterFreeController implements vscode.Disposable {
         models: Array.isArray(provider.models) ? provider.models.slice() : [],
       })),
       customizations,
+      defaultRoute: defaultProvider
+        ? {
+          providerId: defaultProvider.id,
+          providerName: defaultProvider.name,
+          model: Array.isArray(defaultProvider.models) ? (defaultProvider.models[0] ?? "") : "",
+        }
+        : null,
     };
   }
 

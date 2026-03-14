@@ -533,6 +533,7 @@ def _normalize_persona_assignments(
 ) -> tuple[PersonaProviderAssignment, ...]:
     valid_ids = {p.id for p in catalog}
     assignments: list[PersonaProviderAssignment] = []
+    seen_pairs: set[tuple[str, str]] = set()
     if isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
@@ -552,7 +553,7 @@ def _normalize_persona_assignments(
                 model=str(item.get("model", "") or "").strip(),
                 stages=stages,
             ))
-        return tuple(assignments)
+            seen_pairs.add((persona_id, provider_id))
 
     # Legacy migration: provider.routing.personas used to carry persona affinity.
     for provider in catalog:
@@ -561,8 +562,11 @@ def _normalize_persona_assignments(
         stages = provider.routing.use_for_stages or DEFAULT_PROVIDER_STAGES
         model = provider.models.get("default", "")
         for persona_id in provider.routing.personas:
+            normalized_persona_id = persona_id.strip().lower()
+            if (normalized_persona_id, provider.id) in seen_pairs:
+                continue
             assignments.append(PersonaProviderAssignment(
-                persona_id=persona_id.strip().lower(),
+                persona_id=normalized_persona_id,
                 provider_id=provider.id,
                 model=model,
                 stages=tuple(dict.fromkeys(stages)) or DEFAULT_PROVIDER_STAGES,

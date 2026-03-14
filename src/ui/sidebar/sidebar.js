@@ -8,6 +8,7 @@ const PERSONAS = [
   { id: "market_researcher", title: "Market Researcher",    tagline: "Validates product demand and outside options" },
   { id: "bdd_test_designer", title: "BDD Test Designer",    tagline: "Turns design intent into acceptance scenarios" },
   { id: "coding_agent",     title: "Coding Agent",          tagline: "Implements real code and escalates bad guidance" },
+  { id: "tutorializer",    title: "Tutorializer",         tagline: "Builds reusable repo tutorials and snippet guidance" },
   { id: "reviewer",         title: "Reviewer",              tagline: "Checks correctness, regressions, and gaps" },
   { id: "debug_detective",  title: "Debug Detective",       tagline: "Hypothesis-driven root cause analysis" },
   { id: "yolo",             title: "YOLO",                  tagline: "Ship fast, minimal code, no gold-plating" },
