@@ -92,6 +92,7 @@ class ProviderFeatures:
     checkpoints: bool = True
     subagents: bool = True
     summarization: bool = True
+    web_search: bool = False
 
 
 @dataclass(frozen=True)
@@ -318,6 +319,9 @@ def provider_to_dict(profile: ProviderProfile) -> dict[str, Any]:
     # Rename snake_case new fields to camelCase for JSON serialization
     raw["stageTiers"] = raw.pop("stage_tiers", {})
     raw["modelOverrides"] = raw.pop("model_overrides", {})
+    # Rename web_search to webSearch in features
+    if "features" in raw and "web_search" in raw["features"]:
+        raw["features"]["webSearch"] = raw["features"].pop("web_search")
     return raw
 
 
@@ -439,6 +443,7 @@ def normalize_provider_entry(raw: Any, fallback_id: str) -> ProviderProfile | No
             checkpoints=features_raw.get("checkpoints", True) is not False,
             subagents=features_raw.get("subagents", True) is not False,
             summarization=features_raw.get("summarization", True) is not False,
+            web_search=features_raw.get("webSearch", False) is True,
         ),
         optimizations=ProviderOptimizations(
             openai=normalize_openai_optimizations(optimizations_raw.get("openai", {})) if provider_type == "openai" else {},

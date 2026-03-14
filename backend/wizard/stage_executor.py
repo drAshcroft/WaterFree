@@ -7,6 +7,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+# Maps the wizard intake "Who is this for?" values to (typeCode, typeName) pairs.
+# The type determines which research depth and deliverables the market researcher applies.
+_WHO_FOR_TYPE_MAP: dict[str, tuple[str, str]] = {
+    "self / personal use":        ("A", "Personal Script / CLI / Automation"),
+    "home / household":           ("A", "Personal Script / CLI / Automation"),
+    "open source utility":        ("A", "Personal Script / CLI / Automation"),
+    "internal team tool":         ("E", "Internal Business Application"),
+    "small business / local service": ("B", "Niche Market Product"),
+    "saas product":               ("B", "Niche Market Product"),
+    "startup venture":            ("B", "Niche Market Product"),
+    "agency / client delivery":   ("B", "Niche Market Product"),
+    "creator / community product":("B", "Niche Market Product"),
+    "education / training":       ("B", "Niche Market Product"),
+    "ecommerce / marketplace":    ("C", "Multiplayer / Large-Scale / Platform"),
+    "game mod / server community":("D", "Game Mod / Extension / Plugin for an Existing Platform"),
+}
+
 from backend.wizard.definitions import MARKET_RESEARCH_TEMPLATE
 from backend.wizard.design_artifacts import normalize_design_artifacts
 from backend.wizard.models import (
@@ -37,6 +54,18 @@ def _external_market_research_prompt(goal: str) -> str:
         "- pricing or monetization signals if visible\n"
         "- risks or reasons the idea may fail\n"
     )
+
+
+def _parse_who_for(extra_context: str) -> tuple[str, str]:
+    """Extract the 'Who is this for?' intake value from extra_context and map to a type code.
+
+    Returns (typeCode, typeName), e.g. ("B", "Niche Market Product"), or ("", "") if not found.
+    """
+    match = re.search(r"Who is this for\?:\s*(.+?)(?:\n|$)", extra_context, re.IGNORECASE)
+    if not match:
+        return "", ""
+    who_for = match.group(1).strip().lower()
+    return _WHO_FOR_TYPE_MAP.get(who_for, ("", ""))
 
 
 def _phase_for_stage(stage_id: str) -> int:
@@ -115,6 +144,14 @@ class StageExecutor:
         run_stage_fn = getattr(runtime, "run_wizard_stage", None)
         payload: Optional[dict] = None
         if callable(run_stage_fn):
+            web_tools_enabled = bool(os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip())
+            if not web_tools_enabled and hasattr(runtime, "web_search_enabled"):
+                web_tools_enabled = bool(runtime.web_search_enabled)
+
+            project_type_code, project_type_name = ("", "")
+            if stage.kind == "market_research":
+                project_type_code, project_type_name = _parse_who_for(extra_context)
+
             payload = run_stage_fn(
                 stage_kind=stage.kind,
                 stage_title=stage.title,
@@ -126,7 +163,9 @@ class StageExecutor:
                 revision_request=revision_note,
                 metadata={
                     "subsystemName": stage.subsystem_name,
-                    "webToolsEnabled": bool(os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip()),
+                    "webToolsEnabled": web_tools_enabled,
+                    "projectTypeCode": project_type_code,
+                    "projectTypeName": project_type_name,
                 },
             )
         if not isinstance(payload, dict):

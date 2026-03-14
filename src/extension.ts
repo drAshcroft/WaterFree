@@ -1336,6 +1336,41 @@ export class WaterFreeController implements vscode.Disposable {
       return;
     }
 
+    if (action.type === "useResearch") {
+      this._sidebarProvider.setBusyMessage("Running wizard stage with research...");
+      try {
+        const result = await this._bridge.runWizardStep({
+          runId: action.context.runId,
+          stageId: action.context.stageId,
+          extraContext: action.body,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Use research failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
+    if (action.type === "skipToArchitect") {
+      this._sidebarProvider.setBusyMessage("Accepting market research stage...");
+      try {
+        const result = await this._bridge.acceptWizardStep({
+          runId: action.context.runId,
+          stageId: action.context.stageId,
+          workspacePath: this._workspacePath,
+        });
+        await this._handleWizardResponse(result, false);
+      } catch (err) {
+        this._handleError("Skip to architect failed", err);
+      } finally {
+        this._sidebarProvider.setBusyMessage(null);
+      }
+      return;
+    }
+
     const busyMsg = action.type === "generate" ? "Running wizard stage..." : "Getting clarifying questions...";
     this._sidebarProvider.setBusyMessage(busyMsg);
     try {

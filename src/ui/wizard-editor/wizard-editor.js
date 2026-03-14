@@ -24,6 +24,12 @@ const promoteTodosBtn = document.getElementById("promote-todos");
 const promoteTodosCodingBtn = document.getElementById("promote-todos-coding");
 const startCodingBtn = document.getElementById("start-coding");
 const runReviewBtn = document.getElementById("run-review");
+const externalResearchEl = document.getElementById("external-research");
+const externalResearchPromptEl = document.getElementById("external-research-prompt");
+const copyResearchPromptBtn = document.getElementById("copy-research-prompt");
+const externalResearchResponseEl = document.getElementById("external-research-response");
+const skipToArchitectBtn = document.getElementById("skip-to-architect");
+const useResearchBtn = document.getElementById("use-research");
 
 let currentState = null;
 const clarificationState = new Map();
@@ -96,6 +102,50 @@ runReviewBtn.addEventListener("click", () => {
   vscode.postMessage({ type: "runReview" });
 });
 
+copyResearchPromptBtn.addEventListener("click", () => {
+  const text = externalResearchPromptEl.textContent || "";
+  if (!text) {
+    return;
+  }
+  navigator.clipboard.writeText(text).then(() => {
+    const original = copyResearchPromptBtn.textContent;
+    copyResearchPromptBtn.textContent = "Copied!";
+    setTimeout(() => {
+      copyResearchPromptBtn.textContent = original;
+    }, 1500);
+  }).catch(() => {
+    // Clipboard API not available — select the text for manual copy
+    const range = document.createRange();
+    range.selectNodeContents(externalResearchPromptEl);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+  });
+});
+
+useResearchBtn.addEventListener("click", () => {
+  if (!currentState) {
+    return;
+  }
+  const research = (externalResearchResponseEl.value || "").trim();
+  if (!research) {
+    return;
+  }
+  setProcessing(true);
+  const combined = buildSubmissionBody();
+  const body = combined
+    ? `${combined}\n\nExternal Research:\n${research}`
+    : `External Research:\n${research}`;
+  vscode.postMessage({ type: "useResearch", body });
+});
+
+skipToArchitectBtn.addEventListener("click", () => {
+  if (!currentState) {
+    return;
+  }
+  setProcessing(true);
+  vscode.postMessage({ type: "skipToArchitect" });
+});
+
 const persisted = vscode.getState();
 if (persisted) {
   currentState = persisted;
@@ -119,6 +169,7 @@ function renderState(state) {
   );
   clarifications.hidden = !hasIntake && !hasQuestions;
 
+  renderExternalResearch(state.externalResearchPrompt || "");
   renderAcceptedChunks(Array.isArray(state.acceptedChunks) ? state.acceptedChunks : []);
   updateSeparatorLabel(state.chunkStatus);
   renderStageProgress(state);
@@ -186,6 +237,8 @@ function setProcessing(on) {
   acceptStageBtn.disabled = on;
   startCodingBtn.disabled = on;
   runReviewBtn.disabled = on;
+  useResearchBtn.disabled = on;
+  skipToArchitectBtn.disabled = on;
 
   document.querySelectorAll(".clarification-answer, .intake-select").forEach((el) => {
     if ("disabled" in el) {
@@ -243,6 +296,17 @@ function renderAcceptedChunks(chunks) {
 
     acceptedChunksEl.appendChild(section);
   }
+}
+
+function renderExternalResearch(prompt) {
+  if (!prompt) {
+    externalResearchEl.hidden = true;
+    externalResearchPromptEl.textContent = "";
+    externalResearchResponseEl.value = "";
+    return;
+  }
+  externalResearchEl.hidden = false;
+  externalResearchPromptEl.textContent = prompt;
 }
 
 function renderIntakeForm(fieldList, savedAnswers) {

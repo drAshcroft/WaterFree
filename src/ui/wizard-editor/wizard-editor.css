@@ -115,19 +115,31 @@ body {
   font: 600 12px/1.4 var(--vscode-font-family);
 }
 
-.intake-select,
+.intake-input,
 .clarification-answer {
   width: 100%;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  background: var(--vscode-input-background, var(--bg));
+  color: var(--vscode-input-foreground, var(--fg));
   border-radius: 4px;
   padding: 8px 10px;
   font: 13px/1.6 var(--vscode-font-family);
+  caret-color: var(--vscode-input-foreground, var(--fg));
 }
 
-.intake-select {
+.intake-input {
   min-height: 36px;
+}
+
+.intake-input::placeholder,
+.clarification-answer::placeholder {
+  color: color-mix(in srgb, var(--vscode-input-foreground, var(--fg)) 72%, transparent);
+}
+
+.intake-input:focus,
+.clarification-answer:focus {
+  outline: 1px solid var(--vscode-focusBorder, var(--button-bg));
+  outline-offset: 0;
 }
 
 .question {
@@ -316,6 +328,82 @@ button.secondary {
 
 .body-editor[aria-readonly="true"]::after {
   content: "";
+}
+
+/* External research prompt section */
+.external-research {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-left: 2px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #daa520) 60%, transparent);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #daa520) 6%, var(--bg));
+}
+
+.external-research[hidden] {
+  display: none;
+}
+
+.external-research-hint {
+  margin: 6px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.external-research-hint a {
+  color: var(--vscode-textLink-foreground, var(--button-bg));
+}
+
+.external-research-prompt-block {
+  position: relative;
+  margin-bottom: 14px;
+}
+
+.external-prompt-text {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--vscode-input-background, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 12px/1.6 var(--vscode-editor-font-family, Consolas, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+#copy-research-prompt {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.external-research-response-label {
+  display: block;
+  font: 600 12px/1.4 var(--vscode-font-family);
+  margin-bottom: 6px;
+}
+
+.external-research-response {
+  width: 100%;
+  border: 1px solid var(--vscode-input-border, var(--border));
+  background: var(--vscode-input-background, var(--bg));
+  color: var(--vscode-input-foreground, var(--fg));
+  border-radius: 4px;
+  padding: 8px 10px;
+  font: 13px/1.6 var(--vscode-font-family);
+  resize: vertical;
+  min-height: 100px;
+}
+
+.external-research-actions {
+  margin-top: 12px;
+}
+
+button.small {
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 @media (max-width: 700px) {

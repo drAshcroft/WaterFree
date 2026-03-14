@@ -16,6 +16,83 @@ from backend.llm.structural_support import route_structural_persona
 from backend.wizard.design_artifacts import normalize_design_artifacts
 
 
+# Focused research instructions per project type for the market researcher.
+# Injected into the prompt when the user has selected a project type in the intake form,
+# replacing the need for the LLM to classify from the full type taxonomy.
+_MARKET_RESEARCH_TYPE_INSTRUCTIONS: dict[str, str] = {
+    "A": (
+        "**Resolved Project Type: A — Personal Script / CLI / Automation**\n"
+        "Skip type classification. Apply Type A research depth:\n"
+        "- Find 3–5 existing open-source libraries, CLI tools, or SaaS options that cover the core function.\n"
+        "- Help the user decide: adopt existing / build anyway / hybrid.\n"
+        "- Only recommend building if there is a real gap or the build is the point.\n"
+        "- Step 2 deliverable: 'Already exists?' comparison table + adopt-vs-build recommendation."
+    ),
+    "B": (
+        "**Resolved Project Type: B — Niche Market Product (SaaS, library, plugin)**\n"
+        "Skip type classification. Apply Type B research depth:\n"
+        "- Map direct and indirect competitors, pricing models, and underserved segments.\n"
+        "- Produce a Competitive Matrix (3–5 competitors × 4–6 dimensions).\n"
+        "- Estimate TAM / SAM / SOM even if rough.\n"
+        "- Identify 1–2 switch-worthy features that could earn adoption.\n"
+        "- Step 2 deliverable: Competitive Matrix + TAM/SAM/SOM paragraph + differentiation statement."
+    ),
+    "C": (
+        "**Resolved Project Type: C — Multiplayer / Large-Scale / Platform**\n"
+        "Skip type classification. Apply Type C research depth:\n"
+        "- Find 2–3 published case studies or post-mortems of comparable products.\n"
+        "- Estimate infrastructure cost at 100 / 1 000 / 10 000 concurrent users.\n"
+        "- Name the single most expensive technical decision.\n"
+        "- Recommend a 'start small, validate first' milestone before any platform commitment.\n"
+        "- Step 2 deliverable: case study summaries + cost table + risk register (top 3 risks) + start-here milestone."
+    ),
+    "D": (
+        "**Resolved Project Type: D — Game Mod / Extension / Plugin for an Existing Platform**\n"
+        "Skip type classification. Apply Type D research depth:\n"
+        "- Check the platform license, mod policy, and SDK / API availability.\n"
+        "- Find 2–3 working examples in the same engine or platform.\n"
+        "- Identify the API surface the user depends on and whether it is stable or deprecated.\n"
+        "- Surface community forums and marketplaces where the mod could be distributed.\n"
+        "- Step 2 deliverable: platform openness verdict + SDK summary + example mods + distribution options."
+    ),
+    "E": (
+        "**Resolved Project Type: E — Internal Business Application**\n"
+        "Skip type classification. Apply Type E research depth:\n"
+        "- Check COTS / low-code / no-code alternatives (Retool, Power Apps, Airtable, Notion, etc.) before recommending a build.\n"
+        "- Identify security and compliance requirements (GDPR, HIPAA, SOC 2), data governance, integration surface, and long-term ownership risk.\n"
+        "- Ask: what happens if this breaks? Use that answer to assign a criticality tier.\n"
+        "- Step 2 deliverable: build-vs-configure decision + compliance checklist + integration surface summary + criticality tier."
+    ),
+    "F": (
+        "**Resolved Project Type: F — Scientific / Research Tool**\n"
+        "Skip type classification. Apply Type F research depth:\n"
+        "- Search PyPI, CRAN, Bioconductor, or domain-specific registries for existing packages.\n"
+        "- Identify the established ecosystem (Python scipy/pandas/xarray, R, Julia, MATLAB) and where this tool fits.\n"
+        "- Check reproducibility requirements and relevant data format standards (HDF5, NetCDF, DICOM, etc.).\n"
+        "- Estimate compute requirements: laptop / workstation / HPC / GPU cluster.\n"
+        "- Step 2 deliverable: existing-ecosystem map + reproducibility notes + data format recommendation + compute tier."
+    ),
+    "G": (
+        "**Resolved Project Type: G — Embedded / Microcontroller**\n"
+        "Skip type classification. Apply Type G research depth:\n"
+        "- Identify the target chip: flash size, RAM, clock speed, power budget, real-time requirements.\n"
+        "- Check the toolchain (Arduino IDE, PlatformIO, bare-metal vendor SDK) and community libraries.\n"
+        "- Flag physical safety if the device controls actuators, heating elements, motors, or power circuits.\n"
+        "- Note applicable certification (CE, FCC, UL, RoHS) if going into a product.\n"
+        "- Step 2 deliverable: hardware constraint summary + toolchain recommendation + community-library audit + safety flag."
+    ),
+    "H": (
+        "**Resolved Project Type: H — Robotics / Autonomous System**\n"
+        "Skip type classification. Apply Type H research depth:\n"
+        "- Search the ROS / ROS 2 ecosystem for existing packages.\n"
+        "- Identify simulation requirements (Gazebo, Isaac Sim, Webots, MuJoCo).\n"
+        "- Flag functional safety standards (ISO 26262, IEC 61508) if operating near humans.\n"
+        "- Identify RTOS requirements and sensor fusion pipeline components already solved in the ecosystem.\n"
+        "- Step 2 deliverable: ROS package audit + simulation recommendation + safety flag + RTOS recommendation."
+    ),
+}
+
+
 class WizardStageRunner:
     """Runs wizard stage prompts and produces structured stage payloads."""
 
@@ -58,6 +135,19 @@ class WizardStageRunner:
                 "- For coding_agents, include test work, cleanup/refactor work, and review or spike follow-ups when upstream guidance is vague, contradictory, or not implementable.\n"
                 "- For coding_agents, use `questions` for focused human clarifications instead of inventing missing interfaces or behavior.\n"
             )
+        # For market research, inject focused type instructions when the project type is known.
+        market_type_block = ""
+        if stage_kind == "market_research":
+            type_code = str(metadata.get("projectTypeCode", "")).strip().upper()
+            type_name = str(metadata.get("projectTypeName", "")).strip()
+            if type_code and type_code in _MARKET_RESEARCH_TYPE_INSTRUCTIONS:
+                market_type_block = (
+                    f"\nPROJECT TYPE RESOLVED: {type_code} — {type_name}\n"
+                    f"{_MARKET_RESEARCH_TYPE_INSTRUCTIONS[type_code]}\n"
+                )
+            elif type_name:
+                market_type_block = f"\nPROJECT TYPE: {type_name}\n"
+
         prompt = (
             "Return JSON only with shape: "
             '{"stageSummary":"","chunks":[{"id":"","content":""}],"todos":[{"id":"","title":"","description":"","prompt":"","rationale":"","phase":"","priority":"P0|P1|P2|P3|spike","taskType":"impl|test|spike|review|refactor","targetFile":"","targetFunction":"","contextCoords":[{"file":"","class":"","method":"","line":0,"anchorType":"modify"}],"dependsOn":[{"taskId":"","title":"","type":"blocks|informs|shares-file"}],"ownerType":"human|agent|unassigned","ownerName":"","estimatedMinutes":0,"aiNotes":""}],"subsystems":[],"designArtifacts":{"subsystems":[],"interfaces":[],"interfaceMethods":[],"dataContracts":[],"apiCatalog":[],"patternChoices":[],"antiPatterns":[],"integrationPolicies":[],"todos":[]},"externalResearchPrompt":"","questions":[]}\n\n'
@@ -68,7 +158,8 @@ class WizardStageRunner:
             f"WEB TOOLS AVAILABLE: {'yes' if web_tools else 'no'}\n"
             f"REVISION REQUEST: {revision_request.strip() or '(none)'}\n"
             f"METADATA: {json.dumps(metadata, ensure_ascii=True)}\n"
-            f"CHUNKS TO DRAFT: {json.dumps(chunk_specs, ensure_ascii=True)}\n\n"
+            f"CHUNKS TO DRAFT: {json.dumps(chunk_specs, ensure_ascii=True)}\n"
+            f"{market_type_block}\n"
             "Rules:\n"
             "- Draft only the requested chunk ids.\n"
             "- Preserve the stage intent and produce concise markdown-ready prose.\n"

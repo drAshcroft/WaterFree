@@ -46,6 +46,31 @@
         </div>
       </section>
 
+      <section class="external-research" id="external-research" hidden>
+        <div class="section-label">Web Research Not Available</div>
+        <p class="external-research-hint">
+          Your provider does not have web search. Copy the prompt below, paste it into
+          <a href="#" id="open-claude-link">Claude.ai</a>, then paste the response back here.
+        </p>
+        <div class="external-research-prompt-block">
+          <pre id="external-research-prompt" class="external-prompt-text"></pre>
+          <button id="copy-research-prompt" class="secondary small" type="button">Copy Prompt</button>
+        </div>
+        <label class="external-research-response-label" for="external-research-response">
+          Paste Claude's response here (optional):
+        </label>
+        <textarea
+          id="external-research-response"
+          class="external-research-response"
+          rows="6"
+          placeholder="Paste Claude's market research response here…"
+        ></textarea>
+        <div class="actions external-research-actions">
+          <button id="skip-to-architect" class="secondary" type="button">Skip to Architect</button>
+          <button id="use-research" class="primary" type="button">Use This Research</button>
+        </div>
+      </section>
+
       <footer class="document-footer">
         <div class="separator">
           <span class="separator-line"></span>

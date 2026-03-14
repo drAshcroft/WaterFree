@@ -108,6 +108,17 @@ class DeepAgentsRuntime:
     def runtime_id(self) -> str:
         return self._provider_lane
 
+    @property
+    def web_search_enabled(self) -> bool:
+        """Return True if the active provider has webSearch enabled OR the env var is set."""
+        if os.environ.get("WATERFREE_ENABLE_WEB_TOOLS", "").strip():
+            return True
+        active_id = self._provider_profiles.active_provider_id
+        for profile in self._provider_profiles.catalog:
+            if profile.id == active_id:
+                return profile.features.web_search
+        return False
+
     # ------------------------------------------------------------------
     # Proxy methods — kept here so tests can patch runtime._run_deepagents_*
     # All business-logic methods below call self._run_deepagents_structured /

@@ -47,6 +47,15 @@ export type WizardEditorAction =
       type: "reopenChunk";
       context: WizardDocContext;
       chunkId: string;
+    }
+  | {
+      type: "useResearch";
+      context: WizardDocContext;
+      body: string;
+    }
+  | {
+      type: "skipToArchitect";
+      context: WizardDocContext;
     };
 
 type AcceptedChunkSummary = {
@@ -86,11 +95,29 @@ type WizardEditorViewModel = {
   intakeAnswers: Record<string, string>;
   questions: string[];
   acceptedChunks: AcceptedChunkSummary[];
+  externalResearchPrompt: string;
 };
 
 const INTAKE_PREFERENCE_KEYS: Record<string, string> = {
   teamSize: "waterfree.wizard.intake.teamSize",
   skillLevel: "waterfree.wizard.intake.skillLevel",
+};
+
+const LEGACY_INTAKE_VALUES: Record<string, Record<string, string>> = {
+  teamSize: {
+    solo: "Solo",
+    "2_3": "2-3 people",
+    "4_8": "4-8 people",
+    "9_20": "9-20 people",
+    "21_plus": "21+ people",
+  },
+  skillLevel: {
+    new_to_software: "New to software",
+    beginner: "Beginner builder",
+    intermediate: "Intermediate",
+    professional: "Professional engineer",
+    expert: "Expert / specialist team",
+  },
 };
 
 export class WizardEditorPanel implements vscode.Disposable {
@@ -280,6 +307,21 @@ export class WizardEditorPanel implements vscode.Disposable {
       });
       return;
     }
+    if (message.type === "useResearch") {
+      this._actionEmitter.fire({
+        type: "useResearch",
+        context: this._viewModel.context,
+        body,
+      });
+      return;
+    }
+    if (message.type === "skipToArchitect") {
+      this._actionEmitter.fire({
+        type: "skipToArchitect",
+        context: this._viewModel.context,
+      });
+      return;
+    }
   }
 
   private _buildViewModel(wizard: WizardRunData, _docPath: string): WizardEditorViewModel | null {
@@ -329,6 +371,7 @@ export class WizardEditorPanel implements vscode.Disposable {
       intakeAnswers: this._loadIntakeAnswers(intakeFields),
       questions: stage.questions ?? [],
       acceptedChunks,
+      externalResearchPrompt: stage.externalResearchPrompt?.trim() ?? "",
     };
   }
 
@@ -342,18 +385,18 @@ export class WizardEditorPanel implements vscode.Disposable {
         label: "Who is this for?",
         placeholder: "Choose the closest fit",
         options: [
-          { value: "self", label: "Self / personal use" },
-          { value: "home", label: "Home / household" },
-          { value: "internal_tool", label: "Internal team tool" },
-          { value: "small_business", label: "Small business / local service" },
-          { value: "saas", label: "SaaS product" },
-          { value: "startup", label: "Startup venture" },
-          { value: "client_service", label: "Agency / client delivery" },
-          { value: "creator", label: "Creator / community product" },
-          { value: "ecommerce", label: "Ecommerce / marketplace" },
-          { value: "education", label: "Education / training" },
-          { value: "open_source", label: "Open source utility" },
-          { value: "game_mod", label: "Game mod / server community" },
+          { value: "Self / personal use", label: "Self / personal use" },
+          { value: "Home / household", label: "Home / household" },
+          { value: "Internal team tool", label: "Internal team tool" },
+          { value: "Small business / local service", label: "Small business / local service" },
+          { value: "SaaS product", label: "SaaS product" },
+          { value: "Startup venture", label: "Startup venture" },
+          { value: "Agency / client delivery", label: "Agency / client delivery" },
+          { value: "Creator / community product", label: "Creator / community product" },
+          { value: "Ecommerce / marketplace", label: "Ecommerce / marketplace" },
+          { value: "Education / training", label: "Education / training" },
+          { value: "Open source utility", label: "Open source utility" },
+          { value: "Game mod / server community", label: "Game mod / server community" },
         ],
       },
       {
@@ -362,11 +405,11 @@ export class WizardEditorPanel implements vscode.Disposable {
         placeholder: "Select team size",
         remember: true,
         options: [
-          { value: "solo", label: "Solo" },
-          { value: "2_3", label: "2-3 people" },
-          { value: "4_8", label: "4-8 people" },
-          { value: "9_20", label: "9-20 people" },
-          { value: "21_plus", label: "21+ people" },
+          { value: "Solo", label: "Solo" },
+          { value: "2-3 people", label: "2-3 people" },
+          { value: "4-8 people", label: "4-8 people" },
+          { value: "9-20 people", label: "9-20 people" },
+          { value: "21+ people", label: "21+ people" },
         ],
       },
       {
@@ -375,11 +418,11 @@ export class WizardEditorPanel implements vscode.Disposable {
         placeholder: "Select skill level",
         remember: true,
         options: [
-          { value: "new_to_software", label: "New to software" },
-          { value: "beginner", label: "Beginner builder" },
-          { value: "intermediate", label: "Intermediate" },
-          { value: "professional", label: "Professional engineer" },
-          { value: "expert", label: "Expert / specialist team" },
+          { value: "New to software", label: "New to software" },
+          { value: "Beginner builder", label: "Beginner builder" },
+          { value: "Intermediate", label: "Intermediate" },
+          { value: "Professional engineer", label: "Professional engineer" },
+          { value: "Expert / specialist team", label: "Expert / specialist team" },
         ],
       },
       {
@@ -387,51 +430,30 @@ export class WizardEditorPanel implements vscode.Disposable {
         label: "What are you starting from?",
         placeholder: "Select current state",
         options: [
-          { value: "idea_only", label: "Just an idea" },
-          { value: "notes", label: "Rough notes or sketches" },
-          { value: "manual_process", label: "Existing manual workflow" },
-          { value: "prototype", label: "Prototype already exists" },
-          { value: "existing_product", label: "Existing product to expand" },
+          { value: "Just an idea", label: "Just an idea" },
+          { value: "Rough notes or sketches", label: "Rough notes or sketches" },
+          { value: "Existing manual workflow", label: "Existing manual workflow" },
+          { value: "Prototype already exists", label: "Prototype already exists" },
+          { value: "Existing product to expand", label: "Existing product to expand" },
         ],
       },
       {
-        id: "primaryPlatform",
-        label: "What do you want to ship first?",
-        placeholder: "Select first target",
+        id: "firstWin",
+        label: "What should the first win be?",
+        placeholder: "Choose or type the best fit",
         options: [
-          { value: "web_app", label: "Web app" },
-          { value: "mobile_app", label: "Mobile app" },
-          { value: "desktop_app", label: "Desktop app" },
-          { value: "api_backend", label: "API / backend service" },
-          { value: "automation_agent", label: "Automation / AI agent" },
-          { value: "integration_plugin", label: "Integration / plugin" },
-          { value: "vscode_extension", label: "VS Code extension" },
-          { value: "game_mod", label: "Game mod / plugin" },
-        ],
-      },
-      {
-        id: "timeline",
-        label: "What timeline are you targeting?",
-        placeholder: "Select timeline",
-        options: [
-          { value: "weekend", label: "A weekend prototype" },
-          { value: "few_weeks", label: "2-6 weeks" },
-          { value: "quarter", label: "1-3 months" },
-          { value: "longer", label: "3+ months" },
-          { value: "no_deadline", label: "No hard deadline yet" },
-        ],
-      },
-      {
-        id: "successMetric",
-        label: "What matters most right now?",
-        placeholder: "Select main goal",
-        options: [
-          { value: "save_time", label: "Save time / remove busywork" },
-          { value: "validate_demand", label: "Validate real demand" },
-          { value: "get_users", label: "Get first users or customers" },
-          { value: "ship_mvp", label: "Ship the fastest MVP" },
-          { value: "learn", label: "Learn while building" },
-          { value: "portfolio", label: "Create a strong demo / portfolio piece" },
+          { value: "Launch a web MVP", label: "Launch a web MVP" },
+          { value: "Launch a mobile MVP", label: "Launch a mobile MVP" },
+          { value: "Ship a desktop tool", label: "Ship a desktop tool" },
+          { value: "Ship an API / backend service", label: "Ship an API / backend service" },
+          { value: "Ship an automation / AI agent", label: "Ship an automation / AI agent" },
+          { value: "Ship a plugin / extension", label: "Ship a plugin / extension" },
+          { value: "Ship a game mod / community plugin", label: "Ship a game mod / community plugin" },
+          { value: "Validate demand fast", label: "Validate demand fast" },
+          { value: "Get first users or customers", label: "Get first users or customers" },
+          { value: "Save time / remove busywork", label: "Save time / remove busywork" },
+          { value: "Learn while building", label: "Learn while building" },
+          { value: "Create a strong demo / portfolio piece", label: "Create a strong demo / portfolio piece" },
         ],
       },
     ];
@@ -448,8 +470,9 @@ export class WizardEditorPanel implements vscode.Disposable {
         continue;
       }
       const saved = this._storage.get<string>(key, "").trim();
-      if (saved) {
-        answers[field.id] = saved;
+      const normalized = LEGACY_INTAKE_VALUES[field.id]?.[saved] ?? saved;
+      if (normalized) {
+        answers[field.id] = normalized;
       }
     }
     return answers;
