@@ -289,10 +289,7 @@ export class WaterFreeController implements vscode.Disposable {
   }
 
   cmdOpenMonitorPanel(): void {
-    // The panel is self-managing; opening is triggered by the registered command
-    // inside MonitorPanel.attach(). This method exists so CommandRegistry can
-    // route to it consistently.
-    void vscode.commands.executeCommand("waterfree.openMonitorPanel");
+    this._monitorPanel.show();
   }
 
   // ------------------------------------------------------------------

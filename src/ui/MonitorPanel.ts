@@ -64,18 +64,15 @@ export class MonitorPanel implements vscode.Disposable {
       watcher.onDidCreate((uri) => this._onCaptureCreated(uri)),
     );
 
-    // Also register the open command
-    this._disposables.push(
-      vscode.commands.registerCommand("waterfree.openMonitorPanel", () => {
-        this._ensurePanel();
-        this._panel?.reveal(vscode.ViewColumn.Two, false);
-      }),
-    );
-
     context.subscriptions.push(...this._disposables);
 
     // Pick up any pre-existing pending captures (e.g. after extension restart)
     this._scanExistingCaptures();
+  }
+
+  show(): void {
+    this._ensurePanel();
+    this._panel?.reveal(vscode.ViewColumn.Two, false);
   }
 
   dispose(): void {
