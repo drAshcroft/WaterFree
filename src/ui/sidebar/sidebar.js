@@ -315,12 +315,19 @@ function renderQuickJobs() {
         const label = provider.name || PROVIDER_LABELS[provider.type] || provider.id;
         return '<option value="' + escapeHtml(provider.id) + '"' + (state.selectedQuickProviderId === provider.id ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
       }).join("")
-    : '<option value="">Workspace default</option>';
+    : null;
   const modelOptions = selectedProvider && selectedProvider.models && selectedProvider.models.length > 0
     ? selectedProvider.models.map(function(model) {
         return '<option value="' + escapeHtml(model) + '"' + (state.selectedQuickModel === model ? " selected" : "") + ">" + escapeHtml(model) + "</option>";
       }).join("")
-    : '<option value="">Provider default</option>';
+    : null;
+  const providerSelectHtml = providerOptions
+    ? '<select id="quick-provider-select" aria-label="Quick job provider" title="Provider"' + (disabled ? " disabled" : "") + ">" + providerOptions + "</select>"
+    : "";
+  const modelSelectHtml = modelOptions
+    ? '<select id="quick-model-select" aria-label="Quick job model" title="Model"' + (disabled ? " disabled" : "") + ">" + modelOptions + "</select>"
+    : "";
+  const hasExtraSelects = Boolean(providerSelectHtml || modelSelectHtml);
   return [
     '<section class="card composer">',
     '<div class="card-body">',
@@ -330,21 +337,15 @@ function renderQuickJobs() {
     disabled && state.busyMessage ? '<span class="badge pending">' + escapeHtml(state.busyMessage) + "</span>" : "",
     "</div>",
     '<textarea id="goal-input" class="composer-prompt"' + (disabled ? " disabled" : "") + ' placeholder="Describe what to build or fix...">' + escapeHtml(state.draftGoal) + "</textarea>",
-    '<div class="quick-job-controls">',
+    '<div class="quick-job-controls' + (hasExtraSelects ? "" : " quick-job-controls--mode-only") + '">',
     '<select id="quick-mode-select" aria-label="Quick job mode" title="Mode"' + (disabled ? " disabled" : "") + ">",
     modeOptions,
     "</select>",
-    '<select id="quick-provider-select" aria-label="Quick job provider" title="Provider"' + (disabled ? " disabled" : "") + ">",
-    providerOptions,
-    "</select>",
-    '<select id="quick-model-select" aria-label="Quick job model" title="Model"' + (disabled ? " disabled" : "") + ">",
-    modelOptions,
-    "</select>",
+    providerSelectHtml,
+    modelSelectHtml,
     "</div>",
-    '<div class="button-row button-row--compact">',
+    '<div class="button-row button-row--compact button-row--end">',
     '<button type="button" class="primary" data-action="startSession"' + (disabled ? " disabled" : "") + ">Start</button>",
-    '<button type="button" data-action="buildKnowledge" title="Extract reusable patterns from this workspace"' + (disabled ? " disabled" : "") + ">Snippetize</button>",
-    '<button type="button" data-action="addKnowledgeRepo" title="Snippetize an external git repo or local path"' + (disabled ? " disabled" : "") + ">+ Repo</button>",
     "</div>",
     state.busyMessage ? '<p class="busy">' + escapeHtml(state.busyMessage) + "</p>" : "",
     "</div>",
@@ -565,15 +566,12 @@ function renderBacklog(backlogSummary) {
 }
 
 function renderHeader() {
-  const gearActive = state.settingsOpen ? ' gear-btn--active' : '';
   const histActive = state.historyOpen ? ' history-btn--active' : '';
   return [
     '<div class="sidebar-header">',
+    '<span class="sidebar-title">Wizards</span>',
     '<button type="button" class="history-btn' + histActive + '" data-action="toggleHistory" title="Session History">',
-    '&#x25A4;',
-    '</button>',
-    '<button type="button" class="gear-btn' + gearActive + '" data-action="openSettings" title="Settings">',
-    '⚙',
+    'History &#x25BE;',
     '</button>',
     '</div>',
   ].join("");
@@ -1529,6 +1527,12 @@ window.addEventListener("message", function(event) {
       state.expandedHistoryDates[newestDate] = true;
     }
     if (state.historyOpen) { render(); }
+    return;
+  }
+  if (message.type === "openSettings") {
+    state.settingsOpen = true;
+    state.settingsPage = null;
+    render();
     return;
   }
   if (message.type === "settings") {

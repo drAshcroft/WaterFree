@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "pattern_expert",
+  "name": "Design Pattern Expert",
+  "icon": "Pat",
+  "tagline": "Framework fit, patterns, anti-patterns, structural policy",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "smartest",
+      "balanced"
+    ],
+    "ANNOTATION": [
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "backlog",
+    "lint"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-knowledge",
+    "waterfree-todos"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Pattern and framework guidance",
+    "promptStage": "PLANNING"
+  }
+}

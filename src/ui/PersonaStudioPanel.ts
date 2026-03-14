@@ -10,50 +10,40 @@ export interface PersonaStudioTool {
   serverId: string;
 }
 
-export interface PersonaStudioAssignment {
-  providerId: string;
-  model: string;
-  stages: string[];
-}
-
-export interface PersonaStudioCustomization {
-  personaId: string;
-  prompt: string;
-  assignments: PersonaStudioAssignment[];
+export interface PersonaStudioSubagent {
+  enabled: boolean;
+  description: string;
+  promptStage: string;
 }
 
 export interface PersonaStudioPersona {
   id: string;
   name: string;
   tagline: string;
+  icon?: string;
   systemFragment: string;
   stageFragments?: Record<string, string>;
   tools?: PersonaStudioTool[];
+  skillMarkdown: string;
+  metadataJson: string;
+  preferredModelTiers?: Record<string, string[]>;
+  toolCategories?: string[];
+  preferredSkillIds?: string[];
+  subagent?: PersonaStudioSubagent;
 }
 
-export interface PersonaStudioProvider {
-  id: string;
-  name: string;
-  type: string;
-  enabled: boolean;
-  models: string[];
-}
-
-export interface PersonaStudioDefaultRoute {
-  providerId: string;
-  providerName: string;
-  model: string;
+export interface PersonaStudioDocument {
+  personaId: string;
+  skillMarkdown: string;
+  metadataJson: string;
 }
 
 export interface PersonaStudioState {
   personas: PersonaStudioPersona[];
-  providers: PersonaStudioProvider[];
-  customizations: PersonaStudioCustomization[];
-  defaultRoute: PersonaStudioDefaultRoute | null;
 }
 
 export type PersonaStudioAction =
-  | { type: "save"; customizations: PersonaStudioCustomization[] };
+  | { type: "save"; personas: PersonaStudioDocument[] };
 
 export class PersonaStudioPanel implements vscode.Disposable {
   private readonly _actionEmitter = new vscode.EventEmitter<PersonaStudioAction>();
@@ -140,24 +130,16 @@ export class PersonaStudioPanel implements vscode.Disposable {
 
     switch (message.type) {
       case "save":
-        if (Array.isArray(message.customizations)) {
-          const customizations = message.customizations
+        if (Array.isArray(message.personas)) {
+          const personas = message.personas
             .filter(isRecord)
             .map((item) => ({
               personaId: typeof item.personaId === "string" ? item.personaId : "",
-              prompt: typeof item.prompt === "string" ? item.prompt : "",
-              assignments: Array.isArray(item.assignments)
-                ? item.assignments
-                  .filter(isRecord)
-                  .map((assignment) => ({
-                    providerId: typeof assignment.providerId === "string" ? assignment.providerId : "",
-                    model: typeof assignment.model === "string" ? assignment.model : "",
-                    stages: Array.isArray(assignment.stages) ? assignment.stages.map(String) : [],
-                  }))
-                : [],
+              skillMarkdown: typeof item.skillMarkdown === "string" ? item.skillMarkdown : "",
+              metadataJson: typeof item.metadataJson === "string" ? item.metadataJson : "",
             }))
-            .filter((item) => item.personaId);
-          this._actionEmitter.fire({ type: "save", customizations });
+            .filter((item) => item.personaId && item.skillMarkdown && item.metadataJson);
+          this._actionEmitter.fire({ type: "save", personas });
         }
         return;
     }

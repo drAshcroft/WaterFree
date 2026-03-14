@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "bdd_test_designer",
+  "name": "BDD Test Designer",
+  "icon": "BDD",
+  "tagline": "Acceptance scenarios and human-language test design",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "backlog",
+    "testing"
+  ],
+  "preferredSkillIds": [
+    "waterfree-todos",
+    "waterfree-testing"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Acceptance scenarios and human-language test design",
+    "promptStage": "PLANNING"
+  }
+}

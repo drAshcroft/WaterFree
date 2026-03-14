@@ -8,7 +8,7 @@ from backend.llm.provider_profiles import (
     default_provider_profile_document,
     normalize_provider_profile,
 )
-from backend.llm.prompt_templates import build_system_prompt, set_persona_prompt_overrides
+from backend.llm.prompt_templates import build_system_prompt
 from backend.llm.provider_resolver import resolve_provider
 from backend.session.models import PlanDocument, RuntimeSelection
 from backend.server import Server
@@ -68,7 +68,7 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(profile.policies.persona_assignments[0].persona_id, "reviewer")
         self.assertEqual(profile.policies.persona_assignments[0].provider_id, "openai-primary")
 
-    def test_resolve_provider_prefers_persona_assignments_before_fallback(self) -> None:
+    def test_resolve_provider_prefers_model_tier_routes_before_fallback(self) -> None:
         profile = normalize_provider_profile({
             "activeProviderId": "openai-primary",
             "catalog": [
@@ -78,7 +78,7 @@ class ProviderProfileTests(unittest.TestCase):
                     "enabled": True,
                     "label": "OpenAI Primary",
                     "connection": {"style": "native", "baseUrl": "", "secretRef": "x", "apiKey": "sk"},
-                    "routing": {"useForStages": ["planning"], "personas": ["reviewer"]},
+                    "models": {"default": "o3-mini"},
                 },
                 {
                     "id": "claude-fallback",
@@ -86,29 +86,25 @@ class ProviderProfileTests(unittest.TestCase):
                     "enabled": True,
                     "label": "Claude Fallback",
                     "connection": {"style": "native", "baseUrl": "", "secretRef": "y", "apiKey": "ak"},
+                    "models": {"default": "claude-sonnet-4-6"},
                 },
             ],
             "policies": {
                 "fallbackProviderOrder": ["claude-fallback", "openai-primary"],
-                "personaAssignments": [
-                    {
-                        "personaId": "coding_agent",
+                "modelTierRoutes": {
+                    "smartest": {
                         "providerId": "openai-primary",
                         "model": "gpt-4o-mini",
-                        "stages": ["execution"],
                     }
-                ],
+                },
             },
         })
 
-        planning = resolve_provider(profile, stage="PLANNING", persona="reviewer", preferred_runtime="deep_agents")
-        execution = resolve_provider(profile, stage="EXECUTION", persona="coding_agent", preferred_runtime="deep_agents")
+        planning = resolve_provider(profile, stage="PLANNING", persona="architect", preferred_runtime="deep_agents")
 
         self.assertIsNotNone(planning)
         self.assertEqual(planning.profile.id, "openai-primary")
-        self.assertIsNotNone(execution)
-        self.assertEqual(execution.profile.id, "openai-primary")
-        self.assertEqual(execution.model_name, "gpt-4o-mini")
+        self.assertEqual(planning.model_name, "gpt-4o-mini")
 
     def test_resolve_provider_defaults_to_first_ordered_provider_when_unassigned(self) -> None:
         profile = normalize_provider_profile({
@@ -224,11 +220,10 @@ class ProviderProfileTests(unittest.TestCase):
 
         self.assertIsNot(first, second)
 
-    def test_server_sync_profile_applies_persona_prompt_overrides(self) -> None:
+    def test_server_sync_profile_ignores_persona_prompt_overrides(self) -> None:
         workspace = str(make_test_dir(self, prefix="persona-prompt-"))
         server = Server()
         self.addCleanup(server.close)
-        self.addCleanup(lambda: set_persona_prompt_overrides({}))
 
         profile = normalize_provider_profile({
             "activeProviderId": "claude-primary",
@@ -251,7 +246,8 @@ class ProviderProfileTests(unittest.TestCase):
         server._set_provider_profile(workspace, profile)
         prompt = build_system_prompt("PLANNING", "architect")
 
-        self.assertIn("Custom architect prompt for this workspace.", prompt)
+        self.assertNotIn("Custom architect prompt for this workspace.", prompt)
+        self.assertIn("Translate the user's business goal into explicit technical requirements.", prompt)
 
     def test_session_runtime_selection_overrides_provider_and_model(self) -> None:
         workspace = str(make_test_dir(self, prefix="session-profile-"))

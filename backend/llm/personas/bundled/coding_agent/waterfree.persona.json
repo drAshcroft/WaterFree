@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "id": "coding_agent",
+  "name": "Coding Agent",
+  "icon": "Code",
+  "tagline": "Implements real code, escalates bad guidance, and drives developer follow-through",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "balanced"
+    ],
+    "ANNOTATION": [
+      "balanced"
+    ],
+    "EXECUTION": [
+      "smartest",
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "backlog",
+    "filesystem",
+    "testing",
+    "lint"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-knowledge",
+    "waterfree-todos",
+    "waterfree-testing"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Implements code, escalates bad guidance, and drives execution-ready backlog work",
+    "promptStage": "PLANNING"
+  }
+}

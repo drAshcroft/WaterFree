@@ -1,20 +1,16 @@
 """
-AI persona definitions for WaterFree.
-
-Sub-modules register personas at import time via _register().
-Import this package to get all personas loaded.
+File-backed AI persona definitions for WaterFree.
 """
 
-# Load all persona definitions (side-effect: populates PERSONAS registry)
-import backend.llm.personas.planning_personas    # noqa: F401
-import backend.llm.personas.development_personas  # noqa: F401
-import backend.llm.personas.workflow_personas     # noqa: F401
-
-# Re-export the public API so callers don't need to know the internal layout
 from backend.llm.personas.registry import (  # noqa: F401
-    PersonaDef,
-    PERSONAS,
     DEFAULT_PERSONA,
+    PERSONAS,
+    PersonaDef,
+    PersonaSubagentDef,
+    get_persona,
     get_persona_fragment,
     list_personas,
+    persona_catalog_root,
+    reload_personas,
+    save_persona_documents,
 )

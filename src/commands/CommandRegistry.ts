@@ -60,6 +60,7 @@ export class CommandRegistry {
     register("waterfree.startWizardCoding", (ctx?: unknown) => c.cmdStartWizardCoding(ctx));
     register("waterfree.runWizardReview", (ctx?: unknown) => c.cmdRunWizardReview(ctx));
     register("waterfree.refineWizardIdea", (ctx?: unknown) => c.cmdRefineWizardIdea(ctx));
+    register("waterfree.openSettings", () => c.cmdOpenSettings());
     register("waterfree.openMonitorPanel", () => c.cmdOpenMonitorPanel());
   }
 }

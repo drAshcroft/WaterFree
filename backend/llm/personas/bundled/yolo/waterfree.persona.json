@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "yolo",
+  "name": "YOLO",
+  "icon": "YOLO",
+  "tagline": "Ship fast, minimal code, no gold-plating",
+  "preferredModelTiers": {
+    "EXECUTION": [
+      "cheap",
+      "balanced"
+    ],
+    "ANNOTATION": [
+      "cheap"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "filesystem",
+    "testing"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index"
+  ],
+  "subagent": {
+    "enabled": false,
+    "description": "",
+    "promptStage": "EXECUTION"
+  }
+}

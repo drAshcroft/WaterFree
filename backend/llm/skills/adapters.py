@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from backend.llm.personas import get_persona
+
 from .loader import SkillInfo
 from .registry import SkillRegistry
 
@@ -28,6 +30,12 @@ class SkillAdapter:
     def select(self, *, persona: str, stage: str, task_type: str = "") -> SkillBundle:
         stage_keys = _expanded_stage_keys(persona=persona, stage=stage)
         selected: list[SkillInfo] = []
+        persona_def = get_persona(persona)
+        if persona_def is not None:
+            for skill_id in persona_def.preferred_skill_ids:
+                skill = self._registry.get_skill(skill_id)
+                if skill is not None:
+                    selected.append(skill)
         for stage_key in stage_keys:
             selected.extend(self._registry.list_skills(persona=persona, stage=stage_key))
         selected = _dedupe_skills(selected)

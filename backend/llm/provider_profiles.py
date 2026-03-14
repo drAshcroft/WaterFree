@@ -93,6 +93,12 @@ class ProviderOptimizations:
 
 
 @dataclass(frozen=True)
+class ModelTierRoute:
+    provider_id: str
+    model: str = ""
+
+
+@dataclass(frozen=True)
 class ProviderProfile:
     id: str
     type: str
@@ -168,6 +174,7 @@ class ProviderPolicies:
     flush_on_provider_switch: bool
     reload_mode: str
     summarization_thresholds: dict[str, int]
+    model_tier_routes: dict[str, ModelTierRoute] = field(default_factory=dict)
     persona_assignments: tuple[PersonaProviderAssignment, ...] = ()
     persona_prompt_overrides: dict[str, str] = field(default_factory=dict)
     subagent_overrides: tuple[SubagentProviderOverride, ...] = ()
@@ -197,6 +204,13 @@ class ProviderProfileDocument:
                 "flushOnProviderSwitch": self.policies.flush_on_provider_switch,
                 "reloadMode": self.policies.reload_mode,
                 "summarizationThresholds": dict(self.policies.summarization_thresholds),
+                "modelTierRoutes": {
+                    tier: {
+                        "providerId": route.provider_id,
+                        "model": route.model,
+                    }
+                    for tier, route in self.policies.model_tier_routes.items()
+                },
                 "personaAssignments": [
                     {
                         "personaId": assignment.persona_id,
@@ -325,6 +339,9 @@ def normalize_provider_profile(raw: Any) -> ProviderProfileDocument:
         reload_mode="manual" if policies_raw.get("reloadMode") == "manual" else "on_change",
         summarization_thresholds=normalize_summarization_thresholds(
             policies_raw.get("summarizationThresholds", {})
+        ),
+        model_tier_routes=_normalize_model_tier_routes(
+            policies_raw.get("modelTierRoutes"), catalog
         ),
         persona_assignments=_normalize_persona_assignments(
             policies_raw.get("personaAssignments"), catalog
@@ -526,6 +543,27 @@ def _normalize_subagent_overrides(
             session_key_prefix=str(item.get("sessionKeyPrefix", "") or "").strip(),
         ))
     return tuple(overrides)
+
+
+def _normalize_model_tier_routes(
+    raw: Any, catalog: tuple[ProviderProfile, ...]
+) -> dict[str, ModelTierRoute]:
+    if not isinstance(raw, dict):
+        return {}
+    valid_ids = {provider.id for provider in catalog}
+    routes: dict[str, ModelTierRoute] = {}
+    for tier, payload in raw.items():
+        if not isinstance(payload, dict):
+            continue
+        tier_key = str(tier or "").strip().lower()
+        provider_id = str(payload.get("providerId", "") or "").strip()
+        if not tier_key or provider_id not in valid_ids:
+            continue
+        routes[tier_key] = ModelTierRoute(
+            provider_id=provider_id,
+            model=str(payload.get("model", "") or "").strip(),
+        )
+    return routes
 
 
 def _normalize_persona_assignments(

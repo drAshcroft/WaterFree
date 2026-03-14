@@ -4,18 +4,9 @@ System prompts for each LLM call type.
 
 from backend.llm.personas import get_persona_fragment
 
-_PERSONA_PROMPT_OVERRIDES: dict[str, str] = {}
-
 
 def set_persona_prompt_overrides(overrides: dict[str, str] | None) -> None:
-    global _PERSONA_PROMPT_OVERRIDES
-    normalized: dict[str, str] = {}
-    for key, value in (overrides or {}).items():
-        persona_id = str(key or "").strip().lower()
-        prompt = str(value or "").strip()
-        if persona_id and prompt:
-            normalized[persona_id] = prompt
-    _PERSONA_PROMPT_OVERRIDES = normalized
+    _ = overrides
 
 
 def build_system_prompt(stage: str, persona_id: str = "default") -> str:
@@ -35,8 +26,7 @@ def build_system_prompt(stage: str, persona_id: str = "default") -> str:
     if stage_prompt is None:
         raise ValueError(f"Unknown prompt stage: {stage!r}")
 
-    prompt_override = _PERSONA_PROMPT_OVERRIDES.get(persona_id.strip().lower(), "")
-    fragment = get_persona_fragment(persona_id, stage.upper(), prompt_override=prompt_override)
+    fragment = get_persona_fragment(persona_id, stage.upper())
     if not fragment:
         return stage_prompt
     return fragment + "\n" + stage_prompt

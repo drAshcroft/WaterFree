@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "stub_wireframer",
+  "name": "Stub/Wireframes",
+  "icon": "Stub",
+  "tagline": "Code-surface roughing, contract scaffolding, verification-first handoff",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "balanced"
+    ],
+    "ANNOTATION": [
+      "balanced"
+    ],
+    "ALTER_ANNOTATION": [
+      "balanced"
+    ],
+    "EXECUTION": [
+      "balanced",
+      "cheap"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "backlog",
+    "filesystem",
+    "testing",
+    "lint"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-todos",
+    "waterfree-testing"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Subsystem shell generation with TODO handoff and verification",
+    "promptStage": "EXECUTION"
+  }
+}

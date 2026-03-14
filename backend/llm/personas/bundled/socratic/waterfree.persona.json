@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "socratic",
+  "name": "Socratic Coach",
+  "icon": "Soc",
+  "tagline": "Guides with questions instead of giving answers",
+  "preferredModelTiers": {
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "knowledge"
+  ],
+  "preferredSkillIds": [
+    "waterfree-knowledge"
+  ],
+  "subagent": {
+    "enabled": false,
+    "description": "",
+    "promptStage": "QUESTION_ANSWER"
+  }
+}

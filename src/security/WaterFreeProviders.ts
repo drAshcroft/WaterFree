@@ -96,12 +96,18 @@ export interface ProviderPersonaAssignment {
   stages: ProviderStage[];
 }
 
+export interface ProviderModelTierRoute {
+  providerId: string;
+  model: string;
+}
+
 export interface ProviderProfilePolicies {
   fallbackProviderOrder: string[];
   sessionKeyStrategy: string;
   flushOnTaskComplete: boolean;
   flushOnProviderSwitch: boolean;
   reloadMode: ProviderReloadMode;
+  modelTierRoutes: Record<string, ProviderModelTierRoute>;
   personaAssignments: ProviderPersonaAssignment[];
   personaPromptOverrides: Record<string, string>;
   summarizationThresholds: Partial<Record<string, number>>;
@@ -191,6 +197,7 @@ const DEFAULT_POLICIES: ProviderProfilePolicies = {
   flushOnTaskComplete: true,
   flushOnProviderSwitch: true,
   reloadMode: "on_change",
+  modelTierRoutes: {},
   personaAssignments: [],
   personaPromptOverrides: {},
   summarizationThresholds: {
@@ -519,11 +526,13 @@ function normalizeProfileDocument(raw: unknown): ProviderProfileDocument {
         flushOnTaskComplete: source.policies.flushOnTaskComplete !== false,
         flushOnProviderSwitch: source.policies.flushOnProviderSwitch !== false,
         reloadMode: source.policies.reloadMode === "manual" ? "manual" : "on_change",
+        modelTierRoutes: normalizeModelTierRoutes(source.policies.modelTierRoutes, catalog),
         personaAssignments: normalizePersonaAssignments(source.policies.personaAssignments, catalog),
         personaPromptOverrides: normalizePersonaPromptOverrides(source.policies.personaPromptOverrides),
         summarizationThresholds: normalizeSummarizationThresholds(source.policies.summarizationThresholds),
       } : {
         fallbackProviderOrder,
+        modelTierRoutes: normalizeModelTierRoutes(undefined, catalog),
         personaAssignments: normalizePersonaAssignments(undefined, catalog),
         personaPromptOverrides: normalizePersonaPromptOverrides(undefined),
       }),
@@ -624,6 +633,28 @@ function normalizeRouting(
       ? rawRouting.personas.map((entry) => String(entry).trim()).filter(Boolean)
       : normalizeUseWith(legacyUseWith),
   };
+}
+
+function normalizeModelTierRoutes(
+  raw: unknown,
+  catalog: ProviderProfileEntry[],
+): Record<string, ProviderModelTierRoute> {
+  if (!isRecord(raw)) {
+    return {};
+  }
+  const validIds = new Set(catalog.map((entry) => entry.id));
+  const routes: Record<string, ProviderModelTierRoute> = {};
+  for (const [tier, value] of Object.entries(raw)) {
+    if (!isRecord(value)) { continue; }
+    const tierKey = String(tier || "").trim().toLowerCase();
+    const providerId = normalizeString(value.providerId, "");
+    if (!tierKey || !providerId || !validIds.has(providerId)) { continue; }
+    routes[tierKey] = {
+      providerId,
+      model: normalizeString(value.model, ""),
+    };
+  }
+  return routes;
 }
 
 function normalizePersonaAssignments(

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "market_researcher",
+  "name": "Market Researcher",
+  "icon": "Mkt",
+  "tagline": "Audience, differentiation, and product framing",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "smartest",
+      "balanced"
+    ],
+    "WIZARD": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "web"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-knowledge"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Product framing, differentiation, and audience analysis",
+    "promptStage": "PLANNING"
+  }
+}

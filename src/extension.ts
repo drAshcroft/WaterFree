@@ -55,26 +55,6 @@ import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
 
-function isProviderStage(value: string): value is
-  | "planning"
-  | "annotation"
-  | "execution"
-  | "debug"
-  | "question_answer"
-  | "ripple_detection"
-  | "alter_annotation"
-  | "knowledge" {
-  return [
-    "planning",
-    "annotation",
-    "execution",
-    "debug",
-    "question_answer",
-    "ripple_detection",
-    "alter_annotation",
-    "knowledge",
-  ].includes(value);
-}
 import { CommandRegistry } from "./commands/CommandRegistry.js";
 
 // ------------------------------------------------------------------
@@ -292,6 +272,11 @@ export class WaterFreeController implements vscode.Disposable {
   async cmdOpenPersonaStudio(): Promise<void> {
     const state = await this._loadPersonaStudioState();
     await this._personaStudio.show(state);
+  }
+
+  cmdOpenSettings(): void {
+    void vscode.commands.executeCommand("waterfree.planSidebar.focus");
+    this._sidebarProvider.openSettings();
   }
 
   async cmdOpenTodoBoard(): Promise<void> {
@@ -1677,8 +1662,9 @@ export class WaterFreeController implements vscode.Disposable {
         return;
       }
       case "savePersonaAssignments": {
-        await this._providers.updatePersonaAssignments(action.personaId, action.assignments);
-        await this._syncProviderProfile({ restartBackend: true });
+        void vscode.window.showWarningMessage(
+          "Persona-specific workspace assignments are deprecated. Configure modelTierRoutes in .waterfree/providers.json instead.",
+        );
         return;
       }
       case "removeProvider": {
@@ -1764,16 +1750,20 @@ export class WaterFreeController implements vscode.Disposable {
     try {
       switch (action.type) {
         case "save":
-          await this._providers.setPersonaCustomizations(action.customizations.map((item) => ({
-            personaId: item.personaId,
-            prompt: item.prompt,
-            assignments: item.assignments.map((assignment) => ({
-              providerId: assignment.providerId,
-              model: assignment.model,
-              stages: assignment.stages.filter(isProviderStage),
+          await this._bridge.request("savePersonas", {
+            workspacePath: this._workspacePath,
+            personas: action.personas.map((item) => ({
+              personaId: item.personaId,
+              skillMarkdown: item.skillMarkdown,
+              metadataJson: item.metadataJson,
             })),
-          })));
-          await this._syncProviderProfile({ restartBackend: true });
+          });
+          if (this._bridge.isRunning) {
+            this._bridge.restart();
+          }
+          if (this._personaStudio.isVisible()) {
+            await this._personaStudio.update(await this._loadPersonaStudioState());
+          }
           return;
       }
     } catch (err) {
@@ -1816,32 +1806,38 @@ export class WaterFreeController implements vscode.Disposable {
   }
 
   private async _loadPersonaStudioState(
-    profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>,
+    _profile?: Awaited<ReturnType<WaterFreeProviders["getProfile"]>>,
   ): Promise<PersonaStudioState> {
-    const resolvedProfile = profile ?? await this._providers.getProfile();
-    const statuses = await this._providers.getStatuses();
     const personaResult = await this._bridge.request<{ personas: Array<Record<string, unknown>> }>("listPersonas", {
       workspacePath: this._workspacePath,
     });
-    const assignmentsByPersona = new Map<string, Array<{ providerId: string; model: string; stages: string[] }>>();
-    for (const entry of resolvedProfile.policies.personaAssignments) {
-      const existing = assignmentsByPersona.get(entry.personaId) ?? [];
-      existing.push({
-        providerId: entry.providerId,
-        model: entry.model,
-        stages: Array.isArray(entry.stages) ? entry.stages.slice() : [],
-      });
-      assignmentsByPersona.set(entry.personaId, existing);
-    }
 
     const personas = (personaResult.personas ?? []).map((persona) => ({
       id: String(persona.id ?? ""),
       name: String(persona.name ?? persona.id ?? ""),
       tagline: String(persona.tagline ?? ""),
+      icon: String(persona.icon ?? ""),
       systemFragment: String(persona.systemFragment ?? ""),
+      skillMarkdown: String(persona.skillMarkdown ?? ""),
+      metadataJson: String(persona.metadataJson ?? "{}\n"),
       stageFragments: typeof persona.stageFragments === "object" && persona.stageFragments !== null
         ? Object.fromEntries(Object.entries(persona.stageFragments).map(([key, value]) => [key, String(value)]))
         : {},
+      preferredModelTiers: typeof persona.preferredModelTiers === "object" && persona.preferredModelTiers !== null
+        ? Object.fromEntries(Object.entries(persona.preferredModelTiers).map(([key, value]) => [
+          key,
+          Array.isArray(value) ? value.map(String) : [],
+        ]))
+        : {},
+      toolCategories: Array.isArray(persona.toolCategories) ? persona.toolCategories.map(String) : [],
+      preferredSkillIds: Array.isArray(persona.preferredSkillIds) ? persona.preferredSkillIds.map(String) : [],
+      subagent: typeof persona.subagent === "object" && persona.subagent !== null
+        ? {
+          enabled: Boolean((persona.subagent as Record<string, unknown>).enabled),
+          description: String((persona.subagent as Record<string, unknown>).description ?? ""),
+          promptStage: String((persona.subagent as Record<string, unknown>).promptStage ?? "PLANNING"),
+        }
+        : { enabled: false, description: "", promptStage: "PLANNING" },
       tools: Array.isArray(persona.tools)
         ? persona.tools.map((tool) => ({
           name: String((tool as Record<string, unknown>).name ?? ""),
@@ -1853,41 +1849,7 @@ export class WaterFreeController implements vscode.Disposable {
         : [],
     }));
 
-    const customizations = personas.map((persona) => ({
-      personaId: persona.id,
-      prompt: resolvedProfile.policies.personaPromptOverrides[persona.id] ?? persona.systemFragment,
-      assignments: assignmentsByPersona.get(persona.id) ?? [],
-    }));
-
-    const statusById = new Map(statuses.map((provider) => [provider.id, provider]));
-    const orderedProviderIds = Array.from(new Set([
-      ...resolvedProfile.policies.fallbackProviderOrder,
-      ...statuses.map((provider) => provider.id),
-    ]));
-    const defaultProvider = orderedProviderIds
-      .map((providerId) => statusById.get(providerId))
-      .find((provider) => Boolean(provider && provider.enabled))
-      ?? statuses.find((provider) => provider.enabled)
-      ?? null;
-
-    return {
-      personas,
-      providers: statuses.map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        type: provider.type,
-        enabled: provider.enabled,
-        models: Array.isArray(provider.models) ? provider.models.slice() : [],
-      })),
-      customizations,
-      defaultRoute: defaultProvider
-        ? {
-          providerId: defaultProvider.id,
-          providerName: defaultProvider.name,
-          model: Array.isArray(defaultProvider.models) ? (defaultProvider.models[0] ?? "") : "",
-        }
-        : null,
-    };
+    return { personas };
   }
 
   private async _onTodoBoardAction(action: TodoBoardAction): Promise<void> {

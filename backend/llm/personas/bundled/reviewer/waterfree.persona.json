@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "id": "reviewer",
+  "name": "Reviewer",
+  "icon": "Rev",
+  "tagline": "Collects issues, blockers, and follow-up work",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ],
+    "RIPPLE_DETECTION": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "backlog",
+    "testing",
+    "lint"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-todos",
+    "waterfree-testing"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Collects issues, blockers, and follow-up work",
+    "promptStage": "QUESTION_ANSWER"
+  }
+}

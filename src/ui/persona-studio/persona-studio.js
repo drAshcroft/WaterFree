@@ -1,31 +1,6 @@
 const vscode = acquireVsCodeApi();
 
-const STAGE_OPTIONS = [
-  { id: "planning", label: "Plans" },
-  { id: "annotation", label: "Architect / Design" },
-  { id: "execution", label: "Code" },
-  { id: "debug", label: "Debug" },
-  { id: "question_answer", label: "Q&A / Tutorialize" },
-  { id: "ripple_detection", label: "Ripple Detection" },
-  { id: "alter_annotation", label: "Alter Annotation" },
-  { id: "knowledge", label: "Knowledge / Snippetize" },
-];
-const PROVIDER_ABBREVIATIONS = {
-  claude: "ANT",
-  openai: "OAI",
-  groq: "GRQ",
-  ollama: "OLL",
-  huggingface: "HF",
-  mock: "MOCK",
-};
-
-let baseline = {
-  personas: [],
-  providers: [],
-  customizations: [],
-  defaultRoute: null,
-};
-
+let baseline = { personas: [] };
 let draft = structuredClone(baseline);
 let selectedPersonaId = "";
 
@@ -42,100 +17,6 @@ function currentPersona() {
   return draft.personas.find((persona) => persona.id === selectedPersonaId) || draft.personas[0] || null;
 }
 
-function currentPersonaCustomization() {
-  const persona = currentPersona();
-  return persona ? ensureCustomization(persona.id) : { assignments: [] };
-}
-
-function ensureCustomization(personaId) {
-  let customization = draft.customizations.find((item) => item.personaId === personaId);
-  if (!customization) {
-    const persona = draft.personas.find((item) => item.id === personaId);
-    customization = {
-      personaId,
-      prompt: persona ? persona.systemFragment || "" : "",
-      assignments: [],
-    };
-    draft.customizations.push(customization);
-  }
-  if (!Array.isArray(customization.assignments)) {
-    customization.assignments = [];
-  }
-  return customization;
-}
-
-function providerModels(providerId) {
-  const provider = draft.providers.find((item) => item.id === providerId);
-  return provider && Array.isArray(provider.models) ? provider.models : [];
-}
-
-function providerRecord(providerId) {
-  return draft.providers.find((item) => item.id === providerId) || null;
-}
-
-function providerAbbreviation(providerId) {
-  const provider = providerRecord(providerId);
-  if (!provider) {
-    return "DEF";
-  }
-  if (PROVIDER_ABBREVIATIONS[provider.type]) {
-    return PROVIDER_ABBREVIATIONS[provider.type];
-  }
-  const initials = String(provider.name || provider.id || "DEF")
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-  return initials.slice(0, 4) || "DEF";
-}
-
-function defaultRouteLabel() {
-  if (!draft.defaultRoute) {
-    return "No workspace default provider is available.";
-  }
-  const model = draft.defaultRoute.model ? ` / ${draft.defaultRoute.model}` : " / provider default";
-  return `${draft.defaultRoute.providerName}${model}`;
-}
-
-function renderModelPill(providerId, model, options = {}) {
-  const provider = providerRecord(providerId);
-  const providerLabel = provider ? provider.name : (draft.defaultRoute?.providerName || "Workspace default");
-  const providerCode = provider ? providerAbbreviation(providerId) : "WRK";
-  const modelLabel = model || "provider default";
-  const classes = ["model-pill"];
-  if (options.className) {
-    classes.push(options.className);
-  }
-  if (!provider) {
-    classes.push("is-default");
-  }
-  const actionAttrs = options.action
-    ? ' data-action="' + escapeHtml(options.action) + '"'
-      + (typeof options.personaId === "string" ? ' data-persona-id="' + escapeHtml(options.personaId) + '"' : "")
-      + (typeof options.index === "number" ? ' data-index="' + options.index + '"' : "")
-    : "";
-  return [
-    '<button type="button" class="' + classes.join(" ") + '"' + actionAttrs + ' title="' + escapeHtml(providerLabel + " / " + modelLabel) + '">',
-    '<span class="model-pill-provider">' + escapeHtml(providerCode) + '</span>',
-    '<span class="model-pill-model">' + escapeHtml(modelLabel) + '</span>',
-    '</button>',
-  ].join("");
-}
-
-function renderPersonaModelPills(personaId, assignments) {
-  const pills = assignments.length > 0
-    ? assignments.map((assignment) => renderModelPill(assignment.providerId, assignment.model, {
-      action: "selectPersona",
-      personaId,
-    })).join("")
-    : renderModelPill("", draft.defaultRoute?.model || "", {
-      action: "selectPersona",
-      personaId,
-      className: "is-fallback",
-    });
-  return '<div class="persona-model-pills">' + pills + '</div>';
-}
-
 function renderTool(tool) {
   const mode = tool.readOnly ? "RO" : "RW";
   return [
@@ -144,88 +25,53 @@ function renderTool(tool) {
     '<span class="tool-chip-meta">' + escapeHtml(tool.category || "tool") + '</span>',
     '<span class="tool-chip-mode">' + escapeHtml(mode) + '</span>',
     '</div>',
-  ].join("");
+  ].join('');
 }
 
-function renderRoute(assignment, index) {
-  const providerOptions = draft.providers.length > 0
-    ? draft.providers.map((provider) => {
-      return '<option value="' + escapeHtml(provider.id) + '"' + (provider.id === assignment.providerId ? " selected" : "") + ">"
-        + escapeHtml(provider.name + (provider.enabled ? "" : " (Disabled)")) + "</option>";
-    }).join("")
-    : '<option value="">No providers</option>';
-  const knownModels = providerModels(assignment.providerId);
-  const datalistId = "route-models-" + index;
-  const stageOptions = STAGE_OPTIONS.map((stage) => {
-    const checked = (assignment.stages || []).includes(stage.id) ? " checked" : "";
-    return '<label><input type="checkbox" data-route-stage="' + index + '" data-stage-id="' + escapeHtml(stage.id) + '"' + checked + '> '
-      + escapeHtml(stage.label) + '</label>';
-  }).join("");
-  return [
-    '<div class="route-card" id="model-card-' + index + '">',
-    '<div class="route-card-header">',
-    renderModelPill(assignment.providerId, assignment.model),
-    '<div class="button-row">',
-    '<button type="button" data-action="moveRouteUp" data-index="' + index + '"' + (index === 0 ? ' disabled' : '') + '>Up</button>',
-    '<button type="button" data-action="moveRouteDown" data-index="' + index + '"' + (index === currentPersonaCustomization().assignments.length - 1 ? ' disabled' : '') + '>Down</button>',
-    '<button type="button" class="danger" data-action="removeRoute" data-index="' + index + '">Remove</button>',
-    '</div>',
-    '</div>',
-    '<div class="field-grid">',
-    '<div class="field">',
-    '<label>Provider</label>',
-    '<select data-route-provider="' + index + '">' + providerOptions + '</select>',
-    '</div>',
-    '<div class="field">',
-    '<label>Model</label>',
-    '<input type="text" data-route-model="' + index + '" value="' + escapeHtml(assignment.model || "") + '" list="' + datalistId + '" placeholder="Provider default">',
-    knownModels.length > 0
-      ? '<datalist id="' + datalistId + '">' + knownModels.map((model) => '<option value="' + escapeHtml(model) + '"></option>').join("") + '</datalist>'
-      : '',
-    '</div>',
-    '</div>',
-    '<div class="field" style="margin-top:12px">',
-    '<label>Stages</label>',
-    '<div class="stage-grid">' + stageOptions + '</div>',
-    '</div>',
-    '</div>',
-  ].join("");
+function renderSummaryList(values, emptyLabel) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return '<div class="empty">' + escapeHtml(emptyLabel) + '</div>';
+  }
+  return '<div class="model-pill-row">' + values.map((value) => {
+    return '<span class="model-pill is-summary"><span class="model-pill-provider">CFG</span><span class="model-pill-model">' + escapeHtml(value) + '</span></span>';
+  }).join('') + '</div>';
+}
+
+function renderTierSummary(preferredModelTiers) {
+  const entries = preferredModelTiers && typeof preferredModelTiers === 'object'
+    ? Object.entries(preferredModelTiers)
+    : [];
+  if (entries.length === 0) {
+    return '<div class="empty">No preferred model tiers configured.</div>';
+  }
+  return '<div class="tool-grid">' + entries.map(([stage, tiers]) => {
+    const label = Array.isArray(tiers) ? tiers.join(', ') : '';
+    return [
+      '<div class="tool-chip">',
+      '<span class="tool-chip-title">' + escapeHtml(stage) + '</span>',
+      '<span class="tool-chip-meta">tiers</span>',
+      '<span class="tool-chip-mode">' + escapeHtml(label || 'none') + '</span>',
+      '</div>',
+    ].join('');
+  }).join('') + '</div>';
 }
 
 function render() {
   const persona = currentPersona();
-  const customization = persona ? ensureCustomization(persona.id) : null;
   const listHtml = draft.personas.map((item) => {
-    const itemCustomization = ensureCustomization(item.id);
     return [
       '<div class="persona-item' + (item.id === selectedPersonaId ? ' active' : '') + '" data-action="selectPersona" data-persona-id="' + escapeHtml(item.id) + '">',
       '<div class="persona-item-title">' + escapeHtml(item.name) + '</div>',
       '<div class="persona-item-tagline">' + escapeHtml(item.tagline || '') + '</div>',
-      renderPersonaModelPills(item.id, itemCustomization.assignments),
       '</div>',
     ].join('');
   }).join('');
 
   const toolHtml = persona && Array.isArray(persona.tools) && persona.tools.length > 0
     ? '<div class="tool-grid">' + persona.tools.map(renderTool).join('') + '</div>'
-    : '<div class="empty">No persona-specific tools are exposed for this persona.</div>';
+    : '<div class="empty">No WaterFree tools are exposed for this persona.</div>';
 
-  const modelSummaryHtml = customization && customization.assignments.length > 0
-    ? '<div class="model-pill-row">' + customization.assignments.map((assignment, index) => renderModelPill(
-      assignment.providerId,
-      assignment.model,
-      { action: "focusModel", index, className: "is-summary" },
-    )).join('') + '</div>'
-    : '<div class="model-pill-row">' + renderModelPill("", draft.defaultRoute?.model || "", { className: "is-fallback" }) + '</div>';
-
-  const routingHtml = customization && customization.assignments.length > 0
-    ? customization.assignments.map((assignment, index) => renderRoute(assignment, index)).join('')
-    : [
-      '<div class="empty">No explicit models configured yet.</div>',
-      '<div class="info-banner">Using the workspace default when nothing is assigned: ' + escapeHtml(defaultRouteLabel()) + '</div>',
-    ].join('');
-
-  const editorHtml = !persona || !customization
+  const editorHtml = !persona
     ? '<div class="empty">No persona selected.</div>'
     : [
       '<div class="editor-header">',
@@ -239,27 +85,37 @@ function render() {
       '</div>',
       '</div>',
       '<section class="card">',
-      '<h2>Persona Prompt</h2>',
-      '<p class="hint">Edit the base persona prompt text that is prepended before stage-specific instructions.</p>',
-      '<textarea id="prompt-input" rows="10">' + escapeHtml(customization.prompt || '') + '</textarea>',
+      '<h2>SKILL.md</h2>',
+      '<p class="hint">This is the global prompt source for the persona. WaterFree reads the <code>## System</code> and <code>## Stage: ...</code> sections from this file.</p>',
+      '<textarea id="skill-markdown-input" rows="18">' + escapeHtml(persona.skillMarkdown || '') + '</textarea>',
       '</section>',
       '<section class="card">',
-      '<h2>Workspace Tools</h2>',
-      '<p class="hint">These are the tools this persona can use inside WaterFree.</p>',
+      '<h2>waterfree.persona.json</h2>',
+      '<p class="hint">Edit WaterFree-only metadata here: tool categories, preferred skills, model tiers, and subagent settings.</p>',
+      '<textarea id="metadata-json-input" rows="16">' + escapeHtml(persona.metadataJson || '') + '</textarea>',
+      '</section>',
+      '<section class="card">',
+      '<h2>WaterFree Tools</h2>',
+      '<p class="hint">These tools are currently derived from the persona metadata and workspace tool registry.</p>',
       toolHtml,
       '</section>',
       '<section class="card">',
-      '<div class="editor-header">',
-      '<div>',
-      '<h2>Persona Models</h2>',
-      '<p class="hint">Assign one or more provider/model combinations. Higher entries are tried first. Leave this empty to use the workspace default provider/model.</p>',
-      '</div>',
-      '<div class="button-row">',
-      '<button type="button" data-action="addRoute"' + (draft.providers.length === 0 ? ' disabled' : '') + '>+ Add Model</button>',
-      '</div>',
-      '</div>',
-      modelSummaryHtml,
-      routingHtml,
+      '<h2>Preferred Skills</h2>',
+      renderSummaryList(persona.preferredSkillIds || [], 'No preferred skills configured.'),
+      '</section>',
+      '<section class="card">',
+      '<h2>Tool Categories</h2>',
+      renderSummaryList(persona.toolCategories || [], 'No tool categories configured.'),
+      '</section>',
+      '<section class="card">',
+      '<h2>Preferred Model Tiers</h2>',
+      renderTierSummary(persona.preferredModelTiers),
+      '</section>',
+      '<section class="card">',
+      '<h2>Subagent</h2>',
+      persona.subagent && persona.subagent.enabled
+        ? '<div class="info-banner">Enabled for ' + escapeHtml(persona.subagent.promptStage || 'PLANNING') + ': ' + escapeHtml(persona.subagent.description || '') + '</div>'
+        : '<div class="empty">Subagent disabled.</div>',
       '</section>',
     ].join('');
 
@@ -267,7 +123,7 @@ function render() {
     '<div class="studio">',
     '<aside class="persona-list">',
     '<h1>Persona Studio</h1>',
-    '<p>Edit prompt text, review each persona\'s WaterFree tools, and assign provider/model combinations for cost, capability, or specialization.</p>',
+    '<p>Edit the global AppData persona catalog. Changes apply across workspaces after the backend reloads.</p>',
     listHtml,
     '</aside>',
     '<main class="editor">',
@@ -276,51 +132,19 @@ function render() {
     '</div>',
   ].join('');
 
-  const promptInput = document.getElementById('prompt-input');
-  if (promptInput && customization) {
-    promptInput.addEventListener('input', function(event) {
-      customization.prompt = event.target.value;
+  const skillInput = document.getElementById('skill-markdown-input');
+  if (skillInput && persona) {
+    skillInput.addEventListener('input', function(event) {
+      persona.skillMarkdown = event.target.value;
     });
   }
 
-  document.querySelectorAll('[data-route-provider]').forEach((select) => {
-    select.addEventListener('change', (event) => {
-      const index = Number(event.target.getAttribute('data-route-provider'));
-      const item = customization.assignments[index];
-      item.providerId = event.target.value;
-      const models = providerModels(item.providerId);
-      if (models.length > 0 && !models.includes(item.model)) {
-        item.model = models[0];
-      }
-      render();
+  const metadataInput = document.getElementById('metadata-json-input');
+  if (metadataInput && persona) {
+    metadataInput.addEventListener('input', function(event) {
+      persona.metadataJson = event.target.value;
     });
-  });
-
-  document.querySelectorAll('[data-route-model]').forEach((input) => {
-    input.addEventListener('input', (event) => {
-      const index = Number(event.target.getAttribute('data-route-model'));
-      customization.assignments[index].model = event.target.value;
-    });
-  });
-
-  document.querySelectorAll('[data-route-stage]').forEach((input) => {
-    input.addEventListener('change', (event) => {
-      const index = Number(event.target.getAttribute('data-route-stage'));
-      const stageId = event.target.getAttribute('data-stage-id');
-      const current = customization.assignments[index].stages || [];
-      if (!stageId) {
-        return;
-      }
-      if (event.target.checked) {
-        if (!current.includes(stageId)) {
-          current.push(stageId);
-        }
-        customization.assignments[index].stages = current;
-      } else {
-        customization.assignments[index].stages = current.filter((stage) => stage !== stageId);
-      }
-    });
-  });
+  }
 }
 
 document.addEventListener('click', function(event) {
@@ -329,7 +153,6 @@ document.addEventListener('click', function(event) {
     return;
   }
   const action = target.getAttribute('data-action');
-  const customization = currentPersonaCustomization();
 
   if (action === 'selectPersona') {
     const personaId = target.getAttribute('data-persona-id');
@@ -347,55 +170,16 @@ document.addEventListener('click', function(event) {
     return;
   }
 
-  if (action === 'focusModel') {
-    const index = Number(target.getAttribute('data-index'));
-    if (!Number.isNaN(index)) {
-      document.getElementById('model-card-' + index)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-    return;
-  }
-
   if (action === 'save') {
-    vscode.postMessage({ type: 'save', customizations: draft.customizations });
-    baseline = structuredClone(draft);
-    render();
-    return;
-  }
-
-  if (action === 'addRoute') {
-    const providerId = draft.defaultRoute?.providerId || draft.providers[0]?.id || '';
-    const models = providerModels(providerId);
-    customization.assignments.push({
-      providerId,
-      model: draft.defaultRoute?.model || models[0] || '',
-      stages: STAGE_OPTIONS.map((stage) => stage.id),
+    vscode.postMessage({
+      type: 'save',
+      personas: draft.personas.map((persona) => ({
+        personaId: persona.id,
+        skillMarkdown: persona.skillMarkdown || '',
+        metadataJson: persona.metadataJson || '',
+      })),
     });
-    render();
-    return;
-  }
-
-  if (action === 'removeRoute') {
-    const index = Number(target.getAttribute('data-index'));
-    if (!Number.isNaN(index)) {
-      customization.assignments.splice(index, 1);
-      render();
-    }
-    return;
-  }
-
-  if (action === 'moveRouteUp' || action === 'moveRouteDown') {
-    const index = Number(target.getAttribute('data-index'));
-    if (Number.isNaN(index)) {
-      return;
-    }
-    const delta = action === 'moveRouteUp' ? -1 : 1;
-    const nextIndex = index + delta;
-    if (nextIndex < 0 || nextIndex >= customization.assignments.length) {
-      return;
-    }
-    const temp = customization.assignments[index];
-    customization.assignments[index] = customization.assignments[nextIndex];
-    customization.assignments[nextIndex] = temp;
+    baseline = structuredClone(draft);
     render();
   }
 });

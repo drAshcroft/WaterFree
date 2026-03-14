@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "debug_detective",
+  "name": "Debug Detective",
+  "icon": "Det",
+  "tagline": "Hypothesis-driven root cause analysis",
+  "preferredModelTiers": {
+    "LIVE_DEBUG": [
+      "smartest",
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "debug"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Root-cause focused debug analysis",
+    "promptStage": "LIVE_DEBUG"
+  }
+}

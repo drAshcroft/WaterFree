@@ -242,6 +242,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     this._postState();
   }
 
+  openSettings(): void {
+    void this._view?.webview.postMessage({ type: "openSettings" });
+  }
+
   clearComposer(): void {
     void this._view?.webview.postMessage({ type: "clearComposer" });
   }

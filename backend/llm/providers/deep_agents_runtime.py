@@ -493,22 +493,12 @@ class DeepAgentsRuntime:
 
     def list_subagents(self) -> list[dict]:
         return [
-            {"id": "architect", "label": "Architect", "skills": ["waterfree-index", "waterfree-knowledge"]},
-            {"id": "pattern_expert", "label": "Pattern Expert", "skills": ["waterfree-index", "waterfree-knowledge", "waterfree-todos"]},
-            {"id": "debug_detective", "label": "Debug Detective", "skills": ["waterfree-debug", "waterfree-index"]},
             {
-                "id": "stub_wireframer",
-                "label": "Stub/Wireframes",
-                "skills": ["waterfree-index", "waterfree-todos", "waterfree-testing"],
-            },
-            {"id": "market_researcher", "label": "Market Researcher", "skills": ["waterfree-index", "waterfree-knowledge"]},
-            {"id": "bdd_test_designer", "label": "BDD Test Designer", "skills": ["waterfree-todos", "waterfree-testing"]},
-            {
-                "id": "coding_agent",
-                "label": "Coding Agent",
-                "skills": ["waterfree-index", "waterfree-knowledge", "waterfree-todos", "waterfree-testing"],
-            },
-            {"id": "reviewer", "label": "Reviewer", "skills": ["waterfree-index", "waterfree-todos", "waterfree-testing"]},
+                "id": persona.id,
+                "label": persona.name,
+                "skills": list(persona.preferred_skill_ids),
+            }
+            for persona in self._persona_subagents()
         ]
 
     def delegate_to_subagent(
@@ -616,45 +606,18 @@ class DeepAgentsRuntime:
     def _deepagents_subagents(self) -> list[dict[str, Any]]:
         return [
             {
-                "name": "architect",
-                "description": "Architecture synthesis and trade-off analysis",
-                "system_prompt": build_system_prompt("PLANNING", "architect"),
-            },
-            {
-                "name": "pattern_expert",
-                "description": "Pattern and framework guidance",
-                "system_prompt": build_system_prompt("PLANNING", "pattern_expert"),
-            },
-            {
-                "name": "debug_detective",
-                "description": "Root-cause focused debug analysis",
-                "system_prompt": build_system_prompt("LIVE_DEBUG", "debug_detective"),
-            },
-            {
-                "name": "stub_wireframer",
-                "description": "Subsystem shell generation with TODO handoff and verification",
-                "system_prompt": build_system_prompt("EXECUTION", "stub_wireframer"),
-            },
-            {
-                "name": "market_researcher",
-                "description": "Product framing, differentiation, and audience analysis",
-                "system_prompt": build_system_prompt("PLANNING", "market_researcher"),
-            },
-            {
-                "name": "bdd_test_designer",
-                "description": "Acceptance scenarios and human-language test design",
-                "system_prompt": build_system_prompt("PLANNING", "bdd_test_designer"),
-            },
-            {
-                "name": "coding_agent",
-                "description": "Implements code, escalates bad guidance, and drives execution-ready backlog work",
-                "system_prompt": build_system_prompt("PLANNING", "coding_agent"),
-            },
-            {
-                "name": "reviewer",
-                "description": "Collects issues, blockers, and follow-up work",
-                "system_prompt": build_system_prompt("QUESTION_ANSWER", "reviewer"),
-            },
+                "name": persona.id,
+                "description": persona.subagent.description or persona.tagline,
+                "system_prompt": build_system_prompt(persona.subagent.prompt_stage, persona.id),
+            }
+            for persona in self._persona_subagents()
+        ]
+
+    def _persona_subagents(self) -> list[Any]:
+        return [
+            persona
+            for _, persona in sorted(PERSONAS.items())
+            if getattr(persona.subagent, "enabled", False)
         ]
 
 

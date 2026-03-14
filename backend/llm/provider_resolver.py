@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.llm.personas import get_persona
 from backend.llm.provider_profiles import ProviderProfile, ProviderProfileDocument, SubagentProviderOverride
 
 
@@ -43,9 +44,9 @@ def resolve_provider(
         if explicit is not None:
             return _resolved(explicit, stage=stage)
 
-    assigned = _find_persona_assignment(document, eligible, stage=stage, persona=persona)
-    if assigned is not None:
-        return assigned
+    tier_routed = _find_persona_tier_route(document, eligible, stage=stage, persona=persona)
+    if tier_routed is not None:
+        return tier_routed
 
     candidates = [
         item for item in eligible
@@ -117,6 +118,32 @@ def _find_persona_assignment(
         if profile is None:
             continue
         return _resolved(profile, stage=stage, model_name=assignment.model)
+    return None
+
+
+def _find_persona_tier_route(
+    document: ProviderProfileDocument,
+    eligible: list[ProviderProfile],
+    *,
+    stage: str,
+    persona: str,
+) -> ResolvedProvider | None:
+    persona_def = get_persona(persona)
+    if persona_def is None:
+        return None
+    stage_key = stage.strip().upper()
+    preferred_tiers = persona_def.preferred_model_tiers.get(stage_key, [])
+    if not preferred_tiers:
+        return None
+    by_id = {item.id: item for item in eligible}
+    for tier in preferred_tiers:
+        route = document.policies.model_tier_routes.get(tier.strip().lower())
+        if route is None:
+            continue
+        profile = by_id.get(route.provider_id)
+        if profile is None:
+            continue
+        return _resolved(profile, stage=stage, model_name=route.model)
     return None
 
 

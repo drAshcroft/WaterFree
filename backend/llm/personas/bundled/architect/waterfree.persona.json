@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "architect",
+  "name": "The Architect",
+  "icon": "Arch",
+  "tagline": "Requirements, feasibility, risks, trade-offs, technical direction",
+  "preferredModelTiers": {
+    "PLANNING": [
+      "smartest",
+      "balanced"
+    ],
+    "ANNOTATION": [
+      "balanced",
+      "cheap"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ],
+    "WIZARD": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "backlog"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-knowledge"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Architecture synthesis and trade-off analysis",
+    "promptStage": "PLANNING"
+  }
+}

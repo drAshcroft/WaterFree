@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from backend.knowledge.store import KnowledgeStore
-from backend.llm.personas import list_personas
+from backend.llm.personas import list_personas, reload_personas, save_persona_documents
 from backend.llm.provider_profiles import normalize_provider_profile
 from backend.llm.runtime_registry import (
     list_runtime_descriptors,
@@ -61,6 +61,14 @@ def handle_list_personas(server, params: dict) -> dict:
         )
         personas.append(entry)
     return {"personas": personas}
+
+
+def handle_save_personas(server, params: dict) -> dict:
+    _ = server
+    personas = params.get("personas", [])
+    saved = save_persona_documents(personas if isinstance(personas, list) else [])
+    reload_personas()
+    return {"ok": True, "personas": saved}
 
 
 def handle_list_skills(server, params: dict) -> dict:

@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from backend.graph.client import GraphClient
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.personas import get_persona
 from backend.todo.store import TaskStore
 
 from .filesystem_tools import filesystem_tool_descriptors
@@ -126,7 +127,11 @@ def build_default_tool_registry(
 
 
 def _allowed_categories(persona: str, preferred_categories: Optional[list[str]]) -> Optional[set[str]]:
-    categories = _PERSONA_TOOL_CATEGORIES.get(persona.strip().lower())
+    persona_key = persona.strip().lower()
+    persona_def = get_persona(persona_key)
+    categories = set(persona_def.tool_categories) if persona_def and persona_def.tool_categories else None
+    if categories is None:
+        categories = _PERSONA_TOOL_CATEGORIES.get(persona_key)
     if categories is None:
         if preferred_categories:
             return set(preferred_categories)

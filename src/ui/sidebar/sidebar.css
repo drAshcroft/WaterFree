@@ -41,17 +41,24 @@ h1, h2, h3, p { margin: 0; }
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 4px;
   margin-bottom: 4px;
 }
 
-/* History button — sits left of the gear */
+.sidebar-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 1;
+}
+
 .history-btn {
-  min-width: 28px;
-  padding: 0;
-  font-size: 13px;
-  line-height: 1;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .history-btn--active {
@@ -282,6 +289,14 @@ select:focus,
   padding: 0 8px;
 }
 
+.button-row--end {
+  justify-content: flex-end;
+}
+
+.quick-job-controls--mode-only {
+  grid-template-columns: 1fr;
+}
+
 button {
   min-height: 28px;
   padding: 0 10px;
@@ -290,13 +305,6 @@ button {
   background: var(--button-secondary-bg);
   color: var(--button-secondary-fg);
   cursor: pointer;
-}
-
-.gear-btn {
-  min-width: 28px;
-  padding: 0;
-  font-size: 15px;
-  line-height: 1;
 }
 
 button:hover:enabled {

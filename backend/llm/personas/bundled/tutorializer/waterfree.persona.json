@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "id": "tutorializer",
+  "name": "Tutorializer",
+  "icon": "Tut",
+  "tagline": "Builds reusable repo tutorials, snippets, and replication guidance",
+  "preferredModelTiers": {
+    "QUESTION_ANSWER": [
+      "balanced"
+    ],
+    "KNOWLEDGE": [
+      "cheap",
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "filesystem"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-knowledge"
+  ],
+  "subagent": {
+    "enabled": false,
+    "description": "",
+    "promptStage": "QUESTION_ANSWER"
+  }
+}
