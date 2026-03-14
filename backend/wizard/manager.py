@@ -73,17 +73,7 @@ class WizardManager:
         if wizard_id != "bring_idea_to_life":
             raise ValueError(f"Wizard '{wizard_id}' is not implemented yet.")
 
-        existing = self._find_latest_active_run()
         cleaned_goal = goal.strip()
-        if existing and (not cleaned_goal or existing.goal == cleaned_goal):
-            self._migrate_market_research_doc(existing)
-            current = existing.get_stage(existing.current_stage_id) or existing.stages[0]
-            self._ensure_stage_doc(existing, current)
-            market_stage = existing.get_stage(MARKET_RESEARCH_TEMPLATE.id)
-            if market_stage and market_stage is not current:
-                self._ensure_stage_doc(existing, market_stage)
-            return existing
-
         run_id = str(uuid.uuid4())
         now = _now()
         run_dir = wizard_root(str(self._workspace), run_id)
