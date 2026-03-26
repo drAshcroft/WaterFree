@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import json
 
-from mcp.server.fastmcp import FastMCP
-
 from backend.graph.client import GraphClient
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
+from backend.mcp_runtime import FastMCP
 
 mcp = FastMCP("waterfree-index")
 log, LOG_FILE = configure_mcp_logger("waterfree-index")

@@ -28,9 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from mcp.server.fastmcp import FastMCP
-
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
+from backend.mcp_runtime import FastMCP
 
 mcp = FastMCP("waterfree-testing")
 log, LOG_FILE = configure_mcp_logger("waterfree-testing")

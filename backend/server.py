@@ -149,6 +149,11 @@ from backend.handlers.wizard_handler import (
     handle_run_wizard_review,
 )
 from backend.handlers.debug_handler import handle_live_debug
+from backend.handlers.tutorialize_handler import (
+    handle_analyze_tutorialize_repo,
+    handle_generate_tutorials,
+    handle_tutorialize_chat,
+)
 from backend.handlers.runtime_handler import (
     handle_list_runtimes,
     handle_get_active_runtime,
@@ -440,6 +445,10 @@ class Server:
         "saveTaskBoard":        handle_save_task_board,
         "whatNext":             handle_what_next,
         "liveDebug":            handle_live_debug,
+        # Tutorialize
+        "analyzeTutorializeRepo": handle_analyze_tutorialize_repo,
+        "generateTutorials":      handle_generate_tutorials,
+        "tutorializeChat":        handle_tutorialize_chat,
         "updateFile":           handle_update_file,
         "removeFile":           handle_remove_file,
         # Runtime management

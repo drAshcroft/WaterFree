@@ -36,7 +36,7 @@ $VsixPath = Join-Path $ScriptDir "waterfree.vsix"
 $CodeCmd = @(
     "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
     "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd",
-    (Get-Command code.cmd -ErrorAction SilentlyContinue)?.Source
+    (Get-Command code.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $CodeCmd) {
     $CodeCmd = "code"
@@ -291,7 +291,7 @@ function Deploy-Local {
 
     Push-Location $ScriptDir
     try {
-        npx --yes @vscode/vsce package --no-dependencies --out $VsixPath --baseContentUrl https://localhost
+        npx --yes @vscode/vsce package --no-dependencies --skip-license --allow-missing-repository --allow-star-activation --allow-package-all-secrets --out $VsixPath --baseContentUrl https://localhost
         Assert-LastExitCode "VSIX packaging"
     } finally {
         Pop-Location
@@ -352,29 +352,16 @@ function Deploy-Claude {
     Write-Step "Installing skills for Claude Code..."
     & (Join-Path $SkillsDir "install_claude.ps1")
 
-    Write-Step "Registering MCP servers in Claude Code (--scope user)..."
+    # claude mcp add --scope user is a known broken bug — it writes to
+    # projects.<path>.mcpServers instead of the top-level mcpServers key,
+    # so servers only appear in the directory where the command was run.
+    # Fix: write directly to ~/.claude.json top-level mcpServers (same
+    # approach used for Kilo Code).
+    $claudeConfigPath = Join-Path $HOME ".claude.json"
+    Write-Step "Registering MCP servers in Claude Code ($claudeConfigPath)..."
+    Merge-JsonMcpConfig -ConfigPath $claudeConfigPath
 
-    foreach ($legacyName in $LegacyMcpServerNames) {
-        $out = claude mcp remove --scope user $legacyName 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    Removed legacy $legacyName"
-        }
-    }
-
-    foreach ($server in $McpServers) {
-        # Remove first so re-running is idempotent
-        claude mcp remove --scope user $server.name 2>&1 | Out-Null
-
-        $addArgs = @('mcp', 'add', '-s', 'user', '-e', "PYTHONPATH=$ScriptDir", '--', $server.name, $PythonPath, '-m', $server.module)
-        $out = & claude @addArgs 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    Registered $($server.name)"
-        } else {
-            Write-Warning "    Failed to register $($server.name): $out"
-        }
-    }
-
-    Write-Ok "Reload the VSCode window (Developer: Reload Window) to activate MCP servers."
+    Write-Ok "Restart Claude Code (or run /reset-mcp) to activate the MCP servers."
 }
 
 function Deploy-Codex {

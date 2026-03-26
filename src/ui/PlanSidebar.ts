@@ -115,6 +115,7 @@ function isProviderStage(value: string): value is PersonaProviderAssignment["sta
 
 export type SidebarAction =
   | { type: "startSession"; goal: string; persona: string; runtimeSelection?: SessionRuntimeSelection }
+  | { type: "startTutorialize"; goal: string; runtimeSelection?: SessionRuntimeSelection }
   | { type: "openWizard"; wizardId: string; goal: string; persona: string }
   | { type: "openTask"; taskId: string }
   | { type: "generateAnnotation"; taskId: string }

@@ -33,6 +33,7 @@ const QUICK_JOB_MODES = [
   { id: "plan", label: "Plan", persona: "architect" },
   { id: "debug", label: "Debug", persona: "debug_detective" },
   { id: "yolo", label: "Yolo", persona: "yolo" },
+  { id: "tutorialize", label: "Tutorialize", persona: "tutorializer" },
 ];
 
 const PROVIDER_LABELS = {
@@ -1431,15 +1432,26 @@ root.addEventListener("click", function(event) {
     const goal = state.draftGoal.trim();
     if (goal && !state.busyMessage) {
       normalizeQuickJobSelection();
-      vscode.postMessage({
-        type: "startSession",
-        goal,
-        persona: resolveQuickMode(state.selectedQuickMode).persona,
-        runtimeSelection: {
-          providerId: state.selectedQuickProviderId,
-          model: state.selectedQuickModel,
-        },
-      });
+      if (state.selectedQuickMode === "tutorialize") {
+        vscode.postMessage({
+          type: "startTutorialize",
+          goal,
+          runtimeSelection: {
+            providerId: state.selectedQuickProviderId,
+            model: state.selectedQuickModel,
+          },
+        });
+      } else {
+        vscode.postMessage({
+          type: "startSession",
+          goal,
+          persona: resolveQuickMode(state.selectedQuickMode).persona,
+          runtimeSelection: {
+            providerId: state.selectedQuickProviderId,
+            model: state.selectedQuickModel,
+          },
+        });
+      }
     }
     return;
   }

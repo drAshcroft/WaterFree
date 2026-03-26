@@ -46,6 +46,7 @@ import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPan
 import { MonitorPanel } from "./ui/MonitorPanel.js";
 import { MockPanel } from "./ui/MockPanel.js";
 import { KnowledgePanel, type KnowledgePanelAction } from "./ui/KnowledgePanel.js";
+import { TutorializePanel, type TutorializePanelAction } from "./ui/TutorializePanel.js";
 import {
   PersonaStudioPanel,
   type PersonaStudioAction,
@@ -119,6 +120,7 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _wizardEditor: WizardEditorPanel;
   private readonly _todoBoard: TodoBoardPanel;
   private readonly _knowledgePanel: KnowledgePanel;
+  private readonly _tutorializePanel: TutorializePanel;
   private readonly _personaStudio: PersonaStudioPanel;
   private readonly _monitorPanel: MonitorPanel;
   private readonly _mockPanel: MockPanel;
@@ -151,6 +153,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._wizardEditor = new WizardEditorPanel(context.extensionUri, context.workspaceState);
     this._todoBoard = new TodoBoardPanel(context.extensionUri);
     this._knowledgePanel = new KnowledgePanel(context.extensionUri);
+    this._tutorializePanel = new TutorializePanel(context.extensionUri);
     this._personaStudio = new PersonaStudioPanel(context.extensionUri);
     this._monitorPanel = new MonitorPanel(context.extensionUri, _workspacePath);
     this._monitorPanel.attach(context);
@@ -169,6 +172,7 @@ export class WaterFreeController implements vscode.Disposable {
       this._wizardEditor,
       this._todoBoard,
       this._knowledgePanel,
+      this._tutorializePanel,
       this._personaStudio,
       this._monitorPanel,
       this._mockPanel,
@@ -210,6 +214,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._knowledgePanel.onDidTriggerAction((action) => {
         void this._onKnowledgePanelAction(action);
+      }),
+      this._tutorializePanel.onDidTriggerAction((action) => {
+        void this._onTutorializePanelAction(action);
       }),
       this._personaStudio.onDidTriggerAction((action) => {
         void this._onPersonaStudioAction(action);
@@ -267,6 +274,40 @@ export class WaterFreeController implements vscode.Disposable {
 
   async cmdOpenKnowledgePanel(): Promise<void> {
     this._knowledgePanel.show();
+  }
+
+  async cmdTutorialize(focus: string): Promise<void> {
+    // Let the user target any repo — default to the current workspace.
+    const repoPath = await vscode.window.showInputBox({
+      prompt: "Which repository do you want to tutorialize?",
+      placeHolder: "Local path  e.g. /path/to/repo  (leave blank for current workspace)",
+      value: this._workspacePath,
+    });
+    if (repoPath === undefined) {
+      return; // Escape pressed
+    }
+
+    const resolvedRepo = repoPath.trim() || this._workspacePath;
+
+    this._sidebarProvider.setBusyMessage("Analysing repo…");
+    try {
+      const result = await this._bridge.request<{ sessionId: string; areas: unknown[]; overview: string }>(
+        "analyzeTutorializeRepo",
+        { repoPath: resolvedRepo, workspacePath: this._workspacePath, focus },
+      );
+      const sessionId = result.sessionId;
+      this._tutorializePanel.show(focus, sessionId, resolvedRepo);
+      await this._tutorializePanel.postMessage({
+        type: "areaSelection",
+        areas: result.areas,
+        overview: result.overview,
+      });
+      this._sidebarProvider.clearComposer();
+    } catch (err) {
+      this._handleError("Tutorialize failed", err);
+    } finally {
+      this._sidebarProvider.setBusyMessage(null);
+    }
   }
 
   async cmdOpenPersonaStudio(): Promise<void> {
@@ -1592,6 +1633,9 @@ export class WaterFreeController implements vscode.Disposable {
       case "startSession":
         await this.cmdStart(action.goal, action.persona, action.runtimeSelection);
         return;
+      case "startTutorialize":
+        await this.cmdTutorialize(action.goal);
+        return;
       case "openWizard": {
         await this.cmdOpenWizard({
           wizardId: action.wizardId,
@@ -1775,6 +1819,49 @@ export class WaterFreeController implements vscode.Disposable {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this._knowledgePanel.postMessage({ type: "error", message });
+    }
+  }
+
+  private async _onTutorializePanelAction(action: TutorializePanelAction): Promise<void> {
+    if (action.type === "cancel") {
+      return;
+    }
+
+    // action.type === "send"
+    const { sessionId, message } = action;
+
+    try {
+      // "generate:<areas>" — triggered by the area-selection buttons in the panel
+      if (message.startsWith("generate:")) {
+        const areasPart = message.slice("generate:".length).trim();
+        const areas = areasPart === "all" ? [] : areasPart.split(",").map((s) => s.trim()).filter(Boolean);
+
+        await this._tutorializePanel.postMessage({ type: "progress", text: "Starting tutorial generation..." });
+
+        const result = await this._bridge.request<{ added: number; summary: string; progressMessages: string[] }>(
+          "generateTutorials",
+          { sessionId, areas },
+        );
+
+        const summary = result.summary || `Done! Generated ${result.added} tutorial(s) and added them to the knowledge base.`;
+        await this._tutorializePanel.postMessage({
+          type: "done",
+          text: summary + "\n\nYou can ask me follow-up questions about any of the topics covered.",
+        });
+      } else {
+        // Free-form follow-up question — route to knowledge Q&A
+        await this._tutorializePanel.postMessage({ type: "progress", text: "Thinking..." });
+
+        const result = await this._bridge.request<{ answer: string }>(
+          "tutorializeChat",
+          { sessionId, message },
+        );
+
+        await this._tutorializePanel.postMessage({ type: "message", text: result.answer });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await this._tutorializePanel.postMessage({ type: "error", message: msg });
     }
   }
 

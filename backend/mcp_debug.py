@@ -26,10 +26,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
-
 from backend.debug.snapshot_reader import DebugSnapshot, VarInfo
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
+from backend.mcp_runtime import FastMCP
 
 mcp = FastMCP("waterfree-debug")
 log, LOG_FILE = configure_mcp_logger("waterfree-debug")

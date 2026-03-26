@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}" />
+  <link rel="stylesheet" href="{{STYLE_URI}}" />
+  <title>Tutorialize</title>
+</head>
+<body>
+  <div id="app">
+    <div id="header">
+      <div id="header-title">
+        <span class="icon">&#128218;</span>
+        <span id="repo-text">Tutorializer</span>
+      </div>
+      <div id="header-sub" id="focus-text">Deep dive · knowledge base builder</div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="composer">
+      <textarea
+        id="input"
+        placeholder="Type a message or follow-up question..."
+        rows="2"
+        disabled
+      ></textarea>
+      <button id="send-btn" disabled>Send</button>
+    </div>
+  </div>
+
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

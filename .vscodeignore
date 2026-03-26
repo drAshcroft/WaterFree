@@ -3,6 +3,8 @@
 .waterfree/**
 .tmp_*/**
 node_modules/**
+.venv/**
+**/.venv/**
 src/**/*.ts
 skills/**
 **/*.map

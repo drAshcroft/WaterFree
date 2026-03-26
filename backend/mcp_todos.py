@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import json
 
-from mcp.server.fastmcp import FastMCP
-
 from backend.mcp_logging import configure_mcp_logger, instrument_tool
+from backend.mcp_runtime import FastMCP
 from backend.todo.store import TaskStore
 
 mcp = FastMCP("waterfree-todos")
