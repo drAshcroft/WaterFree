@@ -130,6 +130,7 @@ export type SidebarAction =
   | { type: "pushDebugToAgent"; intent: string; stopReason: string }
   | { type: "openTodoBoard" }
   | { type: "openKnowledge" }
+  | { type: "openIndexDashboard" }
   | { type: "openPersonaStudio" }
   | { type: "requestHistory" }
   | { type: "restoreSession"; file: string }
@@ -409,6 +410,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       case "openKnowledge":
         this._actionEmitter.fire({ type: "openKnowledge" });
+        return;
+      case "openIndexDashboard":
+        this._actionEmitter.fire({ type: "openIndexDashboard" });
         return;
       case "openPersonaStudio":
         this._actionEmitter.fire({ type: "openPersonaStudio" });

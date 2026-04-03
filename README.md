@@ -284,6 +284,7 @@ WaterFree exposes its internal tooling as MCP servers, making them available to 
 | `waterfree-knowledge` | Knowledge store: search extracted patterns and snippets |
 | `waterfree-todos` | Task backlog: list, add, update, and complete tasks |
 | `waterfree-debug` | Live debug: inspect breakpoint snapshots progressively |
+| `waterfree-qa-summary` | Local QA summarizer: analyze a file or URL with Ollama and answer a question in detail |
 
 
 ---

@@ -141,6 +141,47 @@ class GraphEngineP0Tests(unittest.TestCase):
             any(node["file_path"] == str((repo / "a.py").resolve()) for node in store.get_all_nodes(project))
         )
 
+    def test_get_architecture_includes_module_graph(self) -> None:
+        root = self.make_temp_root()
+        repo = self.make_repo(
+            root,
+            "graph_repo",
+            {
+                "src/service.py": """
+                def helper():
+                    return "ok"
+                """,
+                "src/main.py": """
+                from service import helper
+
+                def main():
+                    return helper()
+                """,
+            },
+        )
+
+        engine = GraphEngine()
+        self.addCleanup(engine.close)
+        indexed = engine.index_repository(str(repo))
+        project = indexed["project"]
+
+        architecture = engine.get_architecture(
+            aspects=["module_graph", "layers", "hotspots"],
+            project=project,
+        )
+
+        module_graph = architecture.get("module_graph", {})
+        module_ids = {node["id"] for node in module_graph.get("nodes", [])}
+        links = {
+            (link["source"], link["target"]): link["weight"]
+            for link in module_graph.get("links", [])
+        }
+
+        self.assertIn("src/main.py", module_ids)
+        self.assertIn("src/service.py", module_ids)
+        self.assertGreaterEqual(links.get(("src/main.py", "src/service.py"), 0), 1)
+        self.assertTrue(architecture.get("layers"))
+
 
 if __name__ == "__main__":
     unittest.main()

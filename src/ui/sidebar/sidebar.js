@@ -1238,6 +1238,15 @@ root.addEventListener("click", function(event) {
       render();
       return;
     }
+    if (page === "index") {
+      state.settingsOpen = false;
+      state.settingsPage = null;
+      state.providerForm = null;
+      state.personaForm = null;
+      vscode.postMessage({ type: "openIndexDashboard" });
+      render();
+      return;
+    }
     if (page === "personas") {
       state.settingsOpen = false;
       state.settingsPage = null;

@@ -20,7 +20,9 @@ param(
 
     [switch]$Quick,
 
-    [string]$PythonPath = "python"
+    # PythonPath is only needed when building the exe (passed to build.ps1).
+    # It is no longer used to register MCP servers.
+    [string]$PythonPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -43,11 +45,32 @@ if (-not $CodeCmd) {
 }
 
 $McpServers = @(
-    @{ name = "waterfree-index"; module = "backend.mcp_index" }
-    @{ name = "waterfree-knowledge"; module = "backend.mcp_knowledge" }
-    @{ name = "waterfree-todos"; module = "backend.mcp_todos" }
-    @{ name = "waterfree-testing"; module = "backend.mcp_testing" }
+    @{ name = "waterfree-index";     mode = "index" }
+    @{ name = "waterfree-knowledge"; mode = "knowledge" }
+    @{ name = "waterfree-todos";     mode = "todos" }
+    @{ name = "waterfree-testing";   mode = "testing" }
+    @{ name = "waterfree-qa-summary"; mode = "qa-summary" }
 )
+
+# Path to the bundled executable inside the installed VS Code extension.
+# Resolved lazily (extension may not be installed yet when this script loads).
+function Get-BundledExePath {
+    $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+    $exeName = "waterfree-win32-$arch.exe"
+
+    # Prefer the just-built copy in the repo
+    $repoExe = Join-Path $ScriptDir "bin\$exeName"
+    if (Test-Path $repoExe) { return $repoExe }
+
+    # Fall back to the installed extension copy
+    $extDir = Get-InstalledExtensionPath -ExtensionId "waterfree.waterfree"
+    if ($extDir) {
+        $extExe = Join-Path $extDir "bin\$exeName"
+        if (Test-Path $extExe) { return $extExe }
+    }
+
+    throw "Bundled executable not found. Run build.ps1 first."
+}
 
 $LegacyMcpServerNames = @(
     "pairprogram-debug",
@@ -67,6 +90,25 @@ function Write-Ok([string]$Message) {
 function Assert-LastExitCode([string]$CommandName) {
     if ($LASTEXITCODE -ne 0) {
         throw "$CommandName failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Invoke-BestEffortNative([scriptblock]$Command, [string]$Description) {
+    $hasNativePreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+    $previousNativePreference = $null
+    if ($hasNativePreference) {
+        $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        & $Command 2>&1 | Out-Null
+    } catch {
+        Write-Host "    $Description failed (continuing): $($_.Exception.Message)" -ForegroundColor Yellow
+    } finally {
+        if ($hasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+        }
     }
 }
 
@@ -141,11 +183,11 @@ function Get-InstalledExtensionAssetPath([string]$ExtensionId, [string]$Relative
     return $null
 }
 
-function New-McpEntry([string]$Module) {
+function New-McpEntry([string]$Mode) {
+    $exe = Get-BundledExePath
     return [ordered]@{
-        command = $PythonPath
-        args    = @("-m", $Module)
-        env     = [ordered]@{ PYTHONPATH = $ScriptDir }
+        command = $exe
+        args    = @("mcp", $Mode)
     }
 }
 
@@ -233,7 +275,7 @@ function Merge-JsonMcpConfig([string]$ConfigPath) {
     }
 
     foreach ($server in $McpServers) {
-        $entry = New-McpEntry -Module $server.module
+        $entry = New-McpEntry -Mode $server.mode
         $mcpServerMap[$server.name] = [PSCustomObject]$entry
         Write-Host "    Registered $($server.name)"
     }
@@ -283,6 +325,13 @@ function Deploy-Local {
 
     $bundleInfo = Get-ArtifactInfo -Path $bundlePath
     Write-ArtifactInfo -Label "Built bundle" -Info $bundleInfo
+
+    Write-Step "Building backend executable..."
+    $buildScript = Join-Path $ScriptDir "build.ps1"
+    $buildArgs = @()
+    if ($PythonPath) { $buildArgs += "-PythonPath"; $buildArgs += $PythonPath }
+    & $buildScript @buildArgs
+    Assert-LastExitCode "build.ps1"
 
     Write-Step "Packaging VSIX..."
     if (Test-Path $VsixPath) {
@@ -371,17 +420,19 @@ function Deploy-Codex {
     Write-Step "Registering MCP servers in Codex (~/.codex/config.toml via codex mcp)..."
 
     foreach ($legacyName in $LegacyMcpServerNames) {
-        $out = & codex mcp remove $legacyName 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "    Removed legacy $legacyName"
+        Invoke-BestEffortNative -Description "codex mcp remove $legacyName" -Command {
+            & codex mcp remove $legacyName
         }
     }
 
     foreach ($server in $McpServers) {
         # Remove first so re-running is idempotent.
-        & codex mcp remove $server.name 2>&1 | Out-Null
+        Invoke-BestEffortNative -Description "codex mcp remove $($server.name)" -Command {
+            & codex mcp remove $server.name
+        }
 
-        $addArgs = @('mcp', 'add', $server.name, '--env', "PYTHONPATH=$ScriptDir", '--', $PythonPath, '-m', $server.module)
+        $exe = Get-BundledExePath
+        $addArgs = @('mcp', 'add', $server.name, '--', $exe, 'mcp', $server.mode)
         $out = & codex @addArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "    Failed to register $($server.name): $out"

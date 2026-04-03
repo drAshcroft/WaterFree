@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="{{STYLE_URI}}" />
+  <title>WaterFree Index</title>
+</head>
+<body>
+  <main class="index-shell">
+    <header class="hero-card">
+      <div class="hero-copy">
+        <p class="eyebrow">Codebase Index</p>
+        <h1>Architecture stats and module graph</h1>
+        <p class="hero-subtitle" id="workspace-path"></p>
+      </div>
+      <div class="hero-actions">
+        <button type="button" id="btn-refresh" class="secondary">Refresh Stats</button>
+        <button type="button" id="btn-reindex" class="primary">Rebuild Index</button>
+      </div>
+    </header>
+
+    <section class="stats-grid" id="stats-grid"></section>
+
+    <section class="content-grid">
+      <article class="panel graph-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Module Graph</p>
+            <h2>Clustered by top-level area</h2>
+          </div>
+          <p class="panel-note" id="graph-note"></p>
+        </div>
+        <div class="graph-wrap">
+          <svg id="module-graph" viewBox="0 0 1200 720" role="img" aria-label="Module dependency graph"></svg>
+        </div>
+      </article>
+
+      <aside class="side-stack">
+        <article class="panel">
+          <p class="eyebrow">Hotspots</p>
+          <div id="hotspots-list" class="item-list"></div>
+        </article>
+
+        <article class="panel">
+          <p class="eyebrow">Entry Points</p>
+          <div id="entrypoints-list" class="item-list"></div>
+        </article>
+
+        <article class="panel">
+          <p class="eyebrow">Language Mix</p>
+          <div id="languages-list" class="meter-list"></div>
+        </article>
+      </aside>
+    </section>
+
+    <section class="bottom-grid">
+      <article class="panel">
+        <p class="eyebrow">Layers</p>
+        <div id="layers-list" class="item-list"></div>
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Graph Schema</p>
+        <div id="schema-list" class="schema-grid"></div>
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow">Clusters</p>
+        <div id="clusters-list" class="item-list"></div>
+      </article>
+    </section>
+
+    <footer class="footer-line" id="refresh-meta"></footer>
+  </main>
+  <script nonce="{{NONCE}}" src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

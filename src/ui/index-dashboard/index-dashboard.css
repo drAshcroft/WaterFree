@@ -1,0 +1,354 @@
+:root {
+  color-scheme: light dark;
+  --bg: var(--vscode-editor-background);
+  --fg: var(--vscode-editor-foreground);
+  --muted: var(--vscode-descriptionForeground);
+  --border: color-mix(in srgb, var(--vscode-editorWidget-border) 80%, transparent 20%);
+  --panel: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-editorWidget-border) 10%);
+  --panel-alt: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-editorWidget-border) 16%);
+  --accent: var(--vscode-textLink-foreground);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --shadow: rgba(0, 0, 0, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, var(--accent-soft), transparent 30%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 94%, var(--accent) 6%), var(--bg) 18rem);
+  color: var(--fg);
+  font: 13px/1.5 var(--vscode-font-family);
+}
+
+button {
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 16px;
+  min-height: 38px;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border-color: color-mix(in srgb, var(--vscode-button-background) 80%, var(--border) 20%);
+}
+
+button.secondary {
+  background: var(--panel-alt);
+  color: var(--fg);
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+.index-shell {
+  padding: 18px;
+  max-width: 1720px;
+  margin: 0 auto;
+}
+
+.hero-card,
+.panel,
+.stat-card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 12px 30px var(--shadow);
+}
+
+.hero-card {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 20px;
+  padding: 22px 24px;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hero-copy h1 {
+  margin-top: 8px;
+  font-size: 30px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.hero-subtitle,
+.panel-note,
+.footer-line,
+.item-meta,
+.empty-state,
+.stat-label {
+  color: var(--muted);
+}
+
+.hero-subtitle {
+  margin-top: 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.stat-card {
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  margin-top: 6px;
+}
+
+.stat-label {
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.stat-chip {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border) 65%);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.content-grid,
+.bottom-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.content-grid {
+  grid-template-columns: minmax(0, 2.5fr) minmax(320px, 1fr);
+}
+
+.bottom-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.panel {
+  border-radius: 20px;
+  padding: 18px;
+}
+
+.graph-panel {
+  min-height: 640px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.panel-header h2 {
+  margin-top: 6px;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+.panel-note {
+  font-size: 12px;
+  text-align: right;
+}
+
+.graph-wrap {
+  margin-top: 16px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 20%),
+    linear-gradient(180deg, var(--panel-alt), color-mix(in srgb, var(--panel-alt) 70%, var(--bg) 30%));
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent 30%);
+  overflow: hidden;
+}
+
+#module-graph {
+  display: block;
+  width: 100%;
+  min-height: 560px;
+}
+
+.side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.item-list,
+.meter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.item-card {
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.item-title {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-meta {
+  font-size: 12px;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meter-track {
+  margin-top: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 75%, var(--border) 25%);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.schema-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.schema-pill {
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  border-radius: 14px;
+  padding: 11px 12px;
+}
+
+.schema-pill strong {
+  display: block;
+  font-size: 16px;
+  letter-spacing: -0.03em;
+}
+
+.schema-pill span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+}
+
+.footer-line {
+  margin-top: 16px;
+  font-size: 12px;
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--panel-alt) 60%, transparent);
+}
+
+.cluster-label {
+  fill: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.graph-link {
+  stroke-linecap: round;
+}
+
+.graph-node-ring {
+  fill: none;
+  stroke: color-mix(in srgb, var(--bg) 70%, white 30%);
+  stroke-width: 1.5;
+}
+
+.graph-node-label {
+  fill: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.graph-node-meta {
+  fill: var(--muted);
+  font-size: 10px;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
+
+@media (max-width: 1200px) {
+  .content-grid,
+  .bottom-grid,
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-card {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .panel-note {
+    text-align: left;
+  }
+}

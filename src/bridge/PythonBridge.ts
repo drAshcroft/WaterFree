@@ -182,7 +182,6 @@ export class PythonBridge implements vscode.Disposable {
     this._proc = null;
 
     const config = vscode.workspace.getConfiguration("waterfree");
-    const pythonPath: string = config.get("pythonPath") ?? "python";
     const apiKey = this._anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
     const graphBinary: string = config.get<string>("graphBinaryPath") || "codebase-memory-mcp";
     const webSearchProvider: string = config.get<string>("webSearch.provider") ?? "none";
@@ -214,13 +213,33 @@ export class PythonBridge implements vscode.Disposable {
       } : {}),
     };
 
+    // Resolve the backend command.
+    // Production: use the self-contained exe bundled with the extension.
+    // Dev fallback: use waterfree.pythonPath setting (or "python") with -m backend.server.
+    const arch = process.arch === "x64" ? "x64" : process.arch;
+    const exeName = process.platform === "win32"
+      ? `waterfree-win32-${arch}.exe`
+      : `waterfree-${process.platform}-${arch}`;
+    const bundledExe = path.join(this._extensionPath, "bin", exeName);
+
+    let cmd: string;
+    let args: string[];
+    if (fs.existsSync(bundledExe)) {
+      cmd = bundledExe;
+      args = ["serve"];
+    } else {
+      const pythonPath: string = config.get("pythonPath") ?? "python";
+      cmd = pythonPath;
+      args = ["-m", "backend.server"];
+    }
+
     fs.mkdirSync(path.dirname(this._backendLogFilePath), { recursive: true });
     this._log(
-      `Starting Python backend: ${pythonPath} -m backend.server ` +
-      `(cwd=${this._workspacePath}, backendLog=${this._backendLogFilePath})`,
+      `Starting backend: ${cmd} ${args.join(" ")} ` +
+      `(cwd=${this._extensionPath}, backendLog=${this._backendLogFilePath})`,
     );
 
-    this._proc = spawn(pythonPath, ["-m", "backend.server"], {
+    this._proc = spawn(cmd, args, {
       cwd: this._extensionPath,
       env,
       stdio: ["pipe", "pipe", "pipe"],

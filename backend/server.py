@@ -181,6 +181,7 @@ from backend.handlers.graph_handler import (
     handle_delete_project,
     handle_index_status,
     handle_get_graph_schema,
+    handle_get_architecture,
 )
 from backend.handlers.memory_handler import (
     handle_get_memory,
@@ -478,6 +479,7 @@ class Server:
         "deleteProject":        handle_delete_project,
         "indexStatus":          handle_index_status,
         "getGraphSchema":       handle_get_graph_schema,
+        "getArchitecture":      handle_get_architecture,
         # Project memory
         "getMemory":            handle_get_memory,
         "saveMemory":           handle_save_memory,

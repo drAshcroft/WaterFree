@@ -46,6 +46,11 @@ import { WizardEditorPanel, type WizardEditorAction } from "./ui/WizardEditorPan
 import { MonitorPanel } from "./ui/MonitorPanel.js";
 import { MockPanel } from "./ui/MockPanel.js";
 import { KnowledgePanel, type KnowledgePanelAction } from "./ui/KnowledgePanel.js";
+import {
+  IndexDashboardPanel,
+  type IndexDashboardAction,
+  type IndexDashboardState,
+} from "./ui/IndexDashboardPanel.js";
 import { TutorializePanel, type TutorializePanelAction } from "./ui/TutorializePanel.js";
 import {
   PersonaStudioPanel,
@@ -120,6 +125,7 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _wizardEditor: WizardEditorPanel;
   private readonly _todoBoard: TodoBoardPanel;
   private readonly _knowledgePanel: KnowledgePanel;
+  private readonly _indexDashboard: IndexDashboardPanel;
   private readonly _tutorializePanel: TutorializePanel;
   private readonly _personaStudio: PersonaStudioPanel;
   private readonly _monitorPanel: MonitorPanel;
@@ -153,6 +159,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._wizardEditor = new WizardEditorPanel(context.extensionUri, context.workspaceState);
     this._todoBoard = new TodoBoardPanel(context.extensionUri);
     this._knowledgePanel = new KnowledgePanel(context.extensionUri);
+    this._indexDashboard = new IndexDashboardPanel(context.extensionUri);
     this._tutorializePanel = new TutorializePanel(context.extensionUri);
     this._personaStudio = new PersonaStudioPanel(context.extensionUri);
     this._monitorPanel = new MonitorPanel(context.extensionUri, _workspacePath);
@@ -172,6 +179,7 @@ export class WaterFreeController implements vscode.Disposable {
       this._wizardEditor,
       this._todoBoard,
       this._knowledgePanel,
+      this._indexDashboard,
       this._tutorializePanel,
       this._personaStudio,
       this._monitorPanel,
@@ -214,6 +222,9 @@ export class WaterFreeController implements vscode.Disposable {
       }),
       this._knowledgePanel.onDidTriggerAction((action) => {
         void this._onKnowledgePanelAction(action);
+      }),
+      this._indexDashboard.onDidTriggerAction((action) => {
+        void this._onIndexDashboardAction(action);
       }),
       this._tutorializePanel.onDidTriggerAction((action) => {
         void this._onTutorializePanelAction(action);
@@ -274,6 +285,15 @@ export class WaterFreeController implements vscode.Disposable {
 
   async cmdOpenKnowledgePanel(): Promise<void> {
     this._knowledgePanel.show();
+  }
+
+  async cmdOpenIndexDashboard(): Promise<void> {
+    try {
+      await this.cmdIndex(false);
+      await this._indexDashboard.show(await this._loadIndexDashboardState());
+    } catch (err) {
+      this._handleError("Open index dashboard failed", err);
+    }
   }
 
   async cmdTutorialize(focus: string): Promise<void> {
@@ -1683,6 +1703,9 @@ export class WaterFreeController implements vscode.Disposable {
       case "openKnowledge":
         await this.cmdOpenKnowledgePanel();
         return;
+      case "openIndexDashboard":
+        await this.cmdOpenIndexDashboard();
+        return;
       case "openPersonaStudio":
         await this.cmdOpenPersonaStudio();
         return;
@@ -1819,6 +1842,18 @@ export class WaterFreeController implements vscode.Disposable {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this._knowledgePanel.postMessage({ type: "error", message });
+    }
+  }
+
+  private async _onIndexDashboardAction(action: IndexDashboardAction): Promise<void> {
+    try {
+      if (action.type === "reindex") {
+        await this._refreshIndexDashboardIfVisible(true);
+        return;
+      }
+      await this._refreshIndexDashboardIfVisible(false);
+    } catch (err) {
+      this._handleError("Index dashboard refresh failed", err);
     }
   }
 
@@ -1969,6 +2004,45 @@ export class WaterFreeController implements vscode.Disposable {
     }));
 
     return { personas };
+  }
+
+  private async _loadIndexDashboardState(): Promise<IndexDashboardState> {
+    const status = await this._bridge.request<IndexDashboardState["status"]>("indexStatus", {
+      repoPath: this._workspacePath,
+    });
+    const [schema, architecture] = await Promise.all([
+      this._bridge.request<IndexDashboardState["schema"]>("getGraphSchema", {}),
+      this._bridge.request<Record<string, unknown>>("getArchitecture", {
+        repoPath: this._workspacePath,
+        aspects: [
+          "languages",
+          "entry_points",
+          "hotspots",
+          "layers",
+          "clusters",
+          "module_graph",
+          "adr",
+        ],
+      }),
+    ]);
+
+    return {
+      workspacePath: this._workspacePath,
+      updatedAt: new Date().toISOString(),
+      status,
+      schema,
+      architecture,
+    };
+  }
+
+  private async _refreshIndexDashboardIfVisible(reindex: boolean): Promise<void> {
+    if (!this._indexDashboard.isVisible()) {
+      return;
+    }
+    if (reindex) {
+      await this.cmdIndex(false);
+    }
+    await this._indexDashboard.update(await this._loadIndexDashboardState());
   }
 
   private async _onTodoBoardAction(action: TodoBoardAction): Promise<void> {

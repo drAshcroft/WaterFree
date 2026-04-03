@@ -48,3 +48,17 @@ def handle_index_status(server, params: dict) -> dict:
 
 def handle_get_graph_schema(server, params: dict) -> dict:
     return server._graph.get_graph_schema(project=params.get("project", ""))
+
+
+def handle_get_architecture(server, params: dict) -> dict:
+    repo_path = params.get("repoPath", "")
+    if repo_path:
+        server._graph.index_status(repo_path=repo_path)
+
+    aspects = params.get("aspects")
+    if isinstance(aspects, str):
+        aspects = [aspects]
+    if aspects is not None and not isinstance(aspects, list):
+        raise ValueError("aspects must be a list of strings")
+
+    return server._graph.get_architecture(aspects=aspects)

@@ -307,6 +307,35 @@ class GraphStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_all_edges(self, project: str, edge_type: str = "") -> list[dict]:
+        if edge_type:
+            rows = self._con.execute(
+                "SELECT e.*, "
+                "src.name AS source_name, src.qualified_name AS source_qualified_name, "
+                "src.label AS source_label, src.file_path AS source_file_path, "
+                "tgt.name AS target_name, tgt.qualified_name AS target_qualified_name, "
+                "tgt.label AS target_label, tgt.file_path AS target_file_path "
+                "FROM edges e "
+                "JOIN nodes src ON src.id=e.source_id "
+                "JOIN nodes tgt ON tgt.id=e.target_id "
+                "WHERE e.project=? AND e.type=?",
+                (project, edge_type),
+            ).fetchall()
+        else:
+            rows = self._con.execute(
+                "SELECT e.*, "
+                "src.name AS source_name, src.qualified_name AS source_qualified_name, "
+                "src.label AS source_label, src.file_path AS source_file_path, "
+                "tgt.name AS target_name, tgt.qualified_name AS target_qualified_name, "
+                "tgt.label AS target_label, tgt.file_path AS target_file_path "
+                "FROM edges e "
+                "JOIN nodes src ON src.id=e.source_id "
+                "JOIN nodes tgt ON tgt.id=e.target_id "
+                "WHERE e.project=?",
+                (project,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_inbound_edges(self, project: str, target_id: int, edge_type: str = "") -> list[dict]:
         if edge_type:
             rows = self._con.execute(
