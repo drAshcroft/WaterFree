@@ -598,6 +598,41 @@ button.primary:hover:enabled {
   font-size: 12px;
 }
 
+.mcp-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mcp-summary-question {
+  min-height: 84px;
+}
+
+.mcp-summary-result {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.mcp-summary-result--error {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border) 60%);
+}
+
+.mcp-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.mcp-summary-output {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.5 var(--vscode-editor-font-family, monospace);
+}
+
 /* ── Usage Page ──────────────────────────────────────────────── */
 
 .usage-summary {

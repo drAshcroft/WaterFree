@@ -1731,6 +1731,20 @@ export class WaterFreeController implements vscode.Disposable {
         await this._sendProviderSettings();
         return;
       }
+      case "runQaSummary": {
+        try {
+          const result = await this._bridge.request<Record<string, unknown>>("runQaSummary", {
+            workspacePath: this._workspacePath,
+            fileOrUrl: action.fileOrUrl,
+            question: action.question,
+          });
+          this._sidebarProvider.sendQaSummaryResult(result);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this._sidebarProvider.sendQaSummaryError(message);
+        }
+        return;
+      }
       case "requestUsageStats": {
         const usage = await this._bridge.request<Record<string, unknown>>("getUsageStats", {
           workspacePath: this._workspacePath,

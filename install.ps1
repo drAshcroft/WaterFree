@@ -43,8 +43,16 @@ $BinDir         = Join-Path $InstallRoot "bin"
 $ManifestDir    = Join-Path $InstallRoot "install"
 $ManifestPath   = Join-Path $ManifestDir "manifest.json"
 $LogDir         = Join-Path $InstallRoot "logs\mcp"
+$VsixPath       = Join-Path $RepoRoot "waterfree.vsix"
 $ClaudeConfigPath   = Join-Path $HOME ".claude.json"
 $CodexConfigPath    = Join-Path $HOME ".codex\config.toml"
+
+$CodeCmd = @(
+    "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
+    "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd",
+    (Get-Command code.cmd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if (-not $CodeCmd) { $CodeCmd = "code" }
 
 
 $Servers = @(
@@ -290,11 +298,31 @@ $codexBackup  = Backup-File $CodexConfigPath
 if ($claudeBackup) { Write-Ok "Claude backup: $claudeBackup" }
 if ($codexBackup)  { Write-Ok "Codex backup:  $codexBackup" }
 
+if (Test-Path $VsixPath) {
+    Write-Step "Installing VS Code extension..."
+    $installOut = & $CodeCmd --install-extension $VsixPath --force 2>&1
+    if ($LASTEXITCODE -ne 0 -and ($installOut -match "EBUSY|restart VS Code")) {
+        Write-Warn "Extension is locked. Close VS Code or run 'Developer: Reload Window', then re-run."
+    } elseif ($LASTEXITCODE -ne 0) {
+        throw "VS Code extension install failed (exit $LASTEXITCODE): $installOut"
+    } else {
+        Write-Ok "VS Code extension installed."
+    }
+} else {
+    Write-Warn "No waterfree.vsix found in repo root — skipping VS Code extension install."
+    Write-Warn "Run deploy.ps1 local first to build the VSIX."
+}
+
 Write-Step "Locating WaterFree executable..."
 $sourceExe  = Resolve-WaterfreeExe
 $installExe = Join-Path $BinDir ([System.IO.Path]::GetFileName($sourceExe))
 
 if ((Get-NormalizedFullPath $sourceExe) -ne (Get-NormalizedFullPath $installExe)) {
+    # Stop any running waterfree processes that would lock the file
+    Get-Process | Where-Object { $_.Path -eq $installExe } | ForEach-Object {
+        Write-Warn "Stopping running WaterFree process (pid=$($_.Id))..."
+        $_ | Stop-Process -Force
+    }
     Copy-Item -LiteralPath $sourceExe -Destination $installExe -Force
     Write-Ok "Installed: $installExe"
 } else {

@@ -135,6 +135,7 @@ export type SidebarAction =
   | { type: "requestHistory" }
   | { type: "restoreSession"; file: string }
   | { type: "requestSettings" }
+  | { type: "runQaSummary"; fileOrUrl: string; question: string }
   | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
   | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
   | { type: "savePersonaAssignments"; personaId: string; assignments: PersonaProviderAssignment[] }
@@ -266,6 +267,14 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   sendHistory(sessions: unknown[]): void {
     void this._view?.webview.postMessage({ type: "history", sessions });
+  }
+
+  sendQaSummaryResult(data: unknown): void {
+    void this._view?.webview.postMessage({ type: "qaSummaryResult", data });
+  }
+
+  sendQaSummaryError(message: string): void {
+    void this._view?.webview.postMessage({ type: "qaSummaryError", message });
   }
 
   dispose(): void {
@@ -427,6 +436,20 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         return;
       case "requestSettings":
         this._actionEmitter.fire({ type: "requestSettings" });
+        return;
+      case "runQaSummary":
+        if (
+          typeof message.fileOrUrl === "string" &&
+          message.fileOrUrl.trim() &&
+          typeof message.question === "string" &&
+          message.question.trim()
+        ) {
+          this._actionEmitter.fire({
+            type: "runQaSummary",
+            fileOrUrl: message.fileOrUrl.trim(),
+            question: message.question.trim(),
+          });
+        }
         return;
       case "requestUsageStats":
         this._actionEmitter.fire({ type: "requestUsageStats" });

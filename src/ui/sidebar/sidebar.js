@@ -141,6 +141,11 @@ let state = {
   personaForm: null,   // {personaId, title, tagline, assignments:[{providerId, model, stages}]}
   usageData: null,     // {providers: [], byPersona: [], byStage: []} or null = not loaded yet
   usageLoading: false,
+  mcpSummaryFileOrUrl: typeof savedState.mcpSummaryFileOrUrl === "string" ? savedState.mcpSummaryFileOrUrl : "README.md",
+  mcpSummaryQuestion: typeof savedState.mcpSummaryQuestion === "string" ? savedState.mcpSummaryQuestion : "What are the key points and risks in this file?",
+  mcpSummaryLoading: false,
+  mcpSummaryResult: null,
+  mcpSummaryError: "",
 };
 
 function escapeHtml(value) {
@@ -162,6 +167,8 @@ function persistState() {
     selectedQuickProviderId: state.selectedQuickProviderId,
     selectedQuickModel: state.selectedQuickModel,
     expandedWizard: state.expandedWizard,
+    mcpSummaryFileOrUrl: state.mcpSummaryFileOrUrl,
+    mcpSummaryQuestion: state.mcpSummaryQuestion,
   });
 }
 
@@ -663,6 +670,7 @@ function renderSettingsPanel() {
   if (isProvForm)                              { bodyHtml = renderProviderForm(); }
   else if (isPersonaForm)                     { bodyHtml = renderPersonaForm(); }
   else if (state.settingsPage === "providers") { bodyHtml = renderProvidersPage(); }
+  else if (state.settingsPage === "mcp")       { bodyHtml = renderMcpPage(); }
   else if (state.settingsPage === "personas")  { bodyHtml = renderPersonasPage(); }
   else if (state.settingsPage === "usage")     { bodyHtml = renderUsagePage(); }
   else if (state.settingsPage)                 { bodyHtml = renderSettingsStub(state.settingsPage); }
@@ -750,6 +758,84 @@ function renderProvidersPage() {
     cards,
     '<button type="button" class="primary" data-action="showAddProvider" style="width:100%;margin-top:8px">+ Add Provider</button>',
   ].join("");
+}
+
+function renderMcpPage() {
+  const fileOrUrl = state.mcpSummaryFileOrUrl || "";
+  const question = state.mcpSummaryQuestion || "";
+  const canRun = fileOrUrl.trim() && question.trim() && !state.mcpSummaryLoading;
+  let resultHtml = [
+    '<p class="hint">Run the local <code>waterfree-qa-summary</code> tool against a workspace file or URL.</p>',
+  ].join("");
+
+  if (state.mcpSummaryLoading) {
+    resultHtml = [
+      '<div class="mcp-summary-result">',
+      '<div class="usage-section-title">Running Summary</div>',
+      '<p class="busy">Asking the local summary MCP utility...</p>',
+      '</div>',
+    ].join("");
+  } else if (state.mcpSummaryError) {
+    resultHtml = [
+      '<div class="mcp-summary-result mcp-summary-result--error">',
+      '<div class="usage-section-title">Error</div>',
+      '<pre class="mcp-summary-output">' + escapeHtml(state.mcpSummaryError) + '</pre>',
+      '</div>',
+    ].join("");
+  } else if (state.mcpSummaryResult) {
+    const result = state.mcpSummaryResult;
+    const metaHtml = [
+      result.source ? '<span class="mode-pill">' + escapeHtml(result.source) + '</span>' : '',
+      result.model ? '<span class="mode-pill">' + escapeHtml(result.model) + '</span>' : '',
+      typeof result.source_characters === "number"
+        ? '<span class="mode-pill">' + escapeHtml(String(result.source_characters)) + ' chars</span>'
+        : '',
+      typeof result.chunks_processed === "number"
+        ? '<span class="mode-pill">' + escapeHtml(String(result.chunks_processed)) + ' chunks</span>'
+        : '',
+    ].filter(Boolean).join("");
+    resultHtml = [
+      '<div class="mcp-summary-result">',
+      '<div class="usage-section-title">Latest Result</div>',
+      metaHtml ? '<div class="mcp-summary-meta">' + metaHtml + '</div>' : '',
+      '<pre class="mcp-summary-output">' + escapeHtml(result.response || "No response text returned.") + '</pre>',
+      '</div>',
+    ].join("");
+  }
+
+  return [
+    '<div class="provider-card provider-card--on mcp-summary-card">',
+    '<div class="provider-card-header">',
+    '<div class="provider-card-info">',
+    '<span class="provider-name">Summary MCP Utility</span>',
+    '<span class="provider-type">Try <code>qa_summary</code> with a filename and question.</span>',
+    '</div>',
+    '<span class="mode-pill">Local Ollama</span>',
+    '</div>',
+    '<div class="field-group">',
+    '<label class="field-label" for="mcp-summary-source">Filename or URL</label>',
+    '<input type="text" id="mcp-summary-source" class="key-input" value="' + escapeHtml(fileOrUrl) + '" placeholder="README.md">',
+    '</div>',
+    '<div class="field-group">',
+    '<label class="field-label" for="mcp-summary-question">Question</label>',
+    '<textarea id="mcp-summary-question" class="mcp-summary-question" placeholder="What should the summary focus on?">' + escapeHtml(question) + '</textarea>',
+    '</div>',
+    '<div class="button-row">',
+    '<button type="button" class="primary" data-action="runQaSummary"' + (canRun ? "" : " disabled") + '>Try Summary</button>',
+    '</div>',
+    resultHtml,
+    '</div>',
+  ].join("");
+}
+
+function syncMcpSummaryRunButton() {
+  const runButton = document.querySelector('[data-action="runQaSummary"]');
+  if (!runButton) { return; }
+  runButton.disabled = !(
+    (state.mcpSummaryFileOrUrl || "").trim() &&
+    (state.mcpSummaryQuestion || "").trim() &&
+    !state.mcpSummaryLoading
+  );
 }
 
 function renderProviderForm() {
@@ -1148,6 +1234,22 @@ function render() {
   if (debugReasonSelect) {
     debugReasonSelect.addEventListener("change", function(e) { state.draftDebugReason = e.target.value; persistState(); });
   }
+  const mcpSummarySourceInput = document.getElementById("mcp-summary-source");
+  if (mcpSummarySourceInput) {
+    mcpSummarySourceInput.addEventListener("input", function(e) {
+      state.mcpSummaryFileOrUrl = e.target.value;
+      persistState();
+      syncMcpSummaryRunButton();
+    });
+  }
+  const mcpSummaryQuestionInput = document.getElementById("mcp-summary-question");
+  if (mcpSummaryQuestionInput) {
+    mcpSummaryQuestionInput.addEventListener("input", function(e) {
+      state.mcpSummaryQuestion = e.target.value;
+      persistState();
+      syncMcpSummaryRunButton();
+    });
+  }
   if (state.settingsOpen && (state.providerForm || state.personaForm)) {
     wireSettingsForms();
   }
@@ -1423,6 +1525,21 @@ root.addEventListener("click", function(event) {
     return;
   }
 
+  if (action === "runQaSummary") {
+    const fileOrUrl = (state.mcpSummaryFileOrUrl || "").trim();
+    const question = (state.mcpSummaryQuestion || "").trim();
+    if (!fileOrUrl || !question || state.mcpSummaryLoading) { return; }
+    state.mcpSummaryLoading = true;
+    state.mcpSummaryError = "";
+    vscode.postMessage({
+      type: "runQaSummary",
+      fileOrUrl: fileOrUrl,
+      question: question,
+    });
+    render();
+    return;
+  }
+
   if (action === "toggleWizard") {
     const wizardId = el.getAttribute("data-wizard-id");
     if (wizardId) {
@@ -1568,6 +1685,20 @@ window.addEventListener("message", function(event) {
     state.usageData = message.data || { providers: [], byPersona: [], byStage: [] };
     state.usageLoading = false;
     if (state.settingsOpen && state.settingsPage === "usage") { render(); }
+    return;
+  }
+  if (message.type === "qaSummaryResult") {
+    state.mcpSummaryLoading = false;
+    state.mcpSummaryError = "";
+    state.mcpSummaryResult = message.data || null;
+    if (state.settingsOpen && state.settingsPage === "mcp") { render(); }
+    return;
+  }
+  if (message.type === "qaSummaryError") {
+    state.mcpSummaryLoading = false;
+    state.mcpSummaryResult = null;
+    state.mcpSummaryError = typeof message.message === "string" ? message.message : "Summary MCP request failed.";
+    if (state.settingsOpen && state.settingsPage === "mcp") { render(); }
     return;
   }
   if (message.type === "state") {

@@ -19,6 +19,7 @@ Methods:
   redirectTask         {taskId, instruction, sessionId}     → Task
   skipTask             {taskId, sessionId}                  → PlanDocument
   queueTodoInstruction {file, line, instruction, sessionId} → {queued, taskId}
+  runQaSummary         {workspacePath, fileOrUrl, question} → QASummaryResult
   listTasks            {workspacePath, ...filters}          → {tasks, phases, updatedAt, path}
   getTaskBoard         {workspacePath}                      → {tasks, phases, updatedAt, path}
   searchTasks          {workspacePath, query, limit}        → {tasks, count, path}
@@ -198,6 +199,7 @@ from backend.handlers.memory_handler import (
     handle_add_knowledge_entry,
     handle_delete_knowledge_entry,
 )
+from backend.handlers.qa_summary_handler import handle_run_qa_summary
 
 
 class Server:
@@ -437,6 +439,7 @@ class Server:
         "redirectTask":         handle_redirect_task,
         "skipTask":             handle_skip_task,
         "queueTodoInstruction": handle_queue_todo_instruction,
+        "runQaSummary":         handle_run_qa_summary,
         "listTasks":            handle_list_tasks,
         "getTaskBoard":         handle_get_task_board,
         "searchTasks":          handle_search_tasks,
