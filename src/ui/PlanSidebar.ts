@@ -437,6 +437,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
       case "requestSettings":
         this._actionEmitter.fire({ type: "requestSettings" });
         return;
+      case "pickQaSummaryFile":
+        void this._pickQaSummaryFile();
+        return;
       case "runQaSummary":
         if (
           typeof message.fileOrUrl === "string" &&
@@ -511,6 +514,30 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
     }
   }
 
+  private async _pickQaSummaryFile(): Promise<void> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      defaultUri: workspaceFolder?.uri,
+      openLabel: "Select File",
+      title: "Select a file to summarize",
+    });
+    const selectedPath = picked?.[0]?.fsPath;
+    if (!selectedPath || !this._view) {
+      return;
+    }
+
+    const displayPath = workspaceFolder
+      ? toWorkspaceRelativePath(workspaceFolder.uri.fsPath, selectedPath)
+      : selectedPath;
+    void this._view.webview.postMessage({
+      type: "qaSummarySourceSelected",
+      fileOrUrl: displayPath,
+    });
+  }
+
   private _getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
     const styleUri = webview.asWebviewUri(
@@ -560,6 +587,18 @@ function getNonce(): string {
     value += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return value;
+}
+
+function toWorkspaceRelativePath(workspaceRoot: string, selectedPath: string): string {
+  const relativePath = path.relative(workspaceRoot, selectedPath);
+  if (
+    relativePath &&
+    !relativePath.startsWith("..") &&
+    !path.isAbsolute(relativePath)
+  ) {
+    return relativePath;
+  }
+  return selectedPath;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

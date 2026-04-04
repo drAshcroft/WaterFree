@@ -157,6 +157,160 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function renderMcpSummaryInline(value) {
+  return String(value || "")
+    .split(/(`[^`\n]+`)/g)
+    .map(function(segment) {
+      if (/^`[^`\n]+`$/.test(segment)) {
+        return "<code>" + escapeHtml(segment.slice(1, -1)) + "</code>";
+      }
+      return escapeHtml(segment)
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    })
+    .join("");
+}
+
+function renderMcpSummaryOutput(value) {
+  const text = String(value || "").replace(/\r\n/g, "\n").trim();
+  if (!text) {
+    return '<p class="mcp-summary-empty">No response text returned.</p>';
+  }
+
+  const lines = text.split("\n");
+  const html = [];
+  let paragraphLines = [];
+  let listTag = "";
+  let codeFenceOpen = false;
+  let codeLines = [];
+
+  function flushParagraph() {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+    html.push(
+      "<p>" + renderMcpSummaryInline(paragraphLines.join(" ").trim()) + "</p>"
+    );
+    paragraphLines = [];
+  }
+
+  function flushList() {
+    if (!listTag) {
+      return;
+    }
+    html.push("</" + listTag + ">");
+    listTag = "";
+  }
+
+  function ensureList(tag) {
+    if (listTag === tag) {
+      return;
+    }
+    flushList();
+    listTag = tag;
+    html.push("<" + tag + ">");
+  }
+
+  function flushCodeFence() {
+    if (!codeFenceOpen) {
+      return;
+    }
+    html.push(
+      '<pre class="mcp-summary-code"><code>' +
+      escapeHtml(codeLines.join("\n")) +
+      "</code></pre>"
+    );
+    codeFenceOpen = false;
+    codeLines = [];
+  }
+
+  lines.forEach(function(rawLine) {
+    const line = rawLine.replace(/\s+$/, "");
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (codeFenceOpen) {
+        flushCodeFence();
+      } else {
+        flushParagraph();
+        flushList();
+        codeFenceOpen = true;
+        codeLines = [];
+      }
+      return;
+    }
+
+    if (codeFenceOpen) {
+      codeLines.push(line);
+      return;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(4, 2 + headingMatch[1].length);
+      html.push(
+        "<h" + level + ' class="mcp-summary-heading">' +
+        renderMcpSummaryInline(headingMatch[2].trim()) +
+        "</h" + level + ">"
+      );
+      return;
+    }
+
+    const numberedSectionMatch = trimmed.match(/^(\d+)[.)]\s+(.+?)\s*:?$/);
+    if (
+      numberedSectionMatch &&
+      /^[A-Z]/.test(numberedSectionMatch[2]) &&
+      !/[.!?]$/.test(numberedSectionMatch[2])
+    ) {
+      flushParagraph();
+      flushList();
+      html.push(
+        '<h3 class="mcp-summary-heading">' +
+        renderMcpSummaryInline(numberedSectionMatch[2]) +
+        "</h3>"
+      );
+      return;
+    }
+
+    const bulletMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (bulletMatch) {
+      flushParagraph();
+      ensureList("ul");
+      html.push("<li>" + renderMcpSummaryInline(bulletMatch[1]) + "</li>");
+      return;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      ensureList("ol");
+      html.push("<li>" + renderMcpSummaryInline(orderedMatch[1]) + "</li>");
+      return;
+    }
+
+    paragraphLines.push(trimmed);
+  });
+
+  flushCodeFence();
+  flushParagraph();
+  flushList();
+
+  return html.join("");
+}
+
+function resetMcpSummaryResult() {
+  state.mcpSummaryError = "";
+  state.mcpSummaryResult = null;
+}
+
 function persistState() {
   vscode.setState({
     draftGoal: state.draftGoal,
@@ -765,7 +919,7 @@ function renderMcpPage() {
   const question = state.mcpSummaryQuestion || "";
   const canRun = fileOrUrl.trim() && question.trim() && !state.mcpSummaryLoading;
   let resultHtml = [
-    '<p class="hint">Run the local <code>waterfree-qa-summary</code> tool against a workspace file or URL.</p>',
+    '<p class="hint">Pick a file, ask a question, and run the local <code>waterfree-qa-summary</code> tool.</p>',
   ].join("");
 
   if (state.mcpSummaryLoading) {
@@ -798,7 +952,7 @@ function renderMcpPage() {
       '<div class="mcp-summary-result">',
       '<div class="usage-section-title">Latest Result</div>',
       metaHtml ? '<div class="mcp-summary-meta">' + metaHtml + '</div>' : '',
-      '<pre class="mcp-summary-output">' + escapeHtml(result.response || "No response text returned.") + '</pre>',
+      '<div class="mcp-summary-output">' + renderMcpSummaryOutput(result.response || "") + '</div>',
       '</div>',
     ].join("");
   }
@@ -813,8 +967,11 @@ function renderMcpPage() {
     '<span class="mode-pill">Local Ollama</span>',
     '</div>',
     '<div class="field-group">',
-    '<label class="field-label" for="mcp-summary-source">Filename or URL</label>',
-    '<input type="text" id="mcp-summary-source" class="key-input" value="' + escapeHtml(fileOrUrl) + '" placeholder="README.md">',
+    '<label class="field-label" for="mcp-summary-source">Source File</label>',
+    '<div class="mcp-summary-source-row">',
+    '<input type="text" id="mcp-summary-source" class="key-input" value="' + escapeHtml(fileOrUrl) + '" placeholder="Select a file or paste a URL">',
+    '<button type="button" data-action="pickQaSummaryFile">Browse</button>',
+    '</div>',
     '</div>',
     '<div class="field-group">',
     '<label class="field-label" for="mcp-summary-question">Question</label>',
@@ -1238,6 +1395,7 @@ function render() {
   if (mcpSummarySourceInput) {
     mcpSummarySourceInput.addEventListener("input", function(e) {
       state.mcpSummaryFileOrUrl = e.target.value;
+      resetMcpSummaryResult();
       persistState();
       syncMcpSummaryRunButton();
     });
@@ -1246,6 +1404,7 @@ function render() {
   if (mcpSummaryQuestionInput) {
     mcpSummaryQuestionInput.addEventListener("input", function(e) {
       state.mcpSummaryQuestion = e.target.value;
+      resetMcpSummaryResult();
       persistState();
       syncMcpSummaryRunButton();
     });
@@ -1540,6 +1699,13 @@ root.addEventListener("click", function(event) {
     return;
   }
 
+  if (action === "pickQaSummaryFile") {
+    if (!state.mcpSummaryLoading) {
+      vscode.postMessage({ type: "pickQaSummaryFile" });
+    }
+    return;
+  }
+
   if (action === "toggleWizard") {
     const wizardId = el.getAttribute("data-wizard-id");
     if (wizardId) {
@@ -1699,6 +1865,17 @@ window.addEventListener("message", function(event) {
     state.mcpSummaryResult = null;
     state.mcpSummaryError = typeof message.message === "string" ? message.message : "Summary MCP request failed.";
     if (state.settingsOpen && state.settingsPage === "mcp") { render(); }
+    return;
+  }
+  if (message.type === "qaSummarySourceSelected") {
+    if (typeof message.fileOrUrl === "string" && message.fileOrUrl.trim()) {
+      state.mcpSummaryFileOrUrl = message.fileOrUrl;
+      resetMcpSummaryResult();
+      persistState();
+      if (state.settingsOpen && state.settingsPage === "mcp") {
+        render();
+      }
+    }
     return;
   }
   if (message.type === "state") {

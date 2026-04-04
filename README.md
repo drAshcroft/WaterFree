@@ -159,7 +159,8 @@ The AI and human are tightly coupled at every step — which is exactly what bre
 
 1. Install the extension
 2. Run `WaterFree: Setup` and enter your Anthropic API key when prompted
-3. Optional: use `.\deploy.ps1` only as a developer helper for local MCP registration while the production installer is being built. See [docs/16_CUSTOMER_INSTALLER_PLAN.md](docs/16_CUSTOMER_INSTALLER_PLAN.md).
+3. Run `.\install.ps1` to install the runtime and register MCP servers (Claude/Codex). Use `-SkipVSCode` if you only want MCP servers.
+4. To build an MSI installer (no Claude/Codex CLI required), run `.\installer\build-installer.ps1`. See `installer\README.md`.
 4. Open a workspace and run **WaterFree: Start Session** from the command palette (`Ctrl+Shift+P`)
 
 

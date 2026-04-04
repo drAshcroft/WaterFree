@@ -1,0 +1,29 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "installer", "installer", "{1860D2E4-5C43-71D5-59A5-599A4DE1DF67}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WaterFreeInstallerHelper", "installer\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj", "{C633D457-8CB8-1D8F-3CB6-73E8074CD93C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C633D457-8CB8-1D8F-3CB6-73E8074CD93C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C633D457-8CB8-1D8F-3CB6-73E8074CD93C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C633D457-8CB8-1D8F-3CB6-73E8074CD93C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C633D457-8CB8-1D8F-3CB6-73E8074CD93C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C633D457-8CB8-1D8F-3CB6-73E8074CD93C} = {1860D2E4-5C43-71D5-59A5-599A4DE1DF67}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {6EA0AD0C-26FD-4D1E-A709-AADDC1B7455F}
+	EndGlobalSection
+EndGlobal

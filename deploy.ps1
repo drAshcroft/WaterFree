@@ -48,6 +48,7 @@ $McpServers = @(
     @{ name = "waterfree-index";     mode = "index" }
     @{ name = "waterfree-knowledge"; mode = "knowledge" }
     @{ name = "waterfree-todos";     mode = "todos" }
+    @{ name = "waterfree-debug";     mode = "debug" }
     @{ name = "waterfree-testing";   mode = "testing" }
     @{ name = "waterfree-qa-summary"; mode = "qa-summary" }
 )

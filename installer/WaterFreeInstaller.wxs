@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="WaterFree"
+    Manufacturer="WaterFree"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{D9B41B5B-30A8-4E37-8C8D-0E67E81A6BA4}"
+    InstallScope="perUser"
+    InstallPrivileges="limited">
+    <MajorUpgrade AllowDowngrades="no" />
+    <MediaTemplate />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLDIR" Name="WaterFree">
+        <Directory Id="BinDir" Name="bin">
+          <Component Id="WaterfreeMcpExe" Guid="*">
+            <File Id="WaterfreeMcpExeFile" Source="$(var.PayloadDir)\waterfree-mcp.exe" KeyPath="yes" />
+          </Component>
+          <Component Id="InstallerHelper" Guid="*">
+            <File Id="InstallerHelperExe" Source="$(var.PayloadDir)\waterfree-installer-helper.exe" KeyPath="yes" />
+          </Component>
+        </Directory>
+        <Directory Id="LogsDir" Name="logs">
+          <Directory Id="InstallerLogsDir" Name="installer">
+            <Component Id="InstallerLogFolder" Guid="*">
+              <CreateFolder />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="WaterFree" Level="1">
+      <ComponentRef Id="WaterfreeMcpExe" />
+      <ComponentRef Id="InstallerHelper" />
+      <ComponentRef Id="InstallerLogFolder" />
+    </Feature>
+
+    <CustomAction Id="SetRunHelper" Property="RunInstallerHelper" Value="--install-dir &quot;[INSTALLDIR]&quot;" />
+    <CustomAction Id="RunInstallerHelper" FileKey="InstallerHelperExe" ExeCommand="[RunInstallerHelper]" Execute="deferred" Impersonate="yes" Return="check" />
+
+    <CustomAction Id="SetRunHelperUninstall" Property="RunInstallerHelperUninstall" Value="--uninstall --install-dir &quot;[INSTALLDIR]&quot;" />
+    <CustomAction Id="RunInstallerHelperUninstall" FileKey="InstallerHelperExe" ExeCommand="[RunInstallerHelperUninstall]" Execute="deferred" Impersonate="yes" Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="SetRunHelper" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="RunInstallerHelper" After="SetRunHelper">NOT Installed</Custom>
+
+      <Custom Action="SetRunHelperUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RunInstallerHelperUninstall" After="SetRunHelperUninstall">REMOVE="ALL"</Custom>
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

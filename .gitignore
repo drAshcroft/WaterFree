@@ -151,3 +151,4 @@ tmp-object.json
 /.tmp-codex-home
 /.tmp
 /build
+/installer/WaterFreeInstallerHelper/obj

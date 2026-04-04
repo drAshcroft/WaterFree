@@ -26,6 +26,8 @@
 param(
     [string]$InstallRoot = (Join-Path $HOME ".waterfree"),
     [string]$ExePath = "",
+    [switch]$SkipVSCode,
+    [switch]$NoBuild,
     [switch]$SkipCodex,
     [switch]$SkipClaude
 )
@@ -43,6 +45,7 @@ $BinDir         = Join-Path $InstallRoot "bin"
 $ManifestDir    = Join-Path $InstallRoot "install"
 $ManifestPath   = Join-Path $ManifestDir "manifest.json"
 $LogDir         = Join-Path $InstallRoot "logs\mcp"
+$InstallerLogDir = Join-Path $InstallRoot "logs\installer"
 $VsixPath       = Join-Path $RepoRoot "waterfree.vsix"
 $ClaudeConfigPath   = Join-Path $HOME ".claude.json"
 $CodexConfigPath    = Join-Path $HOME ".codex\config.toml"
@@ -111,6 +114,19 @@ function Backup-File([string]$Path) {
     return $dest
 }
 
+function Start-InstallTranscript {
+    Ensure-Directory $InstallerLogDir
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $logPath = Join-Path $InstallerLogDir "install-$timestamp.log"
+    Start-Transcript -Path $logPath -Append | Out-Null
+    Write-Ok "Installer log: $logPath"
+    return $logPath
+}
+
+function Stop-InstallTranscript {
+    try { Stop-Transcript | Out-Null } catch { }
+}
+
 # ---------------------------------------------------------------------------
 # Find the pre-built executable
 # ---------------------------------------------------------------------------
@@ -138,10 +154,7 @@ function Resolve-WaterfreeExe {
         if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
     }
 
-    throw @"
-WaterFree executable not found ($exeName).
-Run build.ps1 first, or pass -ExePath explicitly.
-"@
+    return $null
 }
 
 # ---------------------------------------------------------------------------
@@ -233,6 +246,11 @@ function Register-Codex([string]$InstallExe) {
         Invoke-BestEffortNative -Description "codex remove $($s.name)" -Command { & $codex.Source mcp remove $s.name }
         & $codex.Source mcp add $s.name -- $InstallExe mcp $s.mode 2>&1 | Out-Null
         Assert-LastExitCode "codex mcp add $($s.name)"
+
+        $verify = & $codex.Source mcp get $s.name --json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "codex mcp get $($s.name) failed: $verify"
+        }
         Write-Ok "Codex: $($s.name)"
     }
 }
@@ -248,6 +266,11 @@ function Register-Claude([string]$InstallExe) {
             Invoke-BestEffortNative -Description "claude remove $($s.name)" -Command { & $claude.Source mcp remove $s.name }
             & $claude.Source mcp add --scope user $s.name -- $InstallExe mcp $s.mode 2>&1 | Out-Null
             Assert-LastExitCode "claude mcp add $($s.name)"
+
+            $verify = & $claude.Source mcp get $s.name --json 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "claude mcp get $($s.name) failed: $verify"
+            }
             Write-Ok "Claude: $($s.name)"
         }
         return
@@ -291,6 +314,9 @@ Ensure-Directory $InstallRoot
 Ensure-Directory $ManifestDir
 Ensure-Directory $LogDir
 Ensure-Directory $BinDir
+Ensure-Directory $InstallerLogDir
+
+$installerLog = Start-InstallTranscript
 
 Write-Step "Backing up config files..."
 $claudeBackup = Backup-File $ClaudeConfigPath
@@ -298,7 +324,7 @@ $codexBackup  = Backup-File $CodexConfigPath
 if ($claudeBackup) { Write-Ok "Claude backup: $claudeBackup" }
 if ($codexBackup)  { Write-Ok "Codex backup:  $codexBackup" }
 
-if (Test-Path $VsixPath) {
+if (-not $SkipVSCode -and (Test-Path $VsixPath)) {
     Write-Step "Installing VS Code extension..."
     $installOut = & $CodeCmd --install-extension $VsixPath --force 2>&1
     if ($LASTEXITCODE -ne 0 -and ($installOut -match "EBUSY|restart VS Code")) {
@@ -308,13 +334,29 @@ if (Test-Path $VsixPath) {
     } else {
         Write-Ok "VS Code extension installed."
     }
-} else {
+} elseif (-not $SkipVSCode) {
     Write-Warn "No waterfree.vsix found in repo root — skipping VS Code extension install."
     Write-Warn "Run deploy.ps1 local first to build the VSIX."
 }
 
 Write-Step "Locating WaterFree executable..."
 $sourceExe  = Resolve-WaterfreeExe
+if (-not $sourceExe) {
+    if ($NoBuild) {
+        Stop-InstallTranscript
+        throw "WaterFree executable not found. Run build.ps1 first or pass -ExePath explicitly."
+    }
+
+    Write-Step "Executable missing. Building with build.ps1..."
+    & (Join-Path $RepoRoot "build.ps1")
+    Assert-LastExitCode "build.ps1"
+
+    $sourceExe = Resolve-WaterfreeExe
+    if (-not $sourceExe) {
+        Stop-InstallTranscript
+        throw "Build succeeded but executable still not found."
+    }
+}
 $installExe = Join-Path $BinDir ([System.IO.Path]::GetFileName($sourceExe))
 
 if ((Get-NormalizedFullPath $sourceExe) -ne (Get-NormalizedFullPath $installExe)) {
@@ -349,3 +391,4 @@ if (-not $SkipCodex) { Register-Codex  -InstallExe $installExe }
 if (-not $SkipClaude) { Register-Claude -InstallExe $installExe }
 
 Write-Host "`nInstall complete." -ForegroundColor Green
+Stop-InstallTranscript
