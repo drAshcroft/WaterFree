@@ -1,0 +1,25 @@
+<Project Sdk="WixToolset.Sdk/4.0.5">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>WaterFreeSetup</OutputName>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <PayloadDir>$(MSBuildProjectDirectory)\obj\payload</PayloadDir>
+    <BackendExe>$(MSBuildProjectDirectory)\..\bin\waterfree-win32-x64.exe</BackendExe>
+    <VsixPath>$(MSBuildProjectDirectory)\..\waterfree.vsix</VsixPath>
+    <DefineConstants>PayloadDir=$(PayloadDir);ProductVersion=$(ProductVersion)</DefineConstants>
+  </PropertyGroup>
+
+  <Target Name="BuildPayload" BeforeTargets="CoreCompile">
+    <MakeDir Directories="$(PayloadDir)" />
+
+    <Error Condition="!Exists('$(BackendExe)')" Text="Missing backend exe: $(BackendExe). Build the backend first (PyInstaller) before building the MSI." />
+    <Error Condition="!Exists('$(VsixPath)')" Text="Missing VSIX: $(VsixPath). Build the extension before building the MSI." />
+
+    <Copy SourceFiles="$(BackendExe)" DestinationFiles="$(PayloadDir)\waterfree-mcp.exe" />
+
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish&quot;" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish\waterfree-installer-helper.exe" DestinationFiles="$(PayloadDir)\waterfree-installer-helper.exe" />
+
+    <Copy SourceFiles="$(VsixPath)" DestinationFiles="$(PayloadDir)\waterfree.vsix" />
+  </Target>
+</Project>

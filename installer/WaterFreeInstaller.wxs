@@ -5,49 +5,67 @@
     Manufacturer="WaterFree"
     Version="$(var.ProductVersion)"
     UpgradeCode="{D9B41B5B-30A8-4E37-8C8D-0E67E81A6BA4}"
-    InstallScope="perUser"
-    InstallPrivileges="limited">
-    <MajorUpgrade AllowDowngrades="no" />
+    Scope="perUser">
+    <MajorUpgrade AllowDowngrades="no" DowngradeErrorMessage="A newer version of WaterFree is already installed." />
     <MediaTemplate />
 
     <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="INSTALLDIR" Name="WaterFree">
+        <Directory Id="INSTALLDIR" Name="WaterFree">
         <Directory Id="BinDir" Name="bin">
-          <Component Id="WaterfreeMcpExe" Guid="*">
-            <File Id="WaterfreeMcpExeFile" Source="$(var.PayloadDir)\waterfree-mcp.exe" KeyPath="yes" />
+          <Component Id="WaterfreeMcpExe" Guid="{5A4E2E1C-1C9E-4C6B-9B8A-18B1F5F9D4A1}">
+            <File Id="WaterfreeMcpExeFile" Source="$(var.PayloadDir)\waterfree-mcp.exe" KeyPath="no" />
+            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="WaterfreeMcpExe" Type="string" Value="1" KeyPath="yes" />
           </Component>
-          <Component Id="InstallerHelper" Guid="*">
-            <File Id="InstallerHelperExe" Source="$(var.PayloadDir)\waterfree-installer-helper.exe" KeyPath="yes" />
+          <Component Id="InstallerHelper" Guid="{8C2B3F4D-7A8F-4D2D-9F6A-3D4A8E6F1B21}">
+            <File Id="InstallerHelperExe" Source="$(var.PayloadDir)\waterfree-installer-helper.exe" KeyPath="no" />
+            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="InstallerHelperExe" Type="string" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+        <Directory Id="VsixDir" Name="vsix">
+          <Component Id="VsixPayload" Guid="{B1D2C3E4-5F67-4B8C-9A1B-2C3D4E5F6A70}">
+            <File Id="VsixFile" Source="$(var.PayloadDir)\waterfree.vsix" KeyPath="no" />
+            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="VsixPayload" Type="string" Value="1" KeyPath="yes" />
           </Component>
         </Directory>
         <Directory Id="LogsDir" Name="logs">
           <Directory Id="InstallerLogsDir" Name="installer">
-            <Component Id="InstallerLogFolder" Guid="*">
+            <Component Id="InstallerLogFolder" Guid="{7B8B8D2A-1D6C-4A5C-9E1A-5E6E0D3A5A31}">
               <CreateFolder />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="InstallerLogFolder" Type="string" Value="1" KeyPath="yes" />
             </Component>
           </Directory>
         </Directory>
+        <Component Id="CleanupFolders" Guid="{0A5B8E2D-5D9F-4E6E-9A42-7B2D1C9E4C3A}">
+          <RemoveFolder Id="RemoveBinDir" Directory="BinDir" On="uninstall" />
+          <RemoveFolder Id="RemoveVsixDir" Directory="VsixDir" On="uninstall" />
+          <RemoveFolder Id="RemoveInstallerLogsDir" Directory="InstallerLogsDir" On="uninstall" />
+          <RemoveFolder Id="RemoveLogsDir" Directory="LogsDir" On="uninstall" />
+          <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="CleanupFolders" Type="string" Value="1" KeyPath="yes" />
+        </Component>
       </Directory>
     </StandardDirectory>
 
     <Feature Id="MainFeature" Title="WaterFree" Level="1">
       <ComponentRef Id="WaterfreeMcpExe" />
       <ComponentRef Id="InstallerHelper" />
+      <ComponentRef Id="VsixPayload" />
       <ComponentRef Id="InstallerLogFolder" />
+      <ComponentRef Id="CleanupFolders" />
     </Feature>
 
-    <CustomAction Id="SetRunHelper" Property="RunInstallerHelper" Value="--install-dir &quot;[INSTALLDIR]&quot;" />
-    <CustomAction Id="RunInstallerHelper" FileKey="InstallerHelperExe" ExeCommand="[RunInstallerHelper]" Execute="deferred" Impersonate="yes" Return="check" />
+    <CustomAction Id="SetRunHelper" Property="RunInstallerHelper" Value="--install-dir &quot;[INSTALLDIR].&quot; --vsix &quot;[INSTALLDIR]vsix\waterfree.vsix&quot; --log &quot;[TempFolder]WaterFreeInstaller-helper.log&quot;" />
+    <CustomAction Id="RunInstallerHelper" FileRef="InstallerHelperExe" ExeCommand="[RunInstallerHelper]" Execute="deferred" Impersonate="yes" Return="check" />
 
-    <CustomAction Id="SetRunHelperUninstall" Property="RunInstallerHelperUninstall" Value="--uninstall --install-dir &quot;[INSTALLDIR]&quot;" />
-    <CustomAction Id="RunInstallerHelperUninstall" FileKey="InstallerHelperExe" ExeCommand="[RunInstallerHelperUninstall]" Execute="deferred" Impersonate="yes" Return="check" />
+    <CustomAction Id="SetRunHelperUninstall" Property="RunInstallerHelperUninstall" Value="--uninstall --install-dir &quot;[INSTALLDIR].&quot;" />
+    <CustomAction Id="RunInstallerHelperUninstall" FileRef="InstallerHelperExe" ExeCommand="[RunInstallerHelperUninstall]" Execute="deferred" Impersonate="yes" Return="check" />
 
     <InstallExecuteSequence>
-      <Custom Action="SetRunHelper" After="InstallFiles">NOT Installed</Custom>
-      <Custom Action="RunInstallerHelper" After="SetRunHelper">NOT Installed</Custom>
+      <Custom Action="SetRunHelper" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="RunInstallerHelper" After="SetRunHelper" Condition="NOT Installed" />
 
-      <Custom Action="SetRunHelperUninstall" Before="RemoveFiles">REMOVE="ALL"</Custom>
-      <Custom Action="RunInstallerHelperUninstall" After="SetRunHelperUninstall">REMOVE="ALL"</Custom>
+      <Custom Action="SetRunHelperUninstall" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RunInstallerHelperUninstall" After="SetRunHelperUninstall" Condition="REMOVE=&quot;ALL&quot;" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

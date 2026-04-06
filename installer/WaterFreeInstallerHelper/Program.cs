@@ -30,6 +30,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         var installDir = GetArgValue(args, "--install-dir");
+        var vsixPath = GetArgValue(args, "--vsix");
+        var logPath = GetArgValue(args, "--log");
         var uninstall = HasArg(args, "--uninstall");
         if (string.IsNullOrWhiteSpace(installDir))
         {
@@ -38,7 +40,7 @@ internal static class Program
         }
 
         installDir = Path.GetFullPath(installDir);
-        var log = new InstallerLog(installDir);
+        var log = new InstallerLog(installDir, logPath);
         log.Info($"Start {(uninstall ? "uninstall" : "install")} helper. installDir={installDir}");
 
         try
@@ -60,6 +62,7 @@ internal static class Program
 
             UpsertCodexConfig(log, exePath);
             UpsertClaudeConfig(log, exePath);
+            InstallVsixIfPossible(log, vsixPath);
             SmokeTest(log, exePath);
 
             log.Info("Install helper completed successfully.");
@@ -359,6 +362,82 @@ internal static class Program
         }
     }
 
+    private static void InstallVsixIfPossible(InstallerLog log, string? vsixPath)
+    {
+        if (string.IsNullOrWhiteSpace(vsixPath))
+        {
+            log.Info("VSIX path not provided; skipping VS Code install.");
+            return;
+        }
+
+        vsixPath = Path.GetFullPath(vsixPath);
+        if (!File.Exists(vsixPath))
+        {
+            log.Info($"VSIX not found; skipping VS Code install: {vsixPath}");
+            return;
+        }
+
+        var codeCmd = FindVsCodeCommand();
+        if (string.IsNullOrWhiteSpace(codeCmd))
+        {
+            log.Info("VS Code CLI not found; skipping VSIX install.");
+            return;
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = codeCmd,
+            Arguments = $"--install-extension \"{vsixPath}\" --force",
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
+
+        using var proc = new Process { StartInfo = psi };
+        proc.Start();
+        proc.WaitForExit();
+
+        var stdout = proc.StandardOutput.ReadToEnd();
+        var stderr = proc.StandardError.ReadToEnd();
+        if (proc.ExitCode != 0)
+        {
+            log.Info($"VS Code extension install failed (non-fatal): exit={proc.ExitCode} stdout={stdout} stderr={stderr}");
+            return;
+        }
+
+        log.Info("VS Code extension installed.");
+    }
+
+    private static string? FindVsCodeCommand()
+    {
+        var candidates = new List<string>();
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+        candidates.Add(Path.Combine(localAppData, "Programs", "Microsoft VS Code", "bin", "code.cmd"));
+        candidates.Add(Path.Combine(programFiles, "Microsoft VS Code", "bin", "code.cmd"));
+
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var segment in path.Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(segment)) continue;
+            candidates.Add(Path.Combine(segment.Trim(), "code.cmd"));
+            candidates.Add(Path.Combine(segment.Trim(), "code.exe"));
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     private static string EscapeToml(string value)
     {
         return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -392,12 +471,26 @@ internal sealed class InstallerLog : IDisposable
     private readonly string _logPath;
     private readonly StreamWriter _writer;
 
-    public InstallerLog(string installDir)
+    public InstallerLog(string installDir, string? logPathOverride)
     {
         var logDir = Path.Combine(installDir, "logs", "installer");
-        Directory.CreateDirectory(logDir);
         var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-        _logPath = Path.Combine(logDir, $"installer-{stamp}.log");
+        var defaultLogPath = Path.Combine(logDir, $"installer-{stamp}.log");
+
+        _logPath = !string.IsNullOrWhiteSpace(logPathOverride)
+            ? Path.GetFullPath(logPathOverride)
+            : defaultLogPath;
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_logPath)!);
+        }
+        catch
+        {
+            Directory.CreateDirectory(logDir);
+            _logPath = defaultLogPath;
+        }
+
         _writer = new StreamWriter(_logPath, append: true, encoding: new UTF8Encoding(false));
         _writer.AutoFlush = true;
         Info($"Log file: {_logPath}");
