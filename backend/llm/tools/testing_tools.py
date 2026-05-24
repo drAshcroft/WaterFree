@@ -60,13 +60,13 @@ def _summary(result) -> str:
 
 def testing_tool_descriptors() -> list[ToolDescriptor]:
     def list_tests(_args: dict, workspace_path: str) -> dict:
-        from backend.mcp_testing import detect_runner
+        from backend.testing.runners import detect_runner
 
         tests = detect_runner(workspace_path).list_tests(workspace_path)
         return {"tests": tests, "count": len(tests)}
 
     def run_tests(_args: dict, workspace_path: str) -> dict:
-        from backend.mcp_testing import detect_runner
+        from backend.testing.runners import detect_runner
 
         result = detect_runner(workspace_path).run_all(workspace_path)
         _write_log(workspace_path, getattr(result, "raw_output", ""))
@@ -75,7 +75,7 @@ def testing_tool_descriptors() -> list[ToolDescriptor]:
         return payload
 
     def run_test(args: dict, workspace_path: str) -> dict:
-        from backend.mcp_testing import detect_runner
+        from backend.testing.runners import detect_runner
 
         test_name = str(args.get("testName", ""))
         result = detect_runner(workspace_path).run_one(workspace_path, test_name)

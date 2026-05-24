@@ -13,7 +13,7 @@ const config = {
   format: "cjs",
   platform: "node",
   target: "node18",
-  outfile: "dist/extension.js",
+  outfile: "out/extension.js",
   sourcemap: !minify,
   minify,
   logLevel: "info",

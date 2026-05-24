@@ -7,24 +7,23 @@ namespace WaterFreeInstallerHelper;
 
 internal static class Program
 {
-    private sealed record ServerSpec(string Name, string Mode);
-
-    private static readonly ServerSpec[] Servers =
-    {
-        new("waterfree-index", "index"),
-        new("waterfree-knowledge", "knowledge"),
-        new("waterfree-todos", "todos"),
-        new("waterfree-debug", "debug"),
-        new("waterfree-testing", "testing"),
-        new("waterfree-qa-summary", "qa-summary")
-    };
-
+    // Historical MCP server names. We don't register these any more (the
+    // backend exposes its functionality through `waterfree <area> <action>`
+    // subcommands on PATH instead), but we still strip them from existing
+    // Claude / Codex config files during uninstall so users don't end up with
+    // dead entries.
     private static readonly string[] LegacyServers =
     {
         "pairprogram-debug",
         "pairprogram-index",
         "pairprogram-knowledge",
-        "pairprogram-todos"
+        "pairprogram-todos",
+        "waterfree-debug",
+        "waterfree-index",
+        "waterfree-knowledge",
+        "waterfree-todos",
+        "waterfree-testing",
+        "waterfree-qa-summary"
     };
 
     private static int Main(string[] args)
@@ -45,23 +44,28 @@ internal static class Program
 
         try
         {
-            var exePath = Path.Combine(installDir, "bin", "waterfree-mcp.exe");
-            if (!File.Exists(exePath))
-            {
-                log.Error($"Executable not found: {exePath}");
-                return 3;
-            }
-
             if (uninstall)
             {
+                // Clean up any legacy MCP entries left by previous versions.
                 RemoveCodexConfig(log);
                 RemoveClaudeConfig(log);
                 log.Info("Uninstall cleanup complete.");
                 return 0;
             }
 
-            UpsertCodexConfig(log, exePath);
-            UpsertClaudeConfig(log, exePath);
+            var exePath = Path.Combine(installDir, "bin", "waterfree.exe");
+            if (!File.Exists(exePath))
+            {
+                log.Error($"Executable not found: {exePath}");
+                return 3;
+            }
+
+            // Newer installs do not register MCP servers — the CLI is invoked
+            // directly via PATH. We still strip any legacy entries in case the
+            // user is upgrading from an older WaterFree.
+            RemoveCodexConfig(log);
+            RemoveClaudeConfig(log);
+
             InstallVsixIfPossible(log, vsixPath);
             SmokeTest(log, exePath);
 
@@ -79,36 +83,6 @@ internal static class Program
         }
     }
 
-    private static void UpsertCodexConfig(InstallerLog log, string exePath)
-    {
-        var codexDir = Path.Combine(GetUserHome(), ".codex");
-        var configPath = Path.Combine(codexDir, "config.toml");
-        Directory.CreateDirectory(codexDir);
-
-        var lines = File.Exists(configPath)
-            ? File.ReadAllLines(configPath).ToList()
-            : new List<string>();
-
-        var removeNames = Servers.Select(s => s.Name).Concat(LegacyServers).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        lines = RemoveTomlSections(lines, removeNames);
-
-        if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
-        {
-            lines.Add(string.Empty);
-        }
-
-        foreach (var server in Servers)
-        {
-            lines.Add($"[mcp_servers.{server.Name}]");
-            lines.Add($"command = \"{EscapeToml(exePath)}\"");
-            lines.Add($"args = [\"mcp\", \"{server.Mode}\"]");
-            lines.Add(string.Empty);
-        }
-
-        File.WriteAllLines(configPath, lines, new UTF8Encoding(false));
-        log.Info($"Codex MCP config updated: {configPath}");
-    }
-
     private static void RemoveCodexConfig(InstallerLog log)
     {
         var codexDir = Path.Combine(GetUserHome(), ".codex");
@@ -119,11 +93,11 @@ internal static class Program
             return;
         }
 
-        var removeNames = Servers.Select(s => s.Name).Concat(LegacyServers).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var removeNames = LegacyServers.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var lines = File.ReadAllLines(configPath).ToList();
         var updated = RemoveTomlSections(lines, removeNames);
         File.WriteAllLines(configPath, updated, new UTF8Encoding(false));
-        log.Info($"Codex MCP config cleaned: {configPath}");
+        log.Info($"Codex MCP legacy entries cleaned: {configPath}");
     }
 
     private static List<string> RemoveTomlSections(List<string> lines, HashSet<string> removeNames)
@@ -162,97 +136,6 @@ internal static class Program
         }
 
         return result;
-    }
-
-    private static void UpsertClaudeConfig(InstallerLog log, string exePath)
-    {
-        var configPath = Path.Combine(GetUserHome(), ".claude.json");
-        JsonNode rootNode;
-        var originalWasArray = false;
-
-        if (File.Exists(configPath))
-        {
-            var text = File.ReadAllText(configPath);
-            rootNode = JsonNode.Parse(text) ?? new JsonObject();
-        }
-        else
-        {
-            rootNode = new JsonObject();
-        }
-
-        if (rootNode is not JsonObject root)
-        {
-            root = new JsonObject();
-        }
-
-        var mcpServersNode = root["mcpServers"];
-        Dictionary<string, JsonObject> serverMap = new(StringComparer.OrdinalIgnoreCase);
-
-        if (mcpServersNode is JsonArray array)
-        {
-            originalWasArray = true;
-            foreach (var item in array)
-            {
-                if (item is not JsonObject obj) continue;
-                var name = obj["name"]?.GetValue<string>();
-                if (string.IsNullOrWhiteSpace(name)) continue;
-                serverMap[name] = obj;
-            }
-        }
-        else if (mcpServersNode is JsonObject obj)
-        {
-            foreach (var kvp in obj)
-            {
-                if (kvp.Value is JsonObject entry)
-                {
-                    serverMap[kvp.Key] = entry;
-                }
-            }
-        }
-
-        foreach (var legacy in LegacyServers)
-        {
-            serverMap.Remove(legacy);
-        }
-
-        foreach (var server in Servers)
-        {
-            var entry = new JsonObject
-            {
-                ["command"] = exePath,
-                ["args"] = new JsonArray("mcp", server.Mode)
-            };
-            serverMap[server.Name] = entry;
-        }
-
-        if (originalWasArray)
-        {
-            var newArray = new JsonArray();
-            foreach (var kvp in serverMap.OrderBy(k => k.Key))
-            {
-                var entry = new JsonObject
-                {
-                    ["name"] = kvp.Key,
-                    ["command"] = kvp.Value["command"],
-                    ["args"] = kvp.Value["args"]
-                };
-                newArray.Add(entry);
-            }
-            root["mcpServers"] = newArray;
-        }
-        else
-        {
-            var newObj = new JsonObject();
-            foreach (var kvp in serverMap.OrderBy(k => k.Key))
-            {
-                newObj[kvp.Key] = kvp.Value;
-            }
-            root["mcpServers"] = newObj;
-        }
-
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(configPath, root.ToJsonString(options), new UTF8Encoding(false));
-        log.Info($"Claude MCP config updated: {configPath}");
     }
 
     private static void RemoveClaudeConfig(InstallerLog log)
@@ -302,7 +185,7 @@ internal static class Program
         }
         else if (mcpServersNode is JsonObject obj)
         {
-            foreach (var name in Servers.Select(s => s.Name).Concat(LegacyServers).ToList())
+            foreach (var name in LegacyServers)
             {
                 obj.Remove(name);
             }
@@ -311,55 +194,49 @@ internal static class Program
 
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(configPath, root.ToJsonString(options), new UTF8Encoding(false));
-        log.Info($"Claude MCP config cleaned: {configPath}");
+        log.Info($"Claude MCP legacy entries cleaned: {configPath}");
     }
 
     private static bool ShouldKeepServer(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return true;
         if (LegacyServers.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
-        if (Servers.Any(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return false;
         return true;
     }
 
     private static void SmokeTest(InstallerLog log, string exePath)
     {
-        foreach (var server in Servers)
+        // Confirm the installed exe at least responds to a no-op CLI invocation.
+        // Anything else (test runner, knowledge store, etc.) can be exercised
+        // by the user post-install.
+        var psi = new ProcessStartInfo
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                Arguments = $"mcp {server.Mode}",
-                UseShellExecute = false,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true
-            };
+            FileName = exePath,
+            Arguments = "knowledge stats",
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
 
-            using var proc = new Process { StartInfo = psi };
-            proc.Start();
-            Thread.Sleep(TimeSpan.FromSeconds(2));
+        using var proc = new Process { StartInfo = psi };
+        proc.Start();
+        proc.WaitForExit(10000);
 
-            if (proc.HasExited)
-            {
-                var stderr = proc.StandardError.ReadToEnd();
-                var stdout = proc.StandardOutput.ReadToEnd();
-                throw new InvalidOperationException(
-                    $"MCP mode '{server.Mode}' exited early. stdout={stdout} stderr={stderr}");
-            }
-
-            try
-            {
-                proc.Kill(true);
-                proc.WaitForExit(2000);
-            }
-            catch
-            {
-                // Ignore termination failures in installer context.
-            }
-
-            log.Info($"Smoke test OK: {server.Mode}");
+        if (!proc.HasExited)
+        {
+            try { proc.Kill(true); } catch { /* ignore */ }
+            throw new InvalidOperationException("Smoke test: waterfree exe did not return within 10s.");
         }
+
+        if (proc.ExitCode != 0)
+        {
+            var stderr = proc.StandardError.ReadToEnd();
+            throw new InvalidOperationException(
+                $"Smoke test failed: `waterfree knowledge stats` exit={proc.ExitCode} stderr={stderr}");
+        }
+
+        log.Info("Smoke test OK: waterfree.exe responds to CLI invocations.");
     }
 
     private static void InstallVsixIfPossible(InstallerLog log, string? vsixPath)
@@ -384,29 +261,49 @@ internal static class Program
             return;
         }
 
-        var psi = new ProcessStartInfo
+        log.Info($"Installing VSIX via: {codeCmd}");
+
+        // .cmd files cannot be launched directly with UseShellExecute=false;
+        // they must be invoked through cmd.exe.
+        ProcessStartInfo psi;
+        if (codeCmd.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
-            FileName = codeCmd,
-            Arguments = $"--install-extension \"{vsixPath}\" --force",
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
+            psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/c \"{codeCmd}\" --install-extension \"{vsixPath}\" --force",
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+        }
+        else
+        {
+            psi = new ProcessStartInfo
+            {
+                FileName = codeCmd,
+                Arguments = $"--install-extension \"{vsixPath}\" --force",
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+        }
 
         using var proc = new Process { StartInfo = psi };
         proc.Start();
-        proc.WaitForExit();
-
         var stdout = proc.StandardOutput.ReadToEnd();
         var stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+
         if (proc.ExitCode != 0)
         {
             log.Info($"VS Code extension install failed (non-fatal): exit={proc.ExitCode} stdout={stdout} stderr={stderr}");
             return;
         }
 
-        log.Info("VS Code extension installed.");
+        log.Info($"VS Code extension installed. stdout={stdout}");
     }
 
     private static string? FindVsCodeCommand()
@@ -415,16 +312,27 @@ internal static class Program
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
 
+        // Standard VS Code (user install — most common on Windows)
         candidates.Add(Path.Combine(localAppData, "Programs", "Microsoft VS Code", "bin", "code.cmd"));
+        // System-wide installs
         candidates.Add(Path.Combine(programFiles, "Microsoft VS Code", "bin", "code.cmd"));
+        candidates.Add(Path.Combine(programFilesX86, "Microsoft VS Code", "bin", "code.cmd"));
+        // VS Code Insiders
+        candidates.Add(Path.Combine(localAppData, "Programs", "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"));
+        candidates.Add(Path.Combine(programFiles, "Microsoft VS Code Insiders", "bin", "code-insiders.cmd"));
 
+        // Fall back to PATH — deferred custom actions may have a restricted PATH,
+        // so try the hard-coded locations above first.
         var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
         foreach (var segment in path.Split(Path.PathSeparator))
         {
             if (string.IsNullOrWhiteSpace(segment)) continue;
-            candidates.Add(Path.Combine(segment.Trim(), "code.cmd"));
-            candidates.Add(Path.Combine(segment.Trim(), "code.exe"));
+            var dir = segment.Trim();
+            candidates.Add(Path.Combine(dir, "code.cmd"));
+            candidates.Add(Path.Combine(dir, "code.exe"));
+            candidates.Add(Path.Combine(dir, "code-insiders.cmd"));
         }
 
         foreach (var candidate in candidates)

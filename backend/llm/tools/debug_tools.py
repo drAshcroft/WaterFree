@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from backend import mcp_debug
+from backend.debug import tools as debug_impls
 
 from .types import ToolDescriptor, ToolPolicy
 
@@ -23,20 +23,20 @@ def _parse_json(raw: str) -> dict:
 
 def debug_tool_descriptors() -> list[ToolDescriptor]:
     def debug_status(_args: dict, workspace_path: str) -> dict:
-        return _parse_json(mcp_debug._debug_status_impl(workspace_path))
+        return _parse_json(debug_impls._debug_status_impl(workspace_path))
 
     def get_execution_context(_args: dict, workspace_path: str) -> dict:
-        return _parse_json(mcp_debug._get_execution_context_impl(workspace_path))
+        return _parse_json(debug_impls._get_execution_context_impl(workspace_path))
 
     def list_variables(args: dict, workspace_path: str) -> dict:
         scope = str(args.get("scope", "") or "")
-        return _parse_json(mcp_debug._list_variables_impl(workspace_path, scope=scope))
+        return _parse_json(debug_impls._list_variables_impl(workspace_path, scope=scope))
 
     def get_variable_schema(args: dict, workspace_path: str) -> dict:
         var_name = str(args.get("varName", "") or "")
         scope = str(args.get("scope", "locals") or "locals")
         return _parse_json(
-            mcp_debug._get_variable_schema_impl(workspace_path, var_name=var_name, scope=scope)
+            debug_impls._get_variable_schema_impl(workspace_path, var_name=var_name, scope=scope)
         )
 
     def get_variable_value(args: dict, workspace_path: str) -> dict:
@@ -46,7 +46,7 @@ def debug_tool_descriptors() -> list[ToolDescriptor]:
         start = int(args.get("start", 0) or 0)
         end = int(args.get("end", 50) or 50)
         return _parse_json(
-            mcp_debug._get_variable_value_impl(
+            debug_impls._get_variable_value_impl(
                 workspace_path,
                 var_name=var_name,
                 scope=scope,
@@ -60,7 +60,7 @@ def debug_tool_descriptors() -> list[ToolDescriptor]:
         expression = str(args.get("expression", "") or "")
         frame_id = int(args.get("frameId", 0) or 0)
         return _parse_json(
-            mcp_debug._debug_eval_impl(workspace_path, expression=expression, frame_id=frame_id)
+            debug_impls._debug_eval_impl(workspace_path, expression=expression, frame_id=frame_id)
         )
 
     return [

@@ -1,152 +1,134 @@
 ---
 name: waterfree-knowledge
-description: Use the WaterFree knowledge MCP tools to search shared code snippets, patterns, utilities, and conventions before writing new boilerplate or reaching for external docs.
+description: Use the `waterfree knowledge` CLI to search shared code snippets, patterns, utilities, and conventions before writing new boilerplate or reaching for external docs.
 ---
 
-# WaterFree — Knowledge / Snippet Store Tools
+# WaterFree — Knowledge / Snippet Store
 
-You have access to a global cross-project knowledge store via the `waterfree-knowledge`
-MCP server. It contains code snippets, patterns, utilities, gotchas, styles and conventions extractedfrom indexed repositories using LLM classification, and entries added directly by agents.
+You have access to a global knowledge store via the `waterfree` CLI. Knowledge
+is shared across all workspaces and stored at `~/.waterfree/global/knowledge.db`.
 
-Knowledge is shared across all workspaces and stored at `~/.waterfree/global/knowledge.db`.
+Each invocation is a short shell command — run it through Bash. All commands
+emit JSON to stdout.
 
 ## When to Use (Read)
 
-Use these tools when you need to:
-- Traverse the store by stable subject/category before searching — use `browse_knowledge_index`
-- Find a reusable pattern before writing new code — use `search_knowledge`
-- Look for prior implementations of a concept across projects — use `search_knowledge`
-- Check what has already been indexed — use `list_knowledge_sources`
-- Understand how many snippets are available — use `knowledge_stats`
- 
+- Traverse the store by stable subject/category before searching — `waterfree knowledge browse`
+- Find a reusable pattern before writing new code — `waterfree knowledge search`
+- Look for prior implementations of a concept across projects — `waterfree knowledge search`
+- Check what has already been indexed — `waterfree knowledge list-sources`
+- Understand how many snippets are available — `waterfree knowledge stats`
 
-Use the hierarchy first for broad domains and search for precise lookups. Always consult
-the knowledge store before writing boilerplate or reaching for external docs. User preferences and style guides should be pushed to this store. Make it so the user does not have to repeat preferences for prompts. Preferences should be small, terse and few
+Use the hierarchy first for broad domains and search for precise lookups.
+Always consult the knowledge store before writing boilerplate or reaching for
+external docs. User preferences and style guides should be pushed to this store.
 
 ## When to Add
 
-Use `add_knowledge` when you discover something worth preserving for future sessions
-across **any** project. Good candidates:
+Use `waterfree knowledge add` when you discover something worth preserving for
+future sessions across **any** project. Good candidates:
 
-- **You just wrote a reusable utility** — a helper, decorator, or class that could be
-  useful in a different project (save as `utility`)
-- **You established a convention** — a naming rule, file layout pattern, or team
-  agreement that was agreed upon during the session (save as `convention`)
-- **You solved a non-obvious problem** — the solution involved research, trial-and-error,
-  or tricky framework behaviour worth remembering (save as `pattern`)
-- **You worked out correct library/API usage** — especially for third-party APIs with
-  quirks, gotchas, or non-obvious initialization (save as `api_usage`)
-- **You're about to write boilerplate that already lives elsewhere** — if you can't
-  find it in the store but just wrote it, add it so the next session can
-- **Market Research that will be common** Save time and effort, the market research will be referenced again with new features
-- **API preferences** users tend to like to reuse certain API's remember their preferences
-- **Coding styles** users like certain styles and designs.  Remember their preferences
+- **Reusable utility** you just wrote — `--snippet-type utility`
+- **Convention** that was agreed upon — `--snippet-type convention`
+- **Non-obvious problem you solved** — `--snippet-type pattern`
+- **Correct library / API usage** with quirks or gotchas — `--snippet-type api_usage`
+- **About-to-write boilerplate that already lives elsewhere** — add the existing version so the next session can find it
+- **API preferences** the user tends to reuse
+- **Coding styles** the user prefers
 
-**Before adding:** run `search_knowledge` first to avoid duplicates.
+**Before adding:** run `waterfree knowledge search` first to avoid duplicates.
 
 ### What makes a good entry
 
-| Field | Guidance |
-|-------|----------|
-| `title` | Specific and searchable — include the pattern name or key concept |
-| `description` | 2–4 sentences: what it does, why it's useful, when to reach for it |
-| `context` | Caveats, version requirements, related files/symbols, when NOT to use |
-| `snippet_type` | Pick the closest: `pattern`, `utility`, `style`, `api_usage`, `convention` |
-| `hierarchy_path` | Stable subject taxonomy such as `"platform/auth/jwt"` or `"frontend/forms/validation"` |
-| `source_repo` | Always the actual project name or path — e.g. `"WaterFree"` or `"c:/projects/myapp"` |
-| `tags` | 3–6 short tags covering language, framework, domain, and key concept |
+| Flag | Guidance |
+|------|----------|
+| `--title` | Specific and searchable — include the pattern name or key concept |
+| `--description` | 2–4 sentences: what it does, why it's useful, when to reach for it |
+| `--context` | Caveats, version requirements, related files/symbols, when NOT to use |
+| `--snippet-type` | One of `pattern`, `utility`, `style`, `api_usage`, `convention` |
+| `--hierarchy-path` | Stable subject taxonomy such as `platform/auth/jwt` or `frontend/forms/validation` |
+| `--source-repo` | Actual project name or path — e.g. `WaterFree` or `c:/projects/myapp` |
+| `--tag` | Repeatable. 3–6 short tags covering language, framework, domain, key concept |
 
 ## When to Delete
 
-Use `delete_knowledge` when:
-- An entry is factually incorrect or misleading
-- A pattern was superseded by a better approach and the old entry would cause confusion
-- An entry was added by mistake
+Use `waterfree knowledge delete` when:
+- An entry is factually incorrect or misleading.
+- A pattern was superseded by a better approach and the old entry would cause confusion.
+- An entry was added by mistake.
 
----
+## CLI
 
-## Snippet Types
+The knowledge store is global — no `--workspace` flag.
 
-- `pattern` — design patterns and architectural patterns
-- `utility` — helper functions and utility classes
-- `style` — code style and formatting conventions
-- `api_usage` — example usages of libraries/frameworks
-- `convention` — naming, structure, and project conventions
-
----
-
-## Tools
-
-### Search for snippets
-```
-browse_knowledge_index(path="", depth=2)
-browse_knowledge_index(path="platform/auth", depth=2, include_entries=true)
-search_knowledge(query="retry with exponential backoff", limit=10)
-search_knowledge(query="authentication middleware")
-search_knowledge(query="sqlite connection pooling")
-search_knowledge(query="dataclass serialisation")
+### Search
+```bash
+waterfree knowledge search "retry with exponential backoff" --limit 10
+waterfree knowledge search "authentication middleware"
+waterfree knowledge search "sqlite connection pooling"
 ```
 
-Use `browse_knowledge_index` when the question is category-first, exploratory, or the
-subject already has an obvious taxonomy. It returns child nodes, subtree counts, and
-optionally sample entries from the selected branch.
-
-The search uses BM25-ranked full-text search over title, description, tags, and code.
-Return fields: `id`, `title`, `description`, `snippet_type`, `code`, `tags`, `context`,
+BM25-ranked full-text search over title, description, tags, and code. Return
+fields: `id`, `title`, `description`, `snippet_type`, `code`, `tags`, `context`,
 `source_repo`, `source_file`, `source_repo_url`, `created_at`, `hierarchy_path`.
 
-### Add a snippet
-```
-add_knowledge(
-    title="Exponential backoff retry decorator",
-    description="Retries a function up to N times with exponential backoff. Useful for
-                 wrapping flaky network calls or external API requests.",
-    code="def retry(max_attempts=3, ...):\n    ...",
-    snippet_type="utility",
-    source_repo="WaterFree",
-    source_file="backend/llm/claude_client.py",
-    hierarchy_path="platform/reliability/retries",
-    tags=["python", "retry", "error-handling", "decorator"],
-    context="Requires Python 3.10+. Not suitable for DB transactions — use explicit
-             savepoints instead. See also: circuit_breaker pattern.",
-    source_repo_url="https://github.com/org/waterfree.git",
-)
+### Browse the taxonomy
+```bash
+waterfree knowledge browse --path platform/auth --depth 2 --include-entries
+waterfree knowledge browse --depth 1
 ```
 
-Returns `{ "id": "<uuid>", "added": true, "message": "..." }`.
-If the code content is identical to an existing entry, `added` is `false` (deduplicated
-by SHA-256 hash of code).
+Use browse when the question is category-first, exploratory, or the subject
+already has an obvious taxonomy. It returns child nodes, subtree counts, and
+optionally sample entries from the selected branch.
+
+### Add a snippet
+
+For short snippets, pass code inline:
+```bash
+waterfree knowledge add \
+    --title "Exponential backoff retry decorator" \
+    --description "Retries a function up to N times with exponential backoff." \
+    --code 'def retry(max_attempts=3): ...' \
+    --snippet-type utility \
+    --source-repo WaterFree \
+    --source-file backend/llm/claude_client.py \
+    --hierarchy-path platform/reliability/retries \
+    --tag python --tag retry --tag error-handling --tag decorator \
+    --context "Requires Python 3.10+. Not suitable for DB transactions."
+```
+
+For multi-line code, write to a file and pass `--code-file`, or pipe via stdin
+with `--code-file -`:
+```bash
+cat my_snippet.py | waterfree knowledge add --code-file - \
+    --title "..." --description "..." --snippet-type pattern \
+    --source-repo WaterFree --tag python
+```
+
+Returns JSON with the new entry id. If the code is identical to an existing
+entry, `added` is `false` (deduplicated by SHA-256 of code).
 
 ### Delete a snippet
-```
-delete_knowledge(entry_id="<uuid>")
+```bash
+waterfree knowledge delete <entry-id>
 ```
 
-Returns `{ "deleted": true, "message": "..." }`.
-The `id` is available in the output of `add_knowledge` and `search_knowledge`.
-
-### List all indexed sources
+### List indexed sources
+```bash
+waterfree knowledge list-sources
 ```
-list_knowledge_sources()
+
+### Statistics
+```bash
+waterfree knowledge stats
 ```
-Returns each source with name, path or URL, entry count, and last-indexed date.
 
-### Check store statistics
-```
-knowledge_stats()
-```
-Returns total entry count and number of indexed sources.
+## Exit codes
 
----
-
-## Tips
-
-- Search with specific terms ("singleton pattern", "JWT decode") or broad concepts ("caching").
-- Reach for `browse_knowledge_index` before `search_knowledge` when the domain is easier
-  to navigate as a tree than as keywords.
-- Use `tags` in the returned entries to discover related searches.
-- Use `hierarchy_path` for stable subject organization; use `tags` for looser cross-cuts.
-- Use the `context` field to explain why a snippet has constraints — future readers
-  won't have the original conversation to refer to.
-- If the store is empty, knowledge must be built first using the `buildKnowledge` command
-  in the WaterFree VS Code extension, or by running the knowledge extractor directly.
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
+| 2    | Usage / validation error |
+| 3    | Not found (entry id) |
+| 1    | Internal error |

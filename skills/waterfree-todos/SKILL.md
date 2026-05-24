@@ -1,25 +1,25 @@
 ---
 name: waterfree-todos
-description: Use the WaterFree task MCP tools to inspect the workspace backlog, find ready work, add tasks, and update task status as implementation progresses.
+description: Use the `waterfree todos` CLI to inspect the workspace backlog, find ready work, add tasks, and update task status as implementation progresses.
 ---
 
-# WaterFree — Task / Todo Store Tools
+# WaterFree — Task / Todo Store
 
-You have access to the workspace task backlog via the `waterfree-todos` MCP server.
-Tasks are stored per-workspace in `.waterfree/tasks.db` (SQLite). 
+You have access to the workspace task backlog via the `waterfree` CLI. Each
+invocation is a short shell command — run it through Bash. Tasks are stored
+per-workspace in `.waterfree/tasks.db` (SQLite).
+
+All commands emit JSON to stdout; parse with `json.loads` rather than grepping.
 
 ## When to Use
 
-Use these tools when you need to:
-- See what work is planned or in progress — use `list_tasks` or `get_next_task`
-- Find tasks related to a specific area — use `search_tasks`
-- Record a new piece of work that was identified — use `add_task`
-- Mark a task complete after finishing it — use `update_task` with `"status": "complete"`
-- Check what to work on next (highest-priority, no blockers) — use `get_next_task`
-- See only unblocked work — use `get_ready_tasks`
-- Create a recurring health check or review — use `add_task` then patch `timing` to `"recurring"`
-- If an off subject item needs to be addressed later, push it into todos for future work
-- Future work or Suggestions for improvements
+- See what work is planned or in progress — `waterfree todos list`
+- Find tasks related to a specific area — `waterfree todos search <query>`
+- Record a new piece of work that was identified — `waterfree todos add`
+- Mark a task complete after finishing it — `waterfree todos update <id> --patch '{"status":"complete"}'`
+- Check what to work on next (highest-priority, no blockers) — `waterfree todos get-next`
+- See only unblocked work — `waterfree todos get-ready`
+- If an off-subject item needs to be addressed later, push it into todos for future work.
 
 ## Task Model
 
@@ -34,155 +34,132 @@ Each task has:
 - `phase` — optional milestone/sprint label for grouping
 
 **Priority & status**
-- `priority` — `P0` (blocker) | `P1` (critical path) | `P2` (default, this session) | `P3` (backlog) | `spike` (research, no code)
+- `priority` — `P0` (blocker) | `P1` (critical path) | `P2` (default) | `P3` (backlog) | `spike` (research)
 - `status` — `pending` | `executing` | `complete` | `skipped`
 
 **Scheduling & recurrence**
 - `timing` — `one_time` (default) | `recurring`
-  - **Recurring tasks auto-reset to `pending` when marked `complete`.** Use this for periodic checks, weekly reviews, or ongoing health monitors that should recur indefinitely.
-- `trigger` — free-text description of *what event or condition* should prompt re-evaluation (e.g. `"after each release"`, `"when coverage drops below 80%"`). Most useful with `recurring`.
+  - Recurring tasks auto-reset to `pending` when marked `complete`.
+- `trigger` — free-text description of *what event or condition* should prompt re-evaluation.
 
 **Completion gate**
-- `acceptanceCriteria` — free-text definition of done. Describe what must be true for the task to be considered finished. Used in search and displayed to implementors.
+- `acceptanceCriteria` — free-text definition of done.
 
 **Ownership**
 - `owner` — `{ type: "human"|"agent"|"unassigned", name: "..." }`
 
 **Location anchors**
-- `targetCoord` — primary file/line the task applies to: `{ file, line, class, method, anchorType }`
-- `contextCoords` — additional file/line anchors for related context (array of same shape)
+- `targetCoord` — primary file/line the task applies to.
+- `contextCoords` — additional file/line anchors for related context.
 
 **Dependencies**
 - `dependsOn` — list of `{ taskId, type }` entries
-  - `type: "blocks"` — hard dependency: cannot start until that task completes
-  - `type: "informs"` — soft: that task's output changes how this task is done
-  - `type: "shares-file"` — warns of conflict risk if worked in parallel
+  - `type: "blocks"` — hard dependency.
+  - `type: "informs"` — soft: that task's output changes how this task is done.
+  - `type: "shares-file"` — warns of conflict risk if worked in parallel.
 
 **Effort tracking**
-- `estimatedMinutes` / `actualMinutes` — optional time tracking
+- `estimatedMinutes` / `actualMinutes` — optional.
 
 **Notes**
-- `humanNotes` — notes written by a human for the implementor
-- `aiNotes` — notes written by an agent (observations, blockers, progress)
+- `humanNotes` — notes from a human for the implementor.
+- `aiNotes` — notes from an agent (observations, blockers, progress).
 
-## Tools
+## CLI
+
+Every command accepts `--workspace <path>` (defaults to CWD).
 
 ### List tasks
-```
-list_tasks(workspace_path="/absolute/path/to/project")
-list_tasks(workspace_path="...", status="pending")
-list_tasks(workspace_path="...", priority="P0")
-list_tasks(workspace_path="...", phase="v2-launch")
-list_tasks(workspace_path="...", owner="agent", ready_only=true)
+```bash
+waterfree todos list --workspace /abs/path/to/project
+waterfree todos list --workspace . --status pending
+waterfree todos list --workspace . --priority P0
+waterfree todos list --workspace . --phase v2-launch
+waterfree todos list --workspace . --owner agent --ready-only
 ```
 
 ### Search tasks
+```bash
+waterfree todos search "authentication" --workspace .
+waterfree todos search "database migration" --workspace . --limit 10
 ```
-search_tasks(workspace_path="/absolute/path/to/project", query="authentication")
-search_tasks(workspace_path="...", query="database migration")
-```
-Searches title, description, rationale, file paths, owner, `acceptanceCriteria`, and `trigger`.
+Matches title, description, rationale, file paths, owner, acceptance criteria, and trigger.
 
-### Get the next task to work on
+### Next task to work on
+```bash
+waterfree todos get-next --workspace .
+waterfree todos get-next --workspace . --owner agent
 ```
-get_next_task(workspace_path="/absolute/path/to/project")
-get_next_task(workspace_path="...", owner="agent")
-```
-Returns the highest-priority task with no blocking dependencies.
+Returns the highest-priority task with no blocking dependencies, or `null`.
 
-### List only ready tasks (no blockers)
-```
-get_ready_tasks(workspace_path="/absolute/path/to/project", limit=10)
+### Ready tasks (no blockers)
+```bash
+waterfree todos get-ready --workspace . --limit 10
 ```
 
 ### Add a task
-```
-add_task(
-    workspace_path="/absolute/path/to/project",
-    title="Add rate limiting to /api/auth",
-    description="Implement token-bucket rate limiting on the auth endpoint to prevent brute force.",
-    priority="P1",
-    phase="security-hardening",
-    owner_type="agent",
-    target_file="src/api/auth.py"
-)
-# Pin to a specific line:
-add_task(..., target_file="src/api/auth.py", target_line=42)
-# Pin to end of file:
-add_task(..., target_file="src/api/auth.py", target_line=-1)
+```bash
+waterfree todos add --workspace . \
+    --title "Add rate limiting to /api/auth" \
+    --description "Implement token-bucket rate limiting on the auth endpoint." \
+    --priority P1 \
+    --phase security-hardening \
+    --owner-type agent \
+    --target-file src/api/auth.py \
+    --target-line 42
 ```
 
-`target_line` behaviour:
-- Omitted / `null` — top of file (no line anchor)
+`--target-line` behaviour:
+- omitted — top of file (no line anchor)
 - `-1` — end of file
 - positive integer — that exact line number
 
-After creating a task, use `update_task` to set `taskType`, `timing`, `trigger`,
-`acceptanceCriteria`, or `dependsOn` if needed.
-
 ### Update a task
-```
-update_task(
-    workspace_path="/absolute/path/to/project",
-    task_id="<uuid>",
-    patch='{"status": "complete", "actualMinutes": 45}'
-)
+```bash
+waterfree todos update --workspace . <task-id> \
+    --patch '{"status":"complete","actualMinutes":45}'
 ```
 
-**All supported patch keys:**
-
-| Key | Type | Notes |
-|-----|------|-------|
-| `title` | string | |
-| `description` | string | |
-| `rationale` | string | |
-| `priority` | string | `P0`\|`P1`\|`P2`\|`P3`\|`spike` |
-| `phase` | string | |
-| `status` | string | `pending`\|`executing`\|`complete`\|`skipped` |
-| `taskType` | string | `impl`\|`test`\|`spike`\|`review`\|`refactor`\|`protocol`\|`bug_fix`\|`feature`\|`task` |
-| `timing` | string | `one_time`\|`recurring` |
-| `trigger` | string | When/why the task recurs |
-| `acceptanceCriteria` | string | Definition of done |
-| `owner` | object | `{ "type": "agent", "name": "..." }` |
-| `blockedReason` | string | Why this task can't proceed |
-| `humanNotes` | string | Notes from a human |
-| `aiNotes` | string | Notes from the agent |
-| `estimatedMinutes` | int | |
-| `actualMinutes` | int | |
-| `targetCoord` | object | `{ "file": "...", "line": 42, "anchorType": "modify" }` |
-| `dependsOn` | array | `[{ "taskId": "...", "type": "blocks" }]` |
-| `contextCoords` | array | Additional file/line anchors |
-| `startedAt` | string | ISO timestamp |
-| `completedAt` | string | ISO timestamp |
+Supported patch keys: `title`, `description`, `rationale`, `priority`, `phase`,
+`status`, `taskType`, `timing`, `trigger`, `acceptanceCriteria`, `owner`,
+`blockedReason`, `humanNotes`, `aiNotes`, `estimatedMinutes`, `actualMinutes`,
+`targetCoord`, `dependsOn`, `contextCoords`, `startedAt`, `completedAt`.
 
 ### Delete a task
-```
-delete_task(workspace_path="/absolute/path/to/project", task_id="<uuid>")
+```bash
+waterfree todos delete --workspace . <task-id>
 ```
 
 ## Recurring task pattern
 
-To create a recurring check (e.g. review test coverage after every sprint):
-```
+```bash
 # 1. Create the task
-add_task(workspace_path="...", title="Review test coverage", description="...")
+waterfree todos add --workspace . --title "Review test coverage" \
+    --description "Check that critical paths still have coverage."
 
-# 2. Make it recurring with a trigger
-update_task(workspace_path="...", task_id="<uuid>",
-    patch='{"timing": "recurring", "trigger": "after each release"}')
+# 2. Patch it to recurring
+waterfree todos update --workspace . <task-id> \
+    --patch '{"timing":"recurring","trigger":"after each release"}'
 
-# 3. When done for this cycle, mark complete — it auto-resets to pending
-update_task(workspace_path="...", task_id="<uuid>",
-    patch='{"status": "complete", "actualMinutes": 15}')
-# → status is immediately reset to "pending" by the server
+# 3. Mark complete when done — auto-resets to pending
+waterfree todos update --workspace . <task-id> \
+    --patch '{"status":"complete","actualMinutes":15}'
 ```
 
 ## Tips
 
-- Always call `get_next_task` before starting new work — don't duplicate effort.
-- Use `list_tasks(status="executing")` to see what's actively in progress.
+- Always call `get-next` before starting new work — don't duplicate effort.
+- Use `list --status executing` to see what's actively in progress.
 - When you finish a task, immediately update its status to `"complete"`.
 - Priority order: P0 > P1 > P2 > P3 > spike.
-- Use `acceptanceCriteria` when the definition of done is non-obvious — it surfaces in search.
+- Use `acceptanceCriteria` when the definition of done is non-obvious.
 - Use `aiNotes` to leave breadcrumbs about what you discovered or why you stopped.
-- `dependsOn` with `type: "informs"` (soft) won't block scheduling but signals to read that task's output first.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
+| 2    | Usage / validation error |
+| 3    | Not found (task id) |
+| 1    | Internal error |

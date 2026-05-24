@@ -1075,7 +1075,7 @@ export class WaterFreeController implements vscode.Disposable {
     try {
       const snapshotPath = await this._liveDebug.writeSnapshot(intent, stopReason, this._workspacePath);
       void vscode.window.showInformationMessage(
-        `WaterFree: Debug snapshot saved — agent can query it via mcp_debug tools. (${snapshotPath})`,
+        `WaterFree: Debug snapshot saved — agent can query it via the in-process debug tools. (${snapshotPath})`,
       );
     } catch (err) {
       this._handleError("Push debug to agent failed", err);

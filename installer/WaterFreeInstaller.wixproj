@@ -15,7 +15,7 @@
     <Error Condition="!Exists('$(BackendExe)')" Text="Missing backend exe: $(BackendExe). Build the backend first (PyInstaller) before building the MSI." />
     <Error Condition="!Exists('$(VsixPath)')" Text="Missing VSIX: $(VsixPath). Build the extension before building the MSI." />
 
-    <Copy SourceFiles="$(BackendExe)" DestinationFiles="$(PayloadDir)\waterfree-mcp.exe" />
+    <Copy SourceFiles="$(BackendExe)" DestinationFiles="$(PayloadDir)\waterfree.exe" />
 
     <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish&quot;" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish\waterfree-installer-helper.exe" DestinationFiles="$(PayloadDir)\waterfree-installer-helper.exe" />

@@ -333,13 +333,13 @@ class Server:
         return self._session_managers[path]
 
     def _get_task_store(self, workspace_path: str) -> TaskStore:
-        path = os.path.abspath(workspace_path)
+        path = _find_waterfree_root(os.path.abspath(workspace_path))
         if path not in self._task_stores:
             self._task_stores[path] = TaskStore(path)
         return self._task_stores[path]
 
     def _get_index_state_store(self, workspace_path: str) -> IndexStateStore:
-        path = os.path.abspath(workspace_path)
+        path = _find_waterfree_root(os.path.abspath(workspace_path))
         if path not in self._index_state_stores:
             self._index_state_stores[path] = IndexStateStore(path)
         return self._index_state_stores[path]
@@ -572,6 +572,26 @@ def workspace_path_from_source(source: str) -> str:
     if os.path.isdir(source):
         return os.path.abspath(source)
     return os.getcwd()
+
+
+def _find_waterfree_root(path: str) -> str:
+    """
+    Walk up from *path* to find the nearest directory that already contains a
+    .waterfree folder (i.e. an existing WaterFree project root).  Falls back to
+    *path* itself if none is found.
+
+    This prevents Claude Code from creating separate task stores when it passes
+    a sub-directory (e.g. Assets/) instead of the project root.
+    """
+    current = Path(path)
+    while True:
+        if (current / ".waterfree").is_dir():
+            return str(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return path
 
 
 def _error(req_id: Any, code: int, message: str) -> dict:

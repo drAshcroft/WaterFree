@@ -1,0 +1,279 @@
+<#
+.SYNOPSIS
+    Builds the entire WaterFree installer from a clean checkout.
+
+.DESCRIPTION
+    Single entry point for the WaterFree release pipeline. Stages, in order:
+
+      1. PyInstaller        -> bin/waterfree-<plat>-<arch>.exe
+      2. npm run package    -> waterfree.vsix
+      3. WiX (dotnet build) -> dist/WaterFreeSetup-<version>.msi
+                              (the WiX project's BuildPayload target internally
+                               runs `dotnet publish` for the installer helper and
+                               stages the backend exe + vsix into its payload dir)
+
+    Final artifacts are copied into ./dist at repo root:
+      - WaterFreeSetup-<version>.msi
+      - waterfree-<plat>-<arch>.exe
+      - waterfree.vsix
+
+    Halts on the first failure with the failing command's exit code. Prints a
+    `==> Stage N: <name>` banner per stage and a total wall-clock time at the
+    end. Default invocation needs no arguments.
+
+.PARAMETER ProductVersion
+    Override the MSI's ProductVersion. Defaults to "0.1.0" (matches the wixproj).
+
+.PARAMETER Clean
+    Wipe bin/, dist/, the wix payload dir, and PyInstaller's build/ before
+    starting. Useful when artifacts feel stale.
+
+.PARAMETER SkipExe
+    Reuse an existing bin/waterfree-<plat>-<arch>.exe instead of running PyInstaller.
+
+.PARAMETER SkipVsix
+    Reuse an existing waterfree.vsix instead of running `npm run package`.
+
+.PARAMETER SkipMsi
+    Stop after the exe + vsix stages; do not build the MSI.
+
+.PARAMETER SkipPrereqCheck
+    Bypass the prerequisite probe (Python, PyInstaller, .NET SDK, Node, npm, WiX).
+    Use only when you know exactly what's missing.
+
+.EXAMPLE
+    .\build_installer.ps1
+    # Full build with defaults; outputs dist\WaterFreeSetup-0.1.0.msi
+
+.EXAMPLE
+    .\build_installer.ps1 -ProductVersion 0.2.0 -Clean
+    # Clean build of version 0.2.0
+
+.EXAMPLE
+    .\build_installer.ps1 -SkipExe -SkipVsix
+    # Just rebuild the MSI from the existing exe + vsix on disk
+#>
+
+[CmdletBinding()]
+param(
+    [string]$ProductVersion = "0.1.0",
+    [switch]$Clean,
+    [switch]$SkipExe,
+    [switch]$SkipVsix,
+    [switch]$SkipMsi,
+    [switch]$SkipPrereqCheck
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$global:LASTEXITCODE = 0
+
+$RepoRoot   = $PSScriptRoot
+$DistDir    = Join-Path $RepoRoot "dist"
+$BinDir     = Join-Path $RepoRoot "bin"
+$WixDir     = Join-Path $RepoRoot "installer"
+$WixProj    = Join-Path $WixDir   "WaterFreeInstaller.wixproj"
+$WixPayload = Join-Path $WixDir   "obj\payload"
+$BuildDir   = Join-Path $RepoRoot "build"   # PyInstaller scratch
+$VsixPath   = Join-Path $RepoRoot "waterfree.vsix"
+$SpecFile   = Join-Path $RepoRoot "waterfree.spec"
+
+# Match waterfree.spec's exe naming: waterfree-<sys.platform>-<arch>.exe
+$PlatformTag = switch -Regex ($env:OS) {
+    "Windows" { "win32" }
+    default   { "linux" }
+}
+$ArchTag = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+$ExeName = if ($PlatformTag -eq "win32") { "waterfree-$PlatformTag-$ArchTag.exe" }
+           else                          { "waterfree-$PlatformTag-$ArchTag" }
+# PyInstaller writes to dist/<exe>; the WiX project expects it in bin/<exe>.
+$PyInstallerOut = Join-Path $RepoRoot "dist\$ExeName"
+$ExePath        = Join-Path $BinDir $ExeName
+
+$Banner = "==>"
+$Start  = Get-Date
+
+function Write-Stage([string]$label) {
+    Write-Host ""
+    Write-Host "$Banner $label" -ForegroundColor Cyan
+}
+
+function Invoke-Stage([string]$name, [scriptblock]$body) {
+    Write-Stage $name
+    $stageStart = Get-Date
+    $global:LASTEXITCODE = 0
+    & $body
+    $code = $global:LASTEXITCODE
+    if ($code -and $code -ne 0) {
+        Write-Host "FAILED ($name) exit=$code" -ForegroundColor Red
+        exit $code
+    }
+    $elapsed = (Get-Date) - $stageStart
+    Write-Host ("    ({0:n1}s)" -f $elapsed.TotalSeconds) -ForegroundColor DarkGray
+}
+
+function Test-Command([string]$name) {
+    $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+function Test-PythonModule([string]$module) {
+    & python -c "import $module" 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
+# ---------------------------------------------------------------------------
+# Stage 0: Prerequisite probe
+# ---------------------------------------------------------------------------
+if (-not $SkipPrereqCheck) {
+    Invoke-Stage "Stage 0: Verifying prerequisites" {
+        $missing = @()
+
+        if (-not $SkipExe) {
+            if (-not (Test-Command "python"))      { $missing += "Python 3.12+ (install from python.org or via winget install Python.Python.3.12)" }
+            elseif (-not (Test-PythonModule "PyInstaller")) {
+                $missing += "PyInstaller python package (install: pip install pyinstaller)"
+            }
+        }
+
+        if (-not $SkipVsix) {
+            if (-not (Test-Command "node")) { $missing += "Node.js 18+ (install from nodejs.org or via winget install OpenJS.NodeJS.LTS)" }
+            if (-not (Test-Command "npm"))  { $missing += "npm (ships with Node.js)" }
+        }
+
+        if (-not $SkipMsi) {
+            if (-not (Test-Command "dotnet")) {
+                $missing += ".NET SDK 10 (install via winget install Microsoft.DotNet.SDK.10)"
+            }
+            # WiX 4 SDK is restored via NuGet from the wixproj, so no separate
+            # tool needs to be on PATH. We do need `dotnet build` to be able to
+            # restore NuGet packages — that comes with the .NET SDK above.
+        }
+
+        if ($missing.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Missing prerequisites:" -ForegroundColor Red
+            foreach ($m in $missing) { Write-Host "  - $m" -ForegroundColor Red }
+            Write-Host ""
+            Write-Host "Install the items above, then re-run build_installer.ps1." -ForegroundColor Yellow
+            Write-Host "(To bypass this check, pass -SkipPrereqCheck.)" -ForegroundColor DarkGray
+            exit 2
+        }
+        Write-Host "    All required toolchains present." -ForegroundColor DarkGray
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Optional: clean previous artifacts
+# ---------------------------------------------------------------------------
+if ($Clean) {
+    Invoke-Stage "Stage 0.5: Cleaning previous artifacts" {
+        foreach ($p in @($DistDir, $BinDir, $WixPayload, $BuildDir)) {
+            if (Test-Path $p) {
+                Remove-Item -Recurse -Force -Path $p
+                Write-Host "    Removed $p" -ForegroundColor DarkGray
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Stage 1: PyInstaller -> bin/waterfree-<plat>-<arch>.exe
+# ---------------------------------------------------------------------------
+if ($SkipExe) {
+    Write-Stage "Stage 1: PyInstaller (skipped, -SkipExe)"
+    if (-not (Test-Path $ExePath)) {
+        Write-Host "FAILED: -SkipExe was passed but $ExePath does not exist." -ForegroundColor Red
+        exit 3
+    }
+} else {
+    Invoke-Stage "Stage 1: PyInstaller -> $ExeName" {
+        Push-Location $RepoRoot
+        try {
+            & python -m PyInstaller --noconfirm $SpecFile
+        } finally {
+            Pop-Location
+        }
+        if (-not (Test-Path $PyInstallerOut)) {
+            Write-Host "FAILED: PyInstaller succeeded but $PyInstallerOut is missing." -ForegroundColor Red
+            exit 1
+        }
+        # WiX consumes the exe from bin/; PyInstaller puts it in dist/. Copy it across.
+        New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+        Copy-Item -Force $PyInstallerOut $ExePath
+        Write-Host "    -> $ExePath" -ForegroundColor DarkGray
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Stage 2: npm run package -> waterfree.vsix
+# ---------------------------------------------------------------------------
+if ($SkipVsix) {
+    Write-Stage "Stage 2: npm run package (skipped, -SkipVsix)"
+    if (-not (Test-Path $VsixPath)) {
+        Write-Host "FAILED: -SkipVsix was passed but $VsixPath does not exist." -ForegroundColor Red
+        exit 3
+    }
+} else {
+    Invoke-Stage "Stage 2: npm run package -> waterfree.vsix" {
+        Push-Location $RepoRoot
+        try {
+            & npm run package
+        } finally {
+            Pop-Location
+        }
+    }
+    if (-not (Test-Path $VsixPath)) {
+        Write-Host "FAILED: npm run package succeeded but $VsixPath is missing." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Stage 3: WiX -> dist/WaterFreeSetup-<version>.msi
+# ---------------------------------------------------------------------------
+if ($SkipMsi) {
+    Write-Stage "Stage 3: WiX (skipped, -SkipMsi)"
+    Write-Host "    Built exe + vsix only; MSI not produced."
+} else {
+    Invoke-Stage "Stage 3: WiX -> WaterFreeSetup.msi" {
+        Push-Location $WixDir
+        try {
+            & dotnet build $WixProj -c Release -p:ProductVersion=$ProductVersion
+        } finally {
+            Pop-Location
+        }
+    }
+
+    # WiX writes into installer/bin/<Config>/<TargetFramework or empty>/
+    $msiCandidate = Get-ChildItem -Path (Join-Path $WixDir "bin") -Recurse -Filter "WaterFreeSetup*.msi" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+    if (-not $msiCandidate) {
+        Write-Host "FAILED: WiX build finished but no MSI was found under $WixDir\bin." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Stage 4: Stage artifacts into dist/
+# ---------------------------------------------------------------------------
+Invoke-Stage "Stage 4: Staging artifacts into dist/" {
+    New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+    Copy-Item -Force $ExePath  (Join-Path $DistDir $ExeName)
+    Copy-Item -Force $VsixPath (Join-Path $DistDir "waterfree.vsix")
+    if (-not $SkipMsi) {
+        $finalMsiName = "WaterFreeSetup-$ProductVersion.msi"
+        Copy-Item -Force $msiCandidate.FullName (Join-Path $DistDir $finalMsiName)
+        Write-Host "    -> dist\$finalMsiName" -ForegroundColor Green
+    }
+    Write-Host "    -> dist\$ExeName"          -ForegroundColor Green
+    Write-Host "    -> dist\waterfree.vsix"    -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+$total = (Get-Date) - $Start
+Write-Host ""
+Write-Host ("==> Build complete in {0:n1}s" -f $total.TotalSeconds) -ForegroundColor Green
+Write-Host "    Artifacts: $DistDir" -ForegroundColor Green

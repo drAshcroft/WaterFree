@@ -1,14 +1,57 @@
-.git/**
-.vscode/**
-.waterfree/**
-.tmp_*/**
-node_modules/**
-.venv/**
-**/.venv/**
-src/**/*.ts
-skills/**
+# What ships in waterfree.vsix:
+#   - out/extension.js      (esbuild bundle)
+#   - package.json
+#   - README.md
+#   - resources/            (extension icons)
+#   - LICENSE                (if vsce wants it)
+# Everything else is excluded below.
+
+# Source — bundled into out/extension.js, not shipped raw
+src/**
+**/*.ts
+**/*.tsx
 **/*.map
 tsconfig.json
 esbuild.config.js
-package-lock.json
+
+# Build / packaging artifacts that are NOT the VSIX itself
+bin/**
+build/**
+dist/**
+out/**/*.map
+*.vsix
+
+# Backend (compiled to waterfree.exe — installed separately by the MSI)
+backend/**
+waterfree.spec
+__pycache__/**
+**/__pycache__/**
+**/*.pyc
+**/.pytest_cache/**
+
+# Build orchestration
+build_installer.ps1
 deploy.ps1
+*.ps1
+WaterFree.sln
+
+# Installer project (built separately; consumed via the MSI)
+installer/**
+
+# Skills (installed separately by the install_*.ps1 scripts)
+skills/**
+
+# Docs / project metadata not needed at extension runtime
+docs/**
+
+# Workspace state
+.git/**
+.github/**
+.vscode/**
+.waterfree/**
+.tmp_*/**
+.venv/**
+**/.venv/**
+node_modules/**
+package-lock.json
+.gitignore

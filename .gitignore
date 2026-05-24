@@ -156,3 +156,4 @@ tmp-object.json
 /installer/WaterFreeInstallerHelper/publish
 /installer/obj
 /installer/bin/Release
+/bin

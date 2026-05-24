@@ -16,11 +16,19 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
+
+try:
+    import pathspec as _pathspec
+    _PATHSPEC_OK = True
+except ImportError:
+    _pathspec = None  # type: ignore[assignment]
+    _PATHSPEC_OK = False
 
 log = logging.getLogger(__name__)
 
@@ -33,12 +41,14 @@ try:
     import tree_sitter_python as _ts_python
     import tree_sitter_typescript as _ts_typescript
     import tree_sitter_javascript as _ts_javascript
+    import tree_sitter_c_sharp as _ts_csharp
 
     _LANGS: dict[str, Language] = {
         "python":     Language(_ts_python.language()),
         "typescript": Language(_ts_typescript.language_typescript()),
         "tsx":        Language(_ts_typescript.language_tsx()),
         "javascript": Language(_ts_javascript.language()),
+        "csharp":     Language(_ts_csharp.language()),
     }
     _TS_OK = True
 except ImportError:
@@ -52,12 +62,18 @@ _EXT_LANG: dict[str, str] = {
     ".js":  "javascript",
     ".jsx": "javascript",
     ".py":  "python",
+    ".cs":  "csharp",
 }
 
 _EXCLUDE_DIRS = {
+    # Common
     "node_modules", ".git", "dist", "build", "__pycache__",
-    ".waterfree", ".waterfree", ".venv", "venv", ".mypy_cache",
+    ".waterfree", ".venv", "venv", ".mypy_cache",
     ".pytest_cache", "coverage", ".next", "out", ".turbo",
+    # .NET / C# build output
+    "obj", "bin",
+    # Unity
+    "Library", "Temp", "Logs", "UserSettings",
 }
 
 MAX_FILE_BYTES = 500_000
@@ -441,6 +457,108 @@ def _parse_ts_import(node: "Node", source: bytes, result: ParsedFileResult) -> N
         result.import_map[alias] = mod_path
 
 
+def _extract_csharp(source: bytes, file_path: str, project: str, rel_path: str) -> ParsedFileResult:
+    result = ParsedFileResult(file_path, "csharp")
+    result.set_mod_prefix(_make_qn(project, rel_path))
+
+    if not _TS_OK or "csharp" not in _LANGS:
+        return _fallback_regex(source, file_path, project, rel_path, "csharp")
+
+    parser = TSParser(_LANGS["csharp"])
+    tree = parser.parse(source)
+    root = tree.root_node
+
+    def get_name(node: "Node") -> str:
+        return _child_text(node, ("identifier",), source)
+
+    def walk(node: "Node", class_name: str = ""):
+        t = node.type
+
+        if t == "using_directive":
+            result.raw_imports.append(_node_text(node, source))
+            return
+
+        if t == "class_declaration":
+            cname = get_name(node)
+            if cname:
+                qn = _make_qn(project, rel_path, cname)
+                bases = []
+                for child in node.children:
+                    if child.type == "base_list":
+                        bases_text = _node_text(child, source)
+                        bases = [b.strip() for b in bases_text.split(",") if b.strip()]
+                sym = RawSymbol(
+                    label="Class", name=cname, qualified_name=qn,
+                    file_path=file_path,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    body=_body_text(node, source),
+                    properties={"base_classes": bases},
+                )
+                result.symbols.append(sym)
+                for child in node.children:
+                    walk(child, class_name=cname)
+            return
+
+        if t == "interface_declaration":
+            iname = get_name(node)
+            if iname:
+                qn = _make_qn(project, rel_path, iname)
+                bases = []
+                for child in node.children:
+                    if child.type == "base_list":
+                        bases_text = _node_text(child, source)
+                        bases = [b.strip() for b in bases_text.split(",") if b.strip()]
+                sym = RawSymbol(
+                    label="Class", name=iname, qualified_name=qn,
+                    file_path=file_path,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    body=_body_text(node, source),
+                    properties={"is_interface": True, "base_classes": bases},
+                )
+                result.symbols.append(sym)
+            return
+
+        if t == "method_declaration":
+            mname = get_name(node)
+            if mname:
+                label = "Method" if class_name else "Function"
+                parts = (class_name, mname) if class_name else (mname,)
+                qn = _make_qn(project, rel_path, *parts)
+                sym = RawSymbol(
+                    label=label, name=mname, qualified_name=qn,
+                    file_path=file_path,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    body=_body_text(node, source),
+                    properties={"parent_class": class_name} if class_name else {},
+                )
+                result.symbols.append(sym)
+            return
+
+        if t == "property_declaration":
+            pname = get_name(node)
+            if pname and class_name:
+                qn = _make_qn(project, rel_path, class_name, pname)
+                sym = RawSymbol(
+                    label="Method", name=pname, qualified_name=qn,
+                    file_path=file_path,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    body=_body_text(node, source),
+                    properties={"parent_class": class_name},
+                )
+                result.symbols.append(sym)
+            return
+
+        for child in node.children:
+            walk(child, class_name=class_name)
+
+    walk(root)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Regex fallback (when tree-sitter not available)
 # ---------------------------------------------------------------------------
@@ -454,6 +572,10 @@ _RE_TS_FUNC  = re.compile(
 )
 _RE_TS_CLASS = re.compile(r"(?:export\s+)?(?:abstract\s+)?class\s+(\w+)", re.MULTILINE)
 _RE_TS_IFACE = re.compile(r"(?:export\s+)?interface\s+(\w+)", re.MULTILINE)
+_RE_CS_CLASS = re.compile(r"(?:public\s+)?(?:abstract\s+)?(?:partial\s+)?class\s+(\w+)", re.MULTILINE)
+_RE_CS_IFACE = re.compile(r"(?:public\s+)?interface\s+(\w+)", re.MULTILINE)
+_RE_CS_METHOD = re.compile(r"(?:public|private|protected|internal)?\s+(?:async\s+)?(?:\w+\s+)?(\w+)\s*\(", re.MULTILINE)
+_RE_CS_PROP = re.compile(r"(?:public|private|protected|internal)?\s+(\w+)\s*\{.*?(?:get|set)", re.MULTILINE | re.DOTALL)
 
 
 def _fallback_regex(source: bytes, file_path: str, project: str, rel_path: str, lang: str) -> ParsedFileResult:
@@ -475,6 +597,22 @@ def _fallback_regex(source: bytes, file_path: str, project: str, rel_path: str, 
             qn = _make_qn(project, rel_path, name)
             result.symbols.append(RawSymbol("Class", name, qn, file_path, ln, ln, snippet(ln)))
         for m in _RE_PY_FUNC.finditer(text):
+            name = m.group(1)
+            ln = ln_of(m)
+            qn = _make_qn(project, rel_path, name)
+            result.symbols.append(RawSymbol("Function", name, qn, file_path, ln, ln, snippet(ln)))
+    elif lang == "csharp":
+        for m in _RE_CS_CLASS.finditer(text):
+            name = m.group(1)
+            ln = ln_of(m)
+            qn = _make_qn(project, rel_path, name)
+            result.symbols.append(RawSymbol("Class", name, qn, file_path, ln, ln, snippet(ln)))
+        for m in _RE_CS_IFACE.finditer(text):
+            name = m.group(1)
+            ln = ln_of(m)
+            qn = _make_qn(project, rel_path, name)
+            result.symbols.append(RawSymbol("Class", name, qn, file_path, ln, ln, snippet(ln), {"is_interface": True}))
+        for m in _RE_CS_METHOD.finditer(text):
             name = m.group(1)
             ln = ln_of(m)
             qn = _make_qn(project, rel_path, name)
@@ -527,6 +665,8 @@ def parse_file(file_path: str, project: str, root_path: str) -> Optional[ParsedF
 
     if lang == "python":
         result = _extract_python(source, file_path, project, rel)
+    elif lang == "csharp":
+        result = _extract_csharp(source, file_path, project, rel)
     else:
         result = _extract_ts_js(source, file_path, project, rel, lang)
 
@@ -574,17 +714,72 @@ def resolve_calls(
 # File discovery
 # ---------------------------------------------------------------------------
 
+def _build_ignore_spec(root: Path):
+    """
+    Build a pathspec matcher from .gitignore files in root (and nested dirs).
+    Uses os.walk with directory pruning so excluded dirs (Library, node_modules,
+    etc.) are never traversed. .vscodeignore is intentionally excluded.
+
+    Returns a pathspec.PathSpec if pathspec is installed, else None.
+    """
+    if not _PATHSPEC_OK:
+        return None
+
+    patterns: list[str] = []
+    root_str = str(root)
+
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        # Prune excluded directories so we never descend into them.
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+
+        if ".gitignore" not in filenames:
+            continue
+
+        gi = Path(dirpath) / ".gitignore"
+        try:
+            sub_root = gi.parent
+            for line in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # Prefix nested gitignore patterns so they are relative to root.
+                if sub_root != root:
+                    rel_prefix = sub_root.relative_to(root).as_posix()
+                    if not line.startswith("!"):
+                        line = f"{rel_prefix}/{line}"
+                    else:
+                        line = f"!{rel_prefix}/{line[1:]}"
+                patterns.append(line)
+        except OSError:
+            pass
+
+    if not patterns:
+        return None
+
+    return _pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
 def collect_files(root_path: str) -> list[Path]:
     files = []
     root = Path(root_path)
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in _EXCLUDE_DIRS for part in p.parts):
-            continue
-        if p.suffix.lower() not in _EXT_LANG:
-            continue
-        files.append(p)
+    ignore_spec = _build_ignore_spec(root)
+
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        # Prune excluded directories in-place so os.walk never descends into them.
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+
+        for filename in filenames:
+            if Path(filename).suffix.lower() not in _EXT_LANG:
+                continue
+            p = Path(dirpath) / filename
+            if ignore_spec is not None:
+                try:
+                    rel = p.relative_to(root).as_posix()
+                except ValueError:
+                    rel = p.as_posix()
+                if ignore_spec.match_file(rel):
+                    continue
+            files.append(p)
     return files
 
 

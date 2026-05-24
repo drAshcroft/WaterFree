@@ -12,7 +12,10 @@ Output:
 
 import platform
 import sys
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
+
+_ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 
 # ---------------------------------------------------------------------------
 # Platform-specific output name
@@ -30,6 +33,7 @@ _ts_pkgs = [
     "tree_sitter_python",
     "tree_sitter_typescript",
     "tree_sitter_javascript",
+    "tree_sitter_c_sharp",
 ]
 
 datas_extra    = []
@@ -45,40 +49,77 @@ for pkg in _ts_pkgs:
     except Exception:
         pass  # package not installed — skip gracefully
 
+def _collect_data_tree(source: Path, dest: str) -> list[tuple[str, str]]:
+    if not source.exists():
+        return []
+    entries: list[tuple[str, str]] = []
+    for path in source.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parent = path.relative_to(source).parent
+        entries.append((str(path), str(Path(dest) / rel_parent)))
+    return entries
+
+
+def _collect_backend_hiddenimports() -> list[str]:
+    root = _ROOT / "backend"
+    if not root.exists():
+        return []
+    modules: list[str] = []
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(_ROOT).with_suffix("")
+        parts = list(rel.parts)
+        if "tests" in parts or "__pycache__" in parts:
+            continue
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            modules.append(".".join(parts))
+    return sorted(set(modules))
+
+
+datas_extra += _collect_data_tree(
+    _ROOT / "backend" / "llm" / "personas" / "initial_personas",
+    "backend/llm/personas/initial_personas",
+)
+
+runtime_hiddenimports = [
+    # Backend modules are imported through argv dispatch, registries, and handlers.
+    *_collect_backend_hiddenimports(),
+    # Common provider and runtime modules.
+    "anthropic",
+    "langchain_anthropic",
+    "langchain_openai",
+    "langchain_ollama",
+    "langchain_google_genai",
+    "langchain_groq",
+    "langchain_core",
+    "langchain_core.messages",
+    "langchain_core.tools",
+    "deepagents",
+    "deepagents.backends",
+    "deepagents.middleware",
+    "huggingface_hub",
+    "pydantic",
+    # stdlib extras that can get missed by frozen optional code paths.
+    "sqlite3",
+    "json",
+    "pathlib",
+    # gitignore pattern matching for indexer.
+    "pathspec",
+    "pathspec.patterns",
+    "pathspec.patterns.gitwildmatch",
+]
+
 # ---------------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------------
 a = Analysis(
-    ["backend/main.py"],
-    pathex=["."],
+    [str(_ROOT / "backend" / "main.py")],
+    pathex=[str(_ROOT)],
     binaries=binaries_extra,
     datas=datas_extra,
-    hiddenimports=hiddenimports_extra + [
-        # All MCP server modules (imported dynamically based on argv)
-        "backend.mcp_index",
-        "backend.mcp_knowledge",
-        "backend.mcp_todos",
-        "backend.mcp_debug",
-        "backend.mcp_testing",
-        "backend.mcp_qa_summary",
-        # VS Code bridge server
-        "backend.server",
-        # Common provider and runtime modules
-        "anthropic",
-        "mcp",
-        "mcp.server.stdio",
-        "langchain_anthropic",
-        "langchain_openai",
-        "langchain_ollama",
-        "langchain_core",
-        "langchain_core.messages",
-        "langchain_core.tools",
-        "deepagents",
-        # stdlib extras that get missed
-        "sqlite3",
-        "json",
-        "pathlib",
-    ],
+    hiddenimports=sorted(set(hiddenimports_extra + runtime_hiddenimports)),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -272,19 +272,35 @@ WaterFree detects these on save and adds them to the active session's backlog au
 ---
 
 
-## MCP Tools
+## CLI Tools
 
 
-WaterFree exposes its internal tooling as MCP servers, making them available to Claude Code and other AI agents in your workspace:
+WaterFree exposes its internal tooling as a single command-line executable —
+`waterfree` — installed on your PATH by the MSI. Each former MCP server is now
+a subcommand. Agents (Claude Code, Codex, etc.) invoke it via the shell rather
+than over an MCP stdio transport.
 
 
-| Server | Purpose |
+| Subcommand | Purpose |
 |---|---|
-| `waterfree-index` | Codebase graph: search symbols, trace callers/callees, detect change impact |
-| `waterfree-knowledge` | Knowledge store: search extracted patterns and snippets |
-| `waterfree-todos` | Task backlog: list, add, update, and complete tasks |
-| `waterfree-debug` | Live debug: inspect breakpoint snapshots progressively |
-| `waterfree-qa-summary` | Local QA summarizer: analyze a file or URL with Ollama and answer a question in detail |
+| `waterfree todos`        | Workspace task backlog: list, add, update, complete |
+| `waterfree knowledge`    | Global knowledge store: search, browse, add, delete |
+| `waterfree index`        | Codebase graph: search symbols, trace callers/callees, detect change impact |
+| `waterfree testing`      | Auto-detected test runner (pytest, jest, vitest, unittest) |
+| `waterfree qa-summary`   | Map/reduce summarizer over a file or URL via local Ollama |
+
+All commands emit JSON to stdout; progress and errors go to stderr. See
+[docs/cli-surface.md](docs/cli-surface.md) for the full reference (flags, exit
+codes, JSON contract).
+
+
+### Installing
+
+
+Run [build_installer.ps1](build_installer.ps1) from the repo root to produce
+`dist/WaterFreeSetup-<version>.msi` plus the standalone exe and vsix. The MSI
+installs `waterfree.exe` into `%LOCALAPPDATA%\WaterFree\bin\` and adds that
+directory to user PATH, so any shell can invoke the CLI directly.
 
 
 ---

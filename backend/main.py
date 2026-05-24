@@ -2,15 +2,17 @@
 Unified entry point — used by the PyInstaller-built executable.
 
 Usage:
-    waterfree serve             VS Code bridge server
-    waterfree mcp <mode>        MCP server  (index | knowledge | todos |
-                                             debug | testing | qa-summary)
+    waterfree serve                  VS Code bridge server
+    waterfree <area> <action> ...    CLI subcommand
+                                     (see docs/cli-surface.md)
+
+Areas: todos | knowledge | index | testing | qa-summary
 """
 from __future__ import annotations
 
 import sys
 
-_MCP_MODES = ("index", "knowledge", "todos", "debug", "testing", "qa-summary")
+_CLI_AREAS = ("todos", "knowledge", "index", "testing", "qa-summary")
 
 
 def main() -> None:
@@ -20,42 +22,32 @@ def main() -> None:
 
     command = args[0]
 
+    if command in ("-h", "--help"):
+        _usage(exit_code=0)
+
     if command == "serve":
         from backend.server import run
         run()
-
-    elif command == "mcp":
-        if len(args) < 2 or args[1] not in _MCP_MODES:
-            _usage()
-        _run_mcp(args[1])
-
-    else:
-        _usage()
-
-
-def _run_mcp(mode: str) -> None:
-    if mode == "index":
-        from backend.mcp_index import mcp
-    elif mode == "knowledge":
-        from backend.mcp_knowledge import mcp
-    elif mode == "todos":
-        from backend.mcp_todos import mcp
-    elif mode == "debug":
-        from backend.mcp_debug import mcp
-    elif mode == "testing":
-        from backend.mcp_testing import mcp
-    elif mode == "qa-summary":
-        from backend.mcp_qa_summary import mcp
-    else:
-        _usage()
         return
-    mcp.run()
+
+    if command in _CLI_AREAS:
+        from backend.cli.dispatcher import dispatch
+        sys.exit(dispatch(args))
+
+    _usage()
 
 
-def _usage() -> None:
-    modes = " | ".join(_MCP_MODES)
-    print(f"Usage: waterfree <serve | mcp <{modes}>>", file=sys.stderr)
-    sys.exit(1)
+def _usage(exit_code: int = 1) -> None:
+    areas = " | ".join(_CLI_AREAS)
+    print(
+        "Usage:\n"
+        "  waterfree serve\n"
+        f"  waterfree <{areas}> <action> [flags]\n"
+        "\n"
+        "Run `waterfree <area> --help` for area-specific options.",
+        file=sys.stderr,
+    )
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

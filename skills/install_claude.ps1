@@ -15,7 +15,7 @@
     Target skills directory. Defaults to ~/.claude/skills.
 
 .PARAMETER Skill
-    One or more skill names to install (e.g. "waterfree-index", "waterfree-debug").
+    One or more skill names to install (e.g. "waterfree-index", "waterfree-todos").
     Omit to install all available skills.
 
 .EXAMPLE
@@ -24,7 +24,7 @@
 
 .EXAMPLE
     # Install specific skills
-    .\install_claude.ps1 -Skill waterfree-index, waterfree-debug
+    .\install_claude.ps1 -Skill waterfree-index, waterfree-todos
 
 .EXAMPLE
     # Install to a custom path

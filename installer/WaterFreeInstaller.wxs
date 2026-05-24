@@ -7,14 +7,23 @@
     UpgradeCode="{D9B41B5B-30A8-4E37-8C8D-0E67E81A6BA4}"
     Scope="perUser">
     <MajorUpgrade AllowDowngrades="no" DowngradeErrorMessage="A newer version of WaterFree is already installed." />
-    <MediaTemplate />
+    <!-- EmbedCab="yes" so the MSI is self-contained; no separate cab*.cab file needs to ship alongside it. -->
+    <MediaTemplate EmbedCab="yes" />
 
     <StandardDirectory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="WaterFree">
         <Directory Id="BinDir" Name="bin">
-          <Component Id="WaterfreeMcpExe" Guid="{5A4E2E1C-1C9E-4C6B-9B8A-18B1F5F9D4A1}">
-            <File Id="WaterfreeMcpExeFile" Source="$(var.PayloadDir)\waterfree-mcp.exe" KeyPath="no" />
-            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="WaterfreeMcpExe" Type="string" Value="1" KeyPath="yes" />
+          <Component Id="WaterfreeExe" Guid="{5A4E2E1C-1C9E-4C6B-9B8A-18B1F5F9D4A1}">
+            <File Id="WaterfreeExeFile" Source="$(var.PayloadDir)\waterfree.exe" KeyPath="no" />
+            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="WaterfreeExe" Type="string" Value="1" KeyPath="yes" />
+            <!-- Add the bin dir to user PATH so `waterfree <area> <action>` works in any shell. -->
+            <Environment Id="AddWaterfreeToUserPath"
+                         Name="PATH"
+                         Action="set"
+                         Permanent="no"
+                         Part="last"
+                         System="no"
+                         Value="[BinDir]" />
           </Component>
           <Component Id="InstallerHelper" Guid="{8C2B3F4D-7A8F-4D2D-9F6A-3D4A8E6F1B21}">
             <File Id="InstallerHelperExe" Source="$(var.PayloadDir)\waterfree-installer-helper.exe" KeyPath="no" />
@@ -47,7 +56,7 @@
     </StandardDirectory>
 
     <Feature Id="MainFeature" Title="WaterFree" Level="1">
-      <ComponentRef Id="WaterfreeMcpExe" />
+      <ComponentRef Id="WaterfreeExe" />
       <ComponentRef Id="InstallerHelper" />
       <ComponentRef Id="VsixPayload" />
       <ComponentRef Id="InstallerLogFolder" />
