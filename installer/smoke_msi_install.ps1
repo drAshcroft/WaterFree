@@ -41,6 +41,7 @@ $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $DistDir    = Join-Path $RepoRoot "dist"
 $InstallDir = Join-Path $env:LOCALAPPDATA "WaterFree"
 $ExpectedExe = Join-Path $InstallDir "bin\waterfree.exe"
+$ExpectedCodexSkill = Join-Path $HOME ".codex\skills\waterfree-index\SKILL.md"
 
 function Assert([bool]$cond, [string]$msg) {
     if (-not $cond) {
@@ -101,6 +102,11 @@ try {
 
     & $ExpectedExe knowledge stats | Out-Null
     Assert ($LASTEXITCODE -eq 0) "waterfree knowledge stats returns 0"
+
+    Assert (Test-Path $ExpectedCodexSkill) "Codex WaterFree skills are installed"
+    $skillText = Get-Content -Raw -Path $ExpectedCodexSkill
+    Assert ($skillText -match "waterfree index") "Codex index skill points at the waterfree CLI"
+    Assert ($skillText -notmatch "mcp__|MCP tools|MCP server") "Codex index skill does not point at MCP tools"
 } finally {
     Remove-Item -Recurse -Force $tmpWs.FullName -ErrorAction SilentlyContinue
 }
@@ -117,6 +123,7 @@ Assert ($proc.ExitCode -eq 0) "msiexec uninstall exited 0 (log: $uninstallLog)"
 Write-Host "==> Stage 5: verify PATH cleanup" -ForegroundColor Cyan
 Assert (-not (Test-Path $ExpectedExe)) "waterfree.exe removed from $InstallDir"
 Assert (-not (Test-WaterfreeOnPath))   "user PATH no longer contains $InstallDir\bin"
+Assert (-not (Test-Path $ExpectedCodexSkill)) "Codex WaterFree skills removed"
 
 Write-Host ""
 Write-Host "==> MSI install/uninstall smoke test passed." -ForegroundColor Green

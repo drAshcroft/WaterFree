@@ -22,10 +22,14 @@ from backend.tutorializer import ollama as ollama_client
 
 _DEFAULT_MODEL = os.environ.get("WATERFREE_QA_SUMMARY_MODEL", "qwen2.5:14b")
 _DEFAULT_OLLAMA_BASE = os.environ.get("WATERFREE_OLLAMA_BASE", "http://localhost:11434")
+_OLLAMA_KEEP_ALIVE = os.environ.get("WATERFREE_QA_SUMMARY_KEEP_ALIVE", "30m")
 _READ_TIMEOUT_SECONDS = 45
 _OLLAMA_TIMEOUT_SECONDS = 240
 _CHUNK_SIZE_CHARS = 12000
 _REDUCTION_BATCH_SIZE = 6
+_ANALYSIS_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_ANALYSIS_TOKENS", "512"))
+_FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_FINAL_TOKENS", "256"))
+_DETAILED_FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_DETAILED_TOKENS", "1024"))
 
 
 class OllamaUnavailable(RuntimeError):
@@ -159,20 +163,23 @@ def _ensure_ollama_ready(model: str) -> None:
         )
 
 
-def _ollama_chat(messages: list[dict[str, str]]) -> str:
+def _ollama_chat(messages: list[dict[str, str]], *, num_predict: int) -> str:
     return ollama_client.chat(
         model=_DEFAULT_MODEL,
         messages=messages,
         base=_DEFAULT_OLLAMA_BASE,
         timeout=_OLLAMA_TIMEOUT_SECONDS,
+        keep_alive=_OLLAMA_KEEP_ALIVE,
+        options={
+            "num_predict": num_predict,
+        },
     ).strip()
 
 
 def _analyze_chunk(chunk: str, *, chunk_index: int, chunk_total: int, question: str) -> str:
     system_prompt = (
         "You are a careful technical analyst. Analyze only the provided chunk. "
-        "Extract all details relevant to the question. "
-        "Be specific, include concrete facts, and do not omit nuances."
+        "Extract only facts relevant to the question. Be concise."
     )
     user_prompt = (
         f"Question:\n{question}\n\n"
@@ -180,33 +187,35 @@ def _analyze_chunk(chunk: str, *, chunk_index: int, chunk_total: int, question: 
         "----- BEGIN CHUNK -----\n"
         f"{chunk}\n"
         "----- END CHUNK -----\n\n"
-        "Return detailed notes focused on this question."
+        "Return concise notes focused on this question. Do not answer unrelated points."
     )
     return _ollama_chat(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        num_predict=_ANALYSIS_MAX_TOKENS,
     )
 
 
 def _merge_note_batch(batch: list[str], *, question: str, round_index: int, batch_index: int) -> str:
     system_prompt = (
-        "You are combining multiple partial analyses into one coherent, detailed synthesis. "
-        "Preserve important details and edge cases. Remove duplicates."
+        "Combine multiple partial analyses into one concise synthesis. "
+        "Preserve only details needed to answer the question. Remove duplicates."
     )
     joined = "\n\n".join(f"[analysis {i + 1}]\n{text}" for i, text in enumerate(batch))
     user_prompt = (
         f"Question:\n{question}\n\n"
         f"Reduction round {round_index}, batch {batch_index}.\n"
-        "Merge these analyses into one detailed synthesis:\n\n"
+        "Merge these analyses into concise answer notes:\n\n"
         f"{joined}"
     )
     return _ollama_chat(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        num_predict=_ANALYSIS_MAX_TOKENS,
     )
 
 
@@ -241,26 +250,41 @@ def _reduce_chunk_notes(notes: list[str], question: str) -> str:
 
 def _render_final_answer(synthesis: str, *, question: str, file_or_url: str) -> str:
     system_prompt = (
-        "You are an expert assistant. Produce a detailed final response that directly "
-        "answers the question using the synthesized notes."
+        "You answer questions using synthesized notes. Answer directly and stop. "
+        "Do not add sections, caveats, suggested checks, or extra explanation unless the question asks for them."
     )
     user_prompt = (
         f"Source: {file_or_url}\n\n"
         f"Question:\n{question}\n\n"
         "Synthesized notes:\n"
         f"{synthesis}\n\n"
-        "Write a detailed final answer with these sections:\n"
-        "1) Direct Answer\n"
-        "2) Supporting Details\n"
-        "3) Caveats and Unknowns\n"
-        "4) Suggested Next Checks"
+        "Answer the question directly. Use the shortest complete answer that satisfies the question."
     )
     return _ollama_chat(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ]
+        ],
+        num_predict=_final_token_budget(question),
     )
+
+
+def _final_token_budget(question: str) -> int:
+    q = question.lower()
+    detail_markers = (
+        "detailed",
+        "detail",
+        "explain",
+        "walk me through",
+        "step by step",
+        "thorough",
+        "comprehensive",
+        "full answer",
+        "deep dive",
+    )
+    if any(marker in q for marker in detail_markers):
+        return _DETAILED_FINAL_MAX_TOKENS
+    return _FINAL_MAX_TOKENS
 
 
 def run_qa_summary(file_or_url: str, question: str) -> dict:

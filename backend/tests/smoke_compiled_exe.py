@@ -30,8 +30,16 @@ from pathlib import Path
 
 def _default_exe() -> Path:
     repo_root = Path(__file__).resolve().parents[2]
-    # Try dist/ first (PyInstaller's actual output), then bin/ (WiX-staged copy).
+    # Try one-dir runtimes first, then legacy one-file locations.
     for candidate in (
+        repo_root / "dist" / "waterfree-win32-x64" / "waterfree.exe",
+        repo_root / "bin" / "waterfree-win32-x64" / "waterfree.exe",
+        repo_root / "dist" / "waterfree-linux-x64" / "waterfree",
+        repo_root / "bin" / "waterfree-linux-x64" / "waterfree",
+        repo_root / "dist" / "waterfree-darwin-x64" / "waterfree",
+        repo_root / "bin" / "waterfree-darwin-x64" / "waterfree",
+        repo_root / "dist" / "waterfree-darwin-arm64" / "waterfree",
+        repo_root / "bin" / "waterfree-darwin-arm64" / "waterfree",
         repo_root / "dist" / "waterfree-win32-x64.exe",
         repo_root / "bin" / "waterfree-win32-x64.exe",
         repo_root / "dist" / "waterfree-linux-x64",

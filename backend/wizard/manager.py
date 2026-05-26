@@ -74,6 +74,11 @@ class WizardManager:
             raise ValueError(f"Wizard '{wizard_id}' is not implemented yet.")
 
         cleaned_goal = goal.strip()
+        existing = self._find_latest_active_run()
+        if existing and existing.wizard_id == wizard_id:
+            if not cleaned_goal or existing.goal == cleaned_goal:
+                return existing
+
         run_id = str(uuid.uuid4())
         now = _now()
         run_dir = wizard_root(str(self._workspace), run_id)

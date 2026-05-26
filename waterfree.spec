@@ -1,13 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec — builds a single self-contained waterfree executable.
+PyInstaller spec — builds a one-dir waterfree runtime.
 
 Build:
     pyinstaller waterfree.spec
 Output:
-    bin/waterfree-win32-x64.exe   (Windows)
-    bin/waterfree-darwin-arm64    (macOS arm64)
-    bin/waterfree-linux-x64       (Linux)
+    dist/waterfree-win32-x64/waterfree.exe   (Windows)
+    dist/waterfree-darwin-arm64/waterfree    (macOS arm64)
+    dist/waterfree-linux-x64/waterfree       (Linux)
 """
 
 import platform
@@ -22,7 +22,8 @@ _ROOT = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 # ---------------------------------------------------------------------------
 _os   = sys.platform          # win32 | darwin | linux
 _arch = platform.machine().lower().replace("amd64", "x64").replace("x86_64", "x64")
-exe_name = f"waterfree-{_os}-{_arch}"
+runtime_name = f"waterfree-{_os}-{_arch}"
+launcher_name = "waterfree"  # PyInstaller adds .exe on Windows.
 
 # ---------------------------------------------------------------------------
 # Collect tree-sitter language packages (they include compiled .so/.pyd files
@@ -143,19 +144,28 @@ pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
-    name=exe_name,
+    exclude_binaries=True,
+    name=launcher_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,       # UPX can corrupt native extensions; leave off by default
-    console=True,    # MCP servers need stdio
+    console=True,    # `waterfree serve` uses stdio
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name=runtime_name,
+    strip=False,
+    upx=False,       # UPX can corrupt native extensions; leave off by default
 )

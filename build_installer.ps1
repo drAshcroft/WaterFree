@@ -5,16 +5,18 @@
 .DESCRIPTION
     Single entry point for the WaterFree release pipeline. Stages, in order:
 
-      1. PyInstaller        -> bin/waterfree-<plat>-<arch>.exe
+      1. PyInstaller        -> bin/waterfree-<plat>-<arch>\waterfree.exe
+                              + bin/waterfree-runtime.zip
       2. npm run package    -> waterfree.vsix
       3. WiX (dotnet build) -> dist/WaterFreeSetup-<version>.msi
                               (the WiX project's BuildPayload target internally
                                runs `dotnet publish` for the installer helper and
-                               stages the backend exe + vsix into its payload dir)
+                               stages the backend runtime zip + vsix into its payload dir)
 
     Final artifacts are copied into ./dist at repo root:
       - WaterFreeSetup-<version>.msi
-      - waterfree-<plat>-<arch>.exe
+      - waterfree-<plat>-<arch>\waterfree.exe
+      - waterfree-runtime.zip
       - waterfree.vsix
 
     Halts on the first failure with the failing command's exit code. Prints a
@@ -36,6 +38,9 @@
 
 .PARAMETER SkipMsi
     Stop after the exe + vsix stages; do not build the MSI.
+
+.PARAMETER SkipExeSmoke
+    Skip the compiled executable smoke test after PyInstaller.
 
 .PARAMETER SkipPrereqCheck
     Bypass the prerequisite probe (Python, PyInstaller, .NET SDK, Node, npm, WiX).
@@ -61,6 +66,7 @@ param(
     [switch]$SkipExe,
     [switch]$SkipVsix,
     [switch]$SkipMsi,
+    [switch]$SkipExeSmoke,
     [switch]$SkipPrereqCheck
 )
 
@@ -78,17 +84,21 @@ $BuildDir   = Join-Path $RepoRoot "build"   # PyInstaller scratch
 $VsixPath   = Join-Path $RepoRoot "waterfree.vsix"
 $SpecFile   = Join-Path $RepoRoot "waterfree.spec"
 
-# Match waterfree.spec's exe naming: waterfree-<sys.platform>-<arch>.exe
+# Match waterfree.spec's runtime naming: waterfree-<sys.platform>-<arch>/waterfree(.exe)
 $PlatformTag = switch -Regex ($env:OS) {
     "Windows" { "win32" }
     default   { "linux" }
 }
 $ArchTag = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
-$ExeName = if ($PlatformTag -eq "win32") { "waterfree-$PlatformTag-$ArchTag.exe" }
-           else                          { "waterfree-$PlatformTag-$ArchTag" }
-# PyInstaller writes to dist/<exe>; the WiX project expects it in bin/<exe>.
-$PyInstallerOut = Join-Path $RepoRoot "dist\$ExeName"
-$ExePath        = Join-Path $BinDir $ExeName
+$RuntimeDirName = "waterfree-$PlatformTag-$ArchTag"
+$LauncherName = if ($PlatformTag -eq "win32") { "waterfree.exe" } else { "waterfree" }
+$RuntimeZipName = "waterfree-runtime.zip"
+# PyInstaller writes to dist/<runtime-dir>/; WiX consumes bin/waterfree-runtime.zip.
+$PyInstallerOutDir = Join-Path $RepoRoot "dist\$RuntimeDirName"
+$PyInstallerLauncher = Join-Path $PyInstallerOutDir $LauncherName
+$RuntimeDirPath = Join-Path $BinDir $RuntimeDirName
+$ExePath = Join-Path $RuntimeDirPath $LauncherName
+$RuntimeZipPath = Join-Path $BinDir $RuntimeZipName
 
 $Banner = "==>"
 $Start  = Get-Date
@@ -177,7 +187,7 @@ if ($Clean) {
 }
 
 # ---------------------------------------------------------------------------
-# Stage 1: PyInstaller -> bin/waterfree-<plat>-<arch>.exe
+# Stage 1: PyInstaller -> bin/waterfree-<plat>-<arch>/ + runtime zip
 # ---------------------------------------------------------------------------
 if ($SkipExe) {
     Write-Stage "Stage 1: PyInstaller (skipped, -SkipExe)"
@@ -185,22 +195,50 @@ if ($SkipExe) {
         Write-Host "FAILED: -SkipExe was passed but $ExePath does not exist." -ForegroundColor Red
         exit 3
     }
+    if (-not (Test-Path $RuntimeZipPath)) {
+        Write-Host "FAILED: -SkipExe was passed but $RuntimeZipPath does not exist." -ForegroundColor Red
+        exit 3
+    }
 } else {
-    Invoke-Stage "Stage 1: PyInstaller -> $ExeName" {
+    Invoke-Stage "Stage 1: PyInstaller -> $RuntimeDirName" {
         Push-Location $RepoRoot
         try {
             & python -m PyInstaller --noconfirm $SpecFile
         } finally {
             Pop-Location
         }
-        if (-not (Test-Path $PyInstallerOut)) {
-            Write-Host "FAILED: PyInstaller succeeded but $PyInstallerOut is missing." -ForegroundColor Red
+        if (-not (Test-Path $PyInstallerLauncher)) {
+            Write-Host "FAILED: PyInstaller succeeded but $PyInstallerLauncher is missing." -ForegroundColor Red
             exit 1
         }
-        # WiX consumes the exe from bin/; PyInstaller puts it in dist/. Copy it across.
+        # WiX consumes a zip from bin/; PyInstaller puts the one-dir runtime in dist/.
         New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-        Copy-Item -Force $PyInstallerOut $ExePath
-        Write-Host "    -> $ExePath" -ForegroundColor DarkGray
+        if (Test-Path $RuntimeDirPath) {
+            Remove-Item -Recurse -Force -Path $RuntimeDirPath
+        }
+        Copy-Item -Recurse -Force $PyInstallerOutDir $RuntimeDirPath
+        if (Test-Path $RuntimeZipPath) {
+            Remove-Item -Force -Path $RuntimeZipPath
+        }
+        Compress-Archive -Path (Join-Path $RuntimeDirPath "*") -DestinationPath $RuntimeZipPath -Force
+        Write-Host "    -> $RuntimeDirPath" -ForegroundColor DarkGray
+        Write-Host "    -> $RuntimeZipPath" -ForegroundColor DarkGray
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Stage 1.5: Compiled executable smoke test
+# ---------------------------------------------------------------------------
+if ($SkipExeSmoke) {
+    Write-Stage "Stage 1.5: Compiled exe smoke test (skipped, -SkipExeSmoke)"
+} else {
+    Invoke-Stage "Stage 1.5: Smoke test compiled exe" {
+        Push-Location $RepoRoot
+        try {
+            & python -m backend.tests.smoke_compiled_exe --exe $ExePath
+        } finally {
+            Pop-Location
+        }
     }
 }
 
@@ -259,14 +297,19 @@ if ($SkipMsi) {
 # ---------------------------------------------------------------------------
 Invoke-Stage "Stage 4: Staging artifacts into dist/" {
     New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-    Copy-Item -Force $ExePath  (Join-Path $DistDir $ExeName)
+    if (Test-Path (Join-Path $DistDir $RuntimeDirName)) {
+        Remove-Item -Recurse -Force -Path (Join-Path $DistDir $RuntimeDirName)
+    }
+    Copy-Item -Recurse -Force $RuntimeDirPath (Join-Path $DistDir $RuntimeDirName)
+    Copy-Item -Force $RuntimeZipPath (Join-Path $DistDir $RuntimeZipName)
     Copy-Item -Force $VsixPath (Join-Path $DistDir "waterfree.vsix")
     if (-not $SkipMsi) {
         $finalMsiName = "WaterFreeSetup-$ProductVersion.msi"
         Copy-Item -Force $msiCandidate.FullName (Join-Path $DistDir $finalMsiName)
         Write-Host "    -> dist\$finalMsiName" -ForegroundColor Green
     }
-    Write-Host "    -> dist\$ExeName"          -ForegroundColor Green
+    Write-Host "    -> dist\$RuntimeDirName\"   -ForegroundColor Green
+    Write-Host "    -> dist\$RuntimeZipName"    -ForegroundColor Green
     Write-Host "    -> dist\waterfree.vsix"    -ForegroundColor Green
 }
 

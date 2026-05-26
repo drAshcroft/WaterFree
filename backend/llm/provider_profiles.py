@@ -595,12 +595,13 @@ def _normalize_model_tier_routes(
 ) -> dict[str, ModelTierRoute]:
     if not isinstance(raw, dict):
         return {}
+    from backend.llm.model_catalog import normalize_tier  # noqa: PLC0415
     valid_ids = {provider.id for provider in catalog}
     routes: dict[str, ModelTierRoute] = {}
     for tier, payload in raw.items():
         if not isinstance(payload, dict):
             continue
-        tier_key = str(tier or "").strip().lower()
+        tier_key = normalize_tier(str(tier or ""))
         provider_id = str(payload.get("providerId", "") or "").strip()
         if not tier_key or provider_id not in valid_ids:
             continue

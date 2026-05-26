@@ -164,17 +164,24 @@ def chat(
     messages: list[dict],
     base: str = _DEFAULT_BASE,
     timeout: int = 180,
+    keep_alive: str | None = None,
+    options: dict | None = None,
 ) -> str:
     """
     Send a chat request to Ollama and return the assistant's response text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": "..."}
     """
-    body = json.dumps({
+    payload = {
         "model": model,
         "messages": messages,
         "stream": False,
-    }).encode()
+    }
+    if keep_alive:
+        payload["keep_alive"] = keep_alive
+    if options:
+        payload["options"] = options
+    body = json.dumps(payload).encode()
 
     req = urllib.request.Request(
         f"{base}/api/chat",

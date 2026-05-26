@@ -214,18 +214,28 @@ export class PythonBridge implements vscode.Disposable {
     };
 
     // Resolve the backend command.
-    // Production: use the self-contained exe bundled with the extension.
+    // Production: prefer the installed/one-dir runtime.
     // Dev fallback: use waterfree.pythonPath setting (or "python") with -m backend.server.
     const arch = process.arch === "x64" ? "x64" : process.arch;
-    const exeName = process.platform === "win32"
-      ? `waterfree-win32-${arch}.exe`
-      : `waterfree-${process.platform}-${arch}`;
-    const bundledExe = path.join(this._extensionPath, "bin", exeName);
+    const runtimeDir = `waterfree-${process.platform}-${arch}`;
+    const launcherName = process.platform === "win32" ? "waterfree.exe" : "waterfree";
+    const bundledExe = path.join(this._extensionPath, "bin", runtimeDir, launcherName);
+    const legacyBundledExe = path.join(
+      this._extensionPath,
+      "bin",
+      process.platform === "win32" ? `${runtimeDir}.exe` : runtimeDir,
+    );
 
     let cmd: string;
     let args: string[];
     if (fs.existsSync(bundledExe)) {
       cmd = bundledExe;
+      args = ["serve"];
+    } else if (fs.existsSync(legacyBundledExe)) {
+      cmd = legacyBundledExe;
+      args = ["serve"];
+    } else if (this._commandExists("waterfree")) {
+      cmd = "waterfree";
       args = ["serve"];
     } else {
       const pythonPath: string = config.get("pythonPath") ?? "python";
@@ -289,6 +299,15 @@ export class PythonBridge implements vscode.Disposable {
         this._log(`syncProviderProfile failed: ${err.message}`);
       });
     }
+  }
+
+  private _commandExists(command: string): boolean {
+    const probe = process.platform === "win32" ? "where" : "which";
+    const result = spawnSync(probe, [command], {
+      encoding: "utf-8",
+      windowsHide: true,
+    });
+    return result.status === 0;
   }
 
   dispose(): void {

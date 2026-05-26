@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -49,16 +50,14 @@ internal static class Program
                 // Clean up any legacy MCP entries left by previous versions.
                 RemoveCodexConfig(log);
                 RemoveClaudeConfig(log);
+                RemoveInstalledSkills(log, installDir);
+                RemoveExtractedRuntime(log, installDir);
                 log.Info("Uninstall cleanup complete.");
                 return 0;
             }
 
             var exePath = Path.Combine(installDir, "bin", "waterfree.exe");
-            if (!File.Exists(exePath))
-            {
-                log.Error($"Executable not found: {exePath}");
-                return 3;
-            }
+            ExtractRuntime(log, installDir);
 
             // Newer installs do not register MCP servers — the CLI is invoked
             // directly via PATH. We still strip any legacy entries in case the
@@ -66,6 +65,7 @@ internal static class Program
             RemoveCodexConfig(log);
             RemoveClaudeConfig(log);
 
+            InstallSkills(log, installDir);
             InstallVsixIfPossible(log, vsixPath);
             SmokeTest(log, exePath);
 
@@ -197,6 +197,171 @@ internal static class Program
         log.Info($"Claude MCP legacy entries cleaned: {configPath}");
     }
 
+    private static void InstallSkills(InstallerLog log, string installDir)
+    {
+        var sourceRoot = Path.Combine(installDir, "skills");
+        if (!Directory.Exists(sourceRoot))
+        {
+            log.Info($"Skills payload not found; skipping skill install: {sourceRoot}");
+            return;
+        }
+
+        var packages = Directory.GetDirectories(sourceRoot)
+            .Where(dir => File.Exists(Path.Combine(dir, "SKILL.md")))
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (packages.Length == 0)
+        {
+            log.Info($"No skill packages found under {sourceRoot}; skipping.");
+            return;
+        }
+
+        InstallSkillsTo(log, packages, Path.Combine(GetUserHome(), ".codex", "skills"), "Codex");
+        InstallSkillsTo(log, packages, Path.Combine(GetUserHome(), ".claude", "skills"), "Claude");
+    }
+
+    private static void InstallSkillsTo(
+        InstallerLog log,
+        string[] packages,
+        string destinationRoot,
+        string targetName)
+    {
+        Directory.CreateDirectory(destinationRoot);
+        var installed = 0;
+
+        foreach (var package in packages)
+        {
+            var name = Path.GetFileName(package);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+
+            var destination = Path.Combine(destinationRoot, name);
+            if (Directory.Exists(destination))
+            {
+                Directory.Delete(destination, recursive: true);
+            }
+
+            CopyDirectory(package, destination);
+            installed++;
+        }
+
+        log.Info($"Installed {installed} WaterFree skill(s) for {targetName}: {destinationRoot}");
+    }
+
+    private static void RemoveInstalledSkills(InstallerLog log, string installDir)
+    {
+        var names = GetInstalledSkillNames(installDir);
+        RemoveInstalledSkillsFrom(log, Path.Combine(GetUserHome(), ".codex", "skills"), "Codex", names);
+        RemoveInstalledSkillsFrom(log, Path.Combine(GetUserHome(), ".claude", "skills"), "Claude", names);
+    }
+
+    private static string[] GetInstalledSkillNames(string installDir)
+    {
+        var sourceRoot = Path.Combine(installDir, "skills");
+        if (Directory.Exists(sourceRoot))
+        {
+            var names = Directory.GetDirectories(sourceRoot)
+                .Where(dir => File.Exists(Path.Combine(dir, "SKILL.md")))
+                .Select(Path.GetFileName)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Cast<string>()
+                .ToArray();
+            if (names.Length > 0) return names;
+        }
+
+        return new[]
+        {
+            "tutorialize",
+            "waterfree-index",
+            "waterfree-knowledge",
+            "waterfree-qa-summary",
+            "waterfree-testing",
+            "waterfree-todos"
+        };
+    }
+
+    private static void RemoveInstalledSkillsFrom(
+        InstallerLog log,
+        string destinationRoot,
+        string targetName,
+        string[] names)
+    {
+        if (!Directory.Exists(destinationRoot))
+        {
+            log.Info($"{targetName} skills directory not found; skipping removal.");
+            return;
+        }
+
+        var removed = 0;
+        foreach (var name in names)
+        {
+            var destination = Path.Combine(destinationRoot, name);
+            if (!Directory.Exists(destination)) continue;
+            Directory.Delete(destination, recursive: true);
+            removed++;
+        }
+
+        log.Info($"Removed {removed} WaterFree skill(s) from {targetName}: {destinationRoot}");
+    }
+
+    private static void ExtractRuntime(InstallerLog log, string installDir)
+    {
+        var binDir = Path.Combine(installDir, "bin");
+        var runtimeZip = Path.Combine(binDir, "waterfree-runtime.zip");
+        var exePath = Path.Combine(binDir, "waterfree.exe");
+
+        if (!File.Exists(runtimeZip))
+        {
+            throw new FileNotFoundException($"Runtime zip not found: {runtimeZip}", runtimeZip);
+        }
+
+        RemoveExtractedRuntime(log, installDir);
+        ZipFile.ExtractToDirectory(runtimeZip, binDir, overwriteFiles: true);
+
+        if (!File.Exists(exePath))
+        {
+            throw new FileNotFoundException($"Executable not found after runtime extraction: {exePath}", exePath);
+        }
+
+        log.Info($"Extracted WaterFree runtime into {binDir}");
+    }
+
+    private static void RemoveExtractedRuntime(InstallerLog log, string installDir)
+    {
+        var binDir = Path.Combine(installDir, "bin");
+        if (!Directory.Exists(binDir)) return;
+
+        foreach (var directory in Directory.GetDirectories(binDir))
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+
+        foreach (var file in Directory.GetFiles(binDir))
+        {
+            var name = Path.GetFileName(file);
+            if (name.Equals("waterfree-installer-helper.exe", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.Equals("waterfree-runtime.zip", StringComparison.OrdinalIgnoreCase)) continue;
+            File.Delete(file);
+        }
+
+        log.Info($"Removed extracted WaterFree runtime files from {binDir}");
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+
+        foreach (var file in Directory.GetFiles(source))
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+        }
+
+        foreach (var directory in Directory.GetDirectories(source))
+        {
+            CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+    }
+
     private static bool ShouldKeepServer(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return true;
@@ -221,12 +386,12 @@ internal static class Program
 
         using var proc = new Process { StartInfo = psi };
         proc.Start();
-        proc.WaitForExit(10000);
+        proc.WaitForExit(60000);
 
         if (!proc.HasExited)
         {
             try { proc.Kill(true); } catch { /* ignore */ }
-            throw new InvalidOperationException("Smoke test: waterfree exe did not return within 10s.");
+            throw new InvalidOperationException("Smoke test: waterfree exe did not return within 60s.");
         }
 
         if (proc.ExitCode != 0)

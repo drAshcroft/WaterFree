@@ -14,6 +14,8 @@ import json
 import re
 import subprocess
 import sys
+import unittest
+from io import StringIO
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -189,6 +191,9 @@ def _parse_unittest_output(raw: str) -> TestRunResult:
 
 class UnittestRunner:
     def list_tests(self, workspace_path: str) -> list[str]:
+        if _is_frozen():
+            suite = _discover_unittest_suite(workspace_path)
+            return sorted(str(item) for item in _iter_unittest_cases(suite))
         r = _run_command(
             [sys.executable, "-c", _UNITTEST_LIST_SCRIPT],
             workspace_path=workspace_path,
@@ -197,6 +202,9 @@ class UnittestRunner:
         return [line.strip() for line in r.stdout.splitlines() if line.strip()]
 
     def run_all(self, workspace_path: str) -> TestRunResult:
+        if _is_frozen():
+            suite = _discover_unittest_suite(workspace_path)
+            return _run_unittest_suite(suite)
         r = _run_command(
             [sys.executable, "-m", "unittest", "discover",
              "-s", "backend/tests", "-p", "test_*.py", "-v"],
@@ -209,6 +217,22 @@ class UnittestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
+        if _is_frozen():
+            pattern = name_substr.lower()
+            suite = _discover_unittest_suite(workspace_path)
+            matched = unittest.TestSuite(
+                item for item in _iter_unittest_cases(suite)
+                if pattern in str(item).lower()
+            )
+            if matched.countTestCases() == 0:
+                msg = f"No tests found matching '{name_substr}'"
+                return TestRunResult(
+                    passed=0,
+                    failed=1,
+                    results=[TestResult(name=name_substr, passed=False, error=msg)],
+                    raw_output=msg,
+                )
+            return _run_unittest_suite(matched)
         r = _run_command(
             [sys.executable, "-c", _UNITTEST_RUN_ONE_SCRIPT, name_substr],
             workspace_path=workspace_path,
@@ -225,6 +249,45 @@ class UnittestRunner:
         result = _parse_unittest_output(raw)
         result.raw_output = raw
         return result
+
+
+def _is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _discover_unittest_suite(workspace_path: str) -> unittest.TestSuite:
+    start_dir = Path(workspace_path) / "backend" / "tests"
+    if not start_dir.exists():
+        return unittest.TestSuite()
+    loader = unittest.TestLoader()
+    return loader.discover(start_dir=str(start_dir), pattern="test_*.py")
+
+
+def _iter_unittest_cases(suite: unittest.TestSuite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from _iter_unittest_cases(item)
+        else:
+            yield item
+
+
+def _run_unittest_suite(suite: unittest.TestSuite) -> TestRunResult:
+    stream = StringIO()
+    runner = unittest.TextTestRunner(verbosity=2, stream=stream)
+    result_obj = runner.run(suite)
+    raw = stream.getvalue()
+    result = _parse_unittest_output(raw)
+    if not result.results:
+        total = result_obj.testsRun
+        failed = len(result_obj.failures) + len(result_obj.errors)
+        result = TestRunResult(
+            passed=total - failed,
+            failed=failed,
+            results=[],
+            raw_output=raw,
+        )
+    result.raw_output = raw
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -4,22 +4,29 @@
     <OutputName>WaterFreeSetup</OutputName>
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
     <PayloadDir>$(MSBuildProjectDirectory)\obj\payload</PayloadDir>
-    <BackendExe>$(MSBuildProjectDirectory)\..\bin\waterfree-win32-x64.exe</BackendExe>
+    <RuntimeZip>$(MSBuildProjectDirectory)\..\bin\waterfree-runtime.zip</RuntimeZip>
     <VsixPath>$(MSBuildProjectDirectory)\..\waterfree.vsix</VsixPath>
+    <SkillsDir>$(MSBuildProjectDirectory)\..\skills</SkillsDir>
     <DefineConstants>PayloadDir=$(PayloadDir);ProductVersion=$(ProductVersion)</DefineConstants>
   </PropertyGroup>
 
   <Target Name="BuildPayload" BeforeTargets="CoreCompile">
     <MakeDir Directories="$(PayloadDir)" />
 
-    <Error Condition="!Exists('$(BackendExe)')" Text="Missing backend exe: $(BackendExe). Build the backend first (PyInstaller) before building the MSI." />
+    <Error Condition="!Exists('$(RuntimeZip)')" Text="Missing backend runtime zip: $(RuntimeZip). Build the backend first (PyInstaller) before building the MSI." />
     <Error Condition="!Exists('$(VsixPath)')" Text="Missing VSIX: $(VsixPath). Build the extension before building the MSI." />
+    <Error Condition="!Exists('$(SkillsDir)')" Text="Missing skills directory: $(SkillsDir)." />
 
-    <Copy SourceFiles="$(BackendExe)" DestinationFiles="$(PayloadDir)\waterfree.exe" />
+    <Copy SourceFiles="$(RuntimeZip)" DestinationFiles="$(PayloadDir)\waterfree-runtime.zip" />
 
     <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish&quot;" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish\waterfree-installer-helper.exe" DestinationFiles="$(PayloadDir)\waterfree-installer-helper.exe" />
 
     <Copy SourceFiles="$(VsixPath)" DestinationFiles="$(PayloadDir)\waterfree.vsix" />
+    <ItemGroup>
+      <SkillPayload Include="$(SkillsDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SkillPayload)"
+          DestinationFiles="@(SkillPayload->'$(PayloadDir)\skills\%(RecursiveDir)%(Filename)%(Extension)')" />
   </Target>
 </Project>

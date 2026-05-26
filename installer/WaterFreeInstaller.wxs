@@ -13,9 +13,9 @@
     <StandardDirectory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="WaterFree">
         <Directory Id="BinDir" Name="bin">
-          <Component Id="WaterfreeExe" Guid="{5A4E2E1C-1C9E-4C6B-9B8A-18B1F5F9D4A1}">
-            <File Id="WaterfreeExeFile" Source="$(var.PayloadDir)\waterfree.exe" KeyPath="no" />
-            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="WaterfreeExe" Type="string" Value="1" KeyPath="yes" />
+          <Component Id="RuntimePayload" Guid="{5A4E2E1C-1C9E-4C6B-9B8A-18B1F5F9D4A1}">
+            <File Id="RuntimeZipFile" Source="$(var.PayloadDir)\waterfree-runtime.zip" KeyPath="no" />
+            <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="RuntimePayload" Type="string" Value="1" KeyPath="yes" />
             <!-- Add the bin dir to user PATH so `waterfree <area> <action>` works in any shell. -->
             <Environment Id="AddWaterfreeToUserPath"
                          Name="PATH"
@@ -36,6 +36,44 @@
             <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="VsixPayload" Type="string" Value="1" KeyPath="yes" />
           </Component>
         </Directory>
+        <Directory Id="SkillsDir" Name="skills">
+          <Directory Id="SkillTutorializeDir" Name="tutorialize">
+            <Component Id="SkillTutorializePayload" Guid="{E9B6A1D7-7279-4D12-8EA2-61F74A91C2EF}">
+              <File Id="SkillTutorializeFile" Source="$(var.PayloadDir)\skills\tutorialize\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillTutorializePayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+          <Directory Id="SkillIndexDir" Name="waterfree-index">
+            <Component Id="SkillIndexPayload" Guid="{5BD18C1B-9E00-44F0-B49B-5AD7844DD7B1}">
+              <File Id="SkillIndexFile" Source="$(var.PayloadDir)\skills\waterfree-index\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillIndexPayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+          <Directory Id="SkillKnowledgeDir" Name="waterfree-knowledge">
+            <Component Id="SkillKnowledgePayload" Guid="{F78A4C22-915C-4413-9E2B-279C6BF79045}">
+              <File Id="SkillKnowledgeFile" Source="$(var.PayloadDir)\skills\waterfree-knowledge\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillKnowledgePayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+          <Directory Id="SkillQaSummaryDir" Name="waterfree-qa-summary">
+            <Component Id="SkillQaSummaryPayload" Guid="{448E79FA-2A39-4034-A4A9-7B3B83A3F76F}">
+              <File Id="SkillQaSummaryFile" Source="$(var.PayloadDir)\skills\waterfree-qa-summary\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillQaSummaryPayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+          <Directory Id="SkillTestingDir" Name="waterfree-testing">
+            <Component Id="SkillTestingPayload" Guid="{D6BFE79F-C0D1-4240-854F-2D8D9B72C3EE}">
+              <File Id="SkillTestingFile" Source="$(var.PayloadDir)\skills\waterfree-testing\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillTestingPayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+          <Directory Id="SkillTodosDir" Name="waterfree-todos">
+            <Component Id="SkillTodosPayload" Guid="{B8E0CC54-E706-41C8-B28F-E80520C6481F}">
+              <File Id="SkillTodosFile" Source="$(var.PayloadDir)\skills\waterfree-todos\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillTodosPayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
         <Directory Id="LogsDir" Name="logs">
           <Directory Id="InstallerLogsDir" Name="installer">
             <Component Id="InstallerLogFolder" Guid="{7B8B8D2A-1D6C-4A5C-9E1A-5E6E0D3A5A31}">
@@ -47,6 +85,13 @@
         <Component Id="CleanupFolders" Guid="{0A5B8E2D-5D9F-4E6E-9A42-7B2D1C9E4C3A}">
           <RemoveFolder Id="RemoveBinDir" Directory="BinDir" On="uninstall" />
           <RemoveFolder Id="RemoveVsixDir" Directory="VsixDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillTutorializeDir" Directory="SkillTutorializeDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillIndexDir" Directory="SkillIndexDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillKnowledgeDir" Directory="SkillKnowledgeDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillQaSummaryDir" Directory="SkillQaSummaryDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillTestingDir" Directory="SkillTestingDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillTodosDir" Directory="SkillTodosDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillsDir" Directory="SkillsDir" On="uninstall" />
           <RemoveFolder Id="RemoveInstallerLogsDir" Directory="InstallerLogsDir" On="uninstall" />
           <RemoveFolder Id="RemoveLogsDir" Directory="LogsDir" On="uninstall" />
           <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />
@@ -56,9 +101,15 @@
     </StandardDirectory>
 
     <Feature Id="MainFeature" Title="WaterFree" Level="1">
-      <ComponentRef Id="WaterfreeExe" />
+      <ComponentRef Id="RuntimePayload" />
       <ComponentRef Id="InstallerHelper" />
       <ComponentRef Id="VsixPayload" />
+      <ComponentRef Id="SkillTutorializePayload" />
+      <ComponentRef Id="SkillIndexPayload" />
+      <ComponentRef Id="SkillKnowledgePayload" />
+      <ComponentRef Id="SkillQaSummaryPayload" />
+      <ComponentRef Id="SkillTestingPayload" />
+      <ComponentRef Id="SkillTodosPayload" />
       <ComponentRef Id="InstallerLogFolder" />
       <ComponentRef Id="CleanupFolders" />
     </Feature>
