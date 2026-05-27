@@ -15,6 +15,30 @@ class CoordAnchorType(str, Enum):
     READ_ONLY_CONTEXT = "read-only-context"
 
 
+_ANCHOR_TYPE_ALIASES = {
+    "inspect": CoordAnchorType.READ_ONLY_CONTEXT,
+    "read": CoordAnchorType.READ_ONLY_CONTEXT,
+    "readonly": CoordAnchorType.READ_ONLY_CONTEXT,
+    "read-only": CoordAnchorType.READ_ONLY_CONTEXT,
+    "context": CoordAnchorType.READ_ONLY_CONTEXT,
+    "create": CoordAnchorType.CREATE_AT,
+}
+
+
+def _coerce_anchor_type(value: object) -> CoordAnchorType:
+    if isinstance(value, CoordAnchorType):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return CoordAnchorType.MODIFY
+        try:
+            return CoordAnchorType(normalized)
+        except ValueError:
+            return _ANCHOR_TYPE_ALIASES.get(normalized, CoordAnchorType.MODIFY)
+    return CoordAnchorType.MODIFY
+
+
 @dataclass
 class CodeCoord:
     """Precise pointer into source code. Symbol name takes priority over line
@@ -41,5 +65,5 @@ class CodeCoord:
             class_name=d.get("class"),
             method=d.get("method"),
             line=d.get("line"),
-            anchor_type=CoordAnchorType(d.get("anchorType", "modify")),
+            anchor_type=_coerce_anchor_type(d.get("anchorType", "modify")),
         )

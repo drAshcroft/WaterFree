@@ -220,6 +220,21 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(data.tasks[0].id, "legacy-task")
         self.assertEqual(data.phases, ["Legacy"])
 
+    def test_load_tolerates_legacy_inspect_anchor_type(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+        created = store.add_task(
+            {
+                "title": "Review stored context",
+                "contextCoords": [{"file": "src/app.py", "anchorType": "inspect"}],
+            }
+        )
+
+        data = store.load()
+
+        self.assertEqual(data.tasks[0].id, created.id)
+        self.assertEqual(data.tasks[0].context_coords[0].anchor_type.value, "read-only-context")
+
 
 if __name__ == "__main__":
     unittest.main()
