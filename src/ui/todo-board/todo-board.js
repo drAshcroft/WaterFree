@@ -18,9 +18,12 @@ const state = {
   editorMode: savedState.editorMode === "new" ? "new" : "task",
   draftTask: { ...DEFAULT_DRAFT, ...(savedState.draftTask || {}) },
   searchQuery: typeof savedState.searchQuery === "string" ? savedState.searchQuery : "",
-  treeMode: savedState.treeMode === "dependencies" ? "dependencies" : "priority",
+  treeMode: ["dependencies", "phase", "priority"].includes(savedState.treeMode) ? savedState.treeMode : "priority",
   collapsedGroups: isRecord(savedState.collapsedGroups) ? savedState.collapsedGroups : {},
+  collapsedTasks: isRecord(savedState.collapsedTasks) ? savedState.collapsedTasks : {},
 };
+
+let dragTaskId = null;
 
 const summaryEl = document.getElementById("summary");
 const treeEl = document.getElementById("tree");
@@ -63,7 +66,14 @@ document.addEventListener("click", (event) => {
   if (action === "cancelNewTask") { state.editorMode = "task"; persist(); renderEditor(); return; }
   if (action === "toggleGroup") {
     const groupId = el.getAttribute("data-group-id") || "";
-    state.collapsedGroups[groupId] = !groupOpen(groupId);
+    state.collapsedGroups[groupId] = groupOpen(groupId);
+    persist();
+    renderTree();
+    return;
+  }
+  if (action === "toggleTask") {
+    const taskId = el.getAttribute("data-task-id") || "";
+    state.collapsedTasks[taskId] = taskOpen(taskId);
     persist();
     renderTree();
     return;
@@ -116,7 +126,7 @@ document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) { return; }
   if (target.id === "tree-mode") {
-    state.treeMode = target.value === "dependencies" ? "dependencies" : "priority";
+    state.treeMode = ["dependencies", "phase", "priority"].includes(target.value) ? target.value : "priority";
     persist();
     renderTree();
     return;
@@ -124,6 +134,92 @@ document.addEventListener("change", (event) => {
   const draftField = target.getAttribute("data-draft-field");
   if (draftField) { state.draftTask[draftField] = target.value; persist(); }
 });
+
+treeEl.addEventListener("dragstart", (event) => {
+  const node = event.target instanceof Element ? event.target.closest('.tree-task[draggable="true"]') : null;
+  if (!node) { return; }
+  dragTaskId = node.getAttribute("data-task-id");
+  node.classList.add("dragging");
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    try { event.dataTransfer.setData("text/plain", dragTaskId || ""); } catch (err) { /* some hosts disallow */ }
+  }
+});
+
+treeEl.addEventListener("dragend", () => {
+  dragTaskId = null;
+  clearDropMarkers();
+});
+
+treeEl.addEventListener("dragover", (event) => {
+  if (!dragTaskId || !(event.target instanceof Element)) { return; }
+  const row = event.target.closest(".tree-task");
+  const body = event.target.closest(".tree-group-body[data-group-key]");
+  if (!row && !body) { return; }
+  event.preventDefault();
+  if (event.dataTransfer) { event.dataTransfer.dropEffect = "move"; }
+  clearDropMarkers();
+  if (row && row.getAttribute("data-task-id") !== dragTaskId) {
+    const rect = row.getBoundingClientRect();
+    row.classList.add(event.clientY > rect.top + rect.height / 2 ? "drop-after" : "drop-before");
+  } else if (body && !row) {
+    body.classList.add("drop-into");
+  }
+});
+
+treeEl.addEventListener("drop", (event) => {
+  if (!dragTaskId || !(event.target instanceof Element)) { return; }
+  const row = event.target.closest(".tree-task");
+  const body = event.target.closest(".tree-group-body[data-group-key]");
+  if (!row && !body) { return; }
+  event.preventDefault();
+  const draggedId = dragTaskId;
+  dragTaskId = null;
+  clearDropMarkers();
+  applyDrop(draggedId, row, body, event);
+});
+
+function clearDropMarkers() {
+  treeEl.querySelectorAll(".drop-before, .drop-after, .drop-into, .dragging")
+    .forEach((node) => node.classList.remove("drop-before", "drop-after", "drop-into", "dragging"));
+}
+
+function applyDrop(draggedId, row, body, event) {
+  const mode = state.treeMode;
+  if (mode !== "priority" && mode !== "phase") { return; }
+  const dragged = state.board.tasksById[draggedId];
+  if (!dragged) { return; }
+
+  const targetId = row ? row.getAttribute("data-task-id") : null;
+  if (targetId === draggedId) { return; }
+
+  const ids = orderedTasks().map((task) => task.id).filter((id) => id !== draggedId);
+  let groupKey;
+  if (targetId) {
+    const targetTask = state.board.tasksById[targetId];
+    if (!targetTask) { return; }
+    groupKey = mode === "priority" ? targetTask.priority : (targetTask.phase || "");
+    const rect = row.getBoundingClientRect();
+    let index = ids.indexOf(targetId);
+    if (index < 0) { index = ids.length; }
+    ids.splice(event.clientY > rect.top + rect.height / 2 ? index + 1 : index, 0, draggedId);
+  } else if (body) {
+    groupKey = body.getAttribute("data-group-key") || "";
+    ids.push(draggedId);
+  } else {
+    return;
+  }
+
+  const layout = ids.map((id) => {
+    const item = { id };
+    if (id === draggedId) {
+      if (mode === "priority") { item.priority = groupKey; }
+      else { item.phase = groupKey; }
+    }
+    return item;
+  });
+  vscode.postMessage({ type: "saveBoard", tasks: layout, phases: state.board.phaseOptions });
+}
 
 function render() {
   applyViewportMode();
@@ -155,7 +251,9 @@ function renderTree() {
   const visible = filteredTasks();
   const total = orderedTasks().length;
   if (treeCountEl) { treeCountEl.textContent = state.searchQuery ? `${visible.length} of ${total} Tasks` : `${visible.length} Tasks`; }
-  const groups = state.treeMode === "dependencies" ? dependencyGroups(visible) : priorityGroups(visible);
+  const groups = state.treeMode === "dependencies" ? dependencyGroups(visible)
+    : state.treeMode === "phase" ? phaseGroups(visible)
+    : priorityGroups(visible);
   treeEl.innerHTML = groups.length ? groups.map(renderGroup).join("") : '<div class="empty-state">No tasks match the current search.</div>';
 }
 
@@ -232,7 +330,21 @@ function priorityGroups(tasks) {
     const items = tasks.filter((task) => task.priority === priority);
     return {
       id: `priority:${priority}`,
+      key: priority,
       label: priority === "spike" ? "Spikes" : `${priority} Tasks`,
+      count: items.length,
+      content: items.map((task) => renderTreeTask(task, 0, `${depLabel(task)} . ${labelize(task.status)}`)).join(""),
+    };
+  }).filter((group) => group.count > 0);
+}
+
+function phaseGroups(tasks) {
+  return phaseOptions().map((option) => {
+    const items = tasks.filter((task) => (task.phase || "") === option.value);
+    return {
+      id: `phase:${option.value || "inbox"}`,
+      key: option.value,
+      label: option.label,
       count: items.length,
       content: items.map((task) => renderTreeTask(task, 0, `${depLabel(task)} . ${labelize(task.status)}`)).join(""),
     };
@@ -274,8 +386,25 @@ function renderDepNode(taskId, depth, children, rendered, ancestry) {
   const next = new Set(ancestry);
   next.add(taskId);
   const childIds = children[taskId] || [];
+  const open = state.searchQuery ? true : taskOpen(taskId);
   const extra = childIds.length ? `${childIds.length} child${childIds.length === 1 ? "" : "ren"}` : depLabel(task);
-  return renderTreeTask(task, depth, extra) + childIds.map((childId) => renderDepNode(childId, depth + 1, children, rendered, next)).join("");
+  const twistie = childIds.length
+    ? `<button type="button" class="tree-twistie" data-action="toggleTask" data-task-id="${esc(taskId)}" title="${open ? "Collapse" : "Expand"}">${open ? "v" : ">"}</button>`
+    : '<span class="tree-twistie tree-twistie--leaf" aria-hidden="true"></span>';
+  const self = renderTreeTask(task, depth, extra, twistie);
+  if (!open) {
+    childIds.forEach((childId) => markRendered(childId, children, rendered, next));
+    return self;
+  }
+  return self + childIds.map((childId) => renderDepNode(childId, depth + 1, children, rendered, next)).join("");
+}
+
+function markRendered(taskId, children, rendered, ancestry) {
+  if (rendered.has(taskId) || ancestry.has(taskId)) { return; }
+  rendered.add(taskId);
+  const next = new Set(ancestry);
+  next.add(taskId);
+  (children[taskId] || []).forEach((childId) => markRendered(childId, children, rendered, next));
 }
 
 function renderGroup(group) {
@@ -289,17 +418,20 @@ function renderGroup(group) {
     '</div>',
     `<span class="tree-group-count">${group.count}</span>`,
     '</button>',
-    open ? `<div class="tree-group-body">${group.content || '<div class="tree-empty">No tasks here.</div>'}</div>` : "",
+    open ? `<div class="tree-group-body"${group.key != null ? ` data-group-key="${esc(group.key)}"` : ""}>${group.content || '<div class="tree-empty">No tasks here.</div>'}</div>` : "",
     '</section>',
   ].join("");
 }
 
-function renderTreeTask(task, depth, extra) {
+function renderTreeTask(task, depth, extra, twistie) {
   const meta = [displayPhase(task.phase), labelize(task.taskType), compactCoord(task.targetCoord)];
   if (task.estimatedMinutes) { meta.push(`${task.estimatedMinutes}m est`); }
   if (extra) { meta.unshift(extra); }
+  const draggable = state.treeMode === "priority" || state.treeMode === "phase";
   return [
-    `<div class="tree-task depth-${Math.min(depth, 4)}">`,
+    `<div class="tree-task depth-${Math.min(depth, 4)}${draggable ? " draggable" : ""}" data-task-id="${esc(task.id)}"${draggable ? ' draggable="true"' : ""}>`,
+    '<div class="tree-task-line">',
+    twistie || "",
     `<button type="button" class="tree-task-row${state.selectionId === task.id && state.editorMode === "task" ? " selected" : ""}" data-action="selectTask" data-task-id="${esc(task.id)}">`,
     '<div class="tree-task-main">',
     '<div class="tree-task-title-row">',
@@ -312,6 +444,7 @@ function renderTreeTask(task, depth, extra) {
     `<span class="tree-status-dot ${esc(task.status)}" title="${esc(labelize(task.status))}"></span>`,
     '</div>',
     '</button>',
+    '</div>',
     '</div>',
   ].join("");
 }
@@ -588,7 +721,11 @@ function selectedTask() {
 
 function groupOpen(groupId) {
   if (state.collapsedGroups[groupId] != null) { return !state.collapsedGroups[groupId]; }
-  return groupId === "priority:P0" || groupId === "priority:P1" || groupId === "dependencies:forest";
+  return groupId === "priority:P0" || groupId === "priority:P1" || groupId === "dependencies:forest" || groupId.startsWith("phase:");
+}
+
+function taskOpen(taskId) {
+  return !state.collapsedTasks[taskId];
 }
 
 function displayPhase(phase) {
@@ -637,6 +774,7 @@ function persist() {
     searchQuery: state.searchQuery,
     treeMode: state.treeMode,
     collapsedGroups: state.collapsedGroups,
+    collapsedTasks: state.collapsedTasks,
   });
 }
 

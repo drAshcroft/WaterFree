@@ -75,11 +75,40 @@ internal static class Program
         catch (Exception ex)
         {
             log.Error($"Installer helper failed: {ex}");
+            // The helper runs as a deferred MSI custom action — its console
+            // window only flashes for a moment, so on failure show a blocking
+            // dialog the user can actually read before the MSI rolls back.
+            ShowErrorDialog(
+                "WaterFree setup could not finish.\n\n" +
+                ex.Message +
+                "\n\nFull details were written to:\n" + log.LogPath +
+                "\n\nIf a previous version is still running (VS Code, or a " +
+                "'waterfree' window), close it and run setup again.");
             return 1;
         }
         finally
         {
             log.Dispose();
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+    private static void ShowErrorDialog(string message)
+    {
+        // Best-effort: never let a UI failure mask the original error.
+        try
+        {
+            const uint MB_OK = 0x0;
+            const uint MB_ICONERROR = 0x10;
+            const uint MB_SETFOREGROUND = 0x10000;
+            const uint MB_TOPMOST = 0x40000;
+            MessageBoxW(IntPtr.Zero, message, "WaterFree Setup", MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+        }
+        catch
+        {
+            // ignore — the error is already in the log and on the console
         }
     }
 
@@ -331,9 +360,20 @@ internal static class Program
         var binDir = Path.Combine(installDir, "bin");
         if (!Directory.Exists(binDir)) return;
 
+        // On re-install/upgrade the previous runtime may contain files that are
+        // read-only or transiently locked (e.g. libcrypto-3.dll held by AV or a
+        // running `waterfree serve`). A hard Directory.Delete throws
+        // UnauthorizedAccessException and rolls back the whole MSI. Delete
+        // best-effort instead; ExtractRuntime re-extracts with overwrite, so a
+        // few leftover files are harmless.
+        var failures = new List<string>();
+
         foreach (var directory in Directory.GetDirectories(binDir))
         {
-            Directory.Delete(directory, recursive: true);
+            if (!TryForceDeleteDirectory(directory))
+            {
+                failures.Add(directory);
+            }
         }
 
         foreach (var file in Directory.GetFiles(binDir))
@@ -341,10 +381,89 @@ internal static class Program
             var name = Path.GetFileName(file);
             if (name.Equals("waterfree-installer-helper.exe", StringComparison.OrdinalIgnoreCase)) continue;
             if (name.Equals("waterfree-runtime.zip", StringComparison.OrdinalIgnoreCase)) continue;
-            File.Delete(file);
+            if (!TryForceDeleteFile(file))
+            {
+                failures.Add(file);
+            }
         }
 
-        log.Info($"Removed extracted WaterFree runtime files from {binDir}");
+        if (failures.Count > 0)
+        {
+            log.Info($"Could not remove {failures.Count} old runtime file(s) (locked or in use); " +
+                     $"they will be overwritten on extract. First: {failures[0]}");
+        }
+        else
+        {
+            log.Info($"Removed extracted WaterFree runtime files from {binDir}");
+        }
+    }
+
+    private static bool TryForceDeleteDirectory(string path)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                ClearReadOnlyRecursive(path);
+                Directory.Delete(path, recursive: true);
+                return true;
+            }
+            catch (Exception) when (attempt < 2)
+            {
+                Thread.Sleep(200);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static bool TryForceDeleteFile(string path)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                ClearReadOnly(path);
+                File.Delete(path);
+                return true;
+            }
+            catch (Exception) when (attempt < 2)
+            {
+                Thread.Sleep(200);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static void ClearReadOnlyRecursive(string directory)
+    {
+        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            ClearReadOnly(file);
+        }
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        try
+        {
+            var attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+            {
+                File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+            }
+        }
+        catch
+        {
+            // best-effort — the delete attempt will surface any real problem
+        }
     }
 
     private static void CopyDirectory(string source, string destination)
@@ -371,13 +490,14 @@ internal static class Program
 
     private static void SmokeTest(InstallerLog log, string exePath)
     {
-        // Confirm the installed exe at least responds to a no-op CLI invocation.
-        // Anything else (test runner, knowledge store, etc.) can be exercised
-        // by the user post-install.
+        // `waterfree doctor` verifies every required Python dependency is
+        // actually bundled (networkx, tree-sitter grammars, providers, ...).
+        // It both confirms the exe starts and catches a degraded runtime that
+        // would otherwise "install fine" but fail to function. Exit 0 = healthy.
         var psi = new ProcessStartInfo
         {
             FileName = exePath,
-            Arguments = "knowledge stats",
+            Arguments = "doctor",
             UseShellExecute = false,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
@@ -386,6 +506,8 @@ internal static class Program
 
         using var proc = new Process { StartInfo = psi };
         proc.Start();
+        var stdout = proc.StandardOutput.ReadToEnd();
+        var stderr = proc.StandardError.ReadToEnd();
         proc.WaitForExit(60000);
 
         if (!proc.HasExited)
@@ -396,12 +518,12 @@ internal static class Program
 
         if (proc.ExitCode != 0)
         {
-            var stderr = proc.StandardError.ReadToEnd();
             throw new InvalidOperationException(
-                $"Smoke test failed: `waterfree knowledge stats` exit={proc.ExitCode} stderr={stderr}");
+                $"Smoke test failed: `waterfree doctor` exit={proc.ExitCode}. " +
+                $"The runtime is missing required dependencies.\n{stdout}\n{stderr}");
         }
 
-        log.Info("Smoke test OK: waterfree.exe responds to CLI invocations.");
+        log.Info($"Smoke test OK: waterfree runtime dependencies verified.\n{stdout}");
     }
 
     private static void InstallVsixIfPossible(InstallerLog log, string? vsixPath)
@@ -543,6 +665,8 @@ internal sealed class InstallerLog : IDisposable
 {
     private readonly string _logPath;
     private readonly StreamWriter _writer;
+
+    public string LogPath => _logPath;
 
     public InstallerLog(string installDir, string? logPathOverride)
     {

@@ -4,8 +4,16 @@
     Name="WaterFree"
     Manufacturer="WaterFree"
     Version="$(var.ProductVersion)"
+    ProductCode="*"
     UpgradeCode="{D9B41B5B-30A8-4E37-8C8D-0E67E81A6BA4}"
     Scope="perUser">
+    <!-- ProductCode="*" -> a fresh GUID every build. Without it, two builds
+         share a ProductCode and Windows Installer treats a reinstall as
+         "maintenance mode": it skips RemoveExistingProducts and the
+         RunInstallerHelper custom action, leaving every payload file stale.
+         With a unique ProductCode + bumped Version, MajorUpgrade removes the
+         old product and installs the new one cleanly (helper runs, runtime
+         re-extracts). -->
     <MajorUpgrade AllowDowngrades="no" DowngradeErrorMessage="A newer version of WaterFree is already installed." />
     <!-- EmbedCab="yes" so the MSI is self-contained; no separate cab*.cab file needs to ship alongside it. -->
     <MediaTemplate EmbedCab="yes" />

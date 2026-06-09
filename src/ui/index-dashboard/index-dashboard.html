@@ -9,10 +9,11 @@
 </head>
 <body>
   <main class="index-shell">
+
     <header class="hero-card">
       <div class="hero-copy">
         <p class="eyebrow">Codebase Index</p>
-        <h1>Architecture stats and module graph</h1>
+        <h1>Architecture &amp; Dependency Graph</h1>
         <p class="hero-subtitle" id="workspace-path"></p>
       </div>
       <div class="hero-actions">
@@ -21,14 +22,16 @@
       </div>
     </header>
 
+    <!-- ── Stat strip ─────────────────────────────────────────────── -->
     <section class="stats-grid" id="stats-grid"></section>
 
+    <!-- ── Module graph + sidebar ────────────────────────────────── -->
     <section class="content-grid">
       <article class="panel graph-panel">
         <div class="panel-header">
           <div>
             <p class="eyebrow">Module Graph</p>
-            <h2>Clustered by top-level area</h2>
+            <h2>Dependencies by cluster</h2>
           </div>
           <p class="panel-note" id="graph-note"></p>
         </div>
@@ -40,11 +43,13 @@
       <aside class="side-stack">
         <article class="panel">
           <p class="eyebrow">Hotspots</p>
+          <p class="panel-desc">Most-called functions and methods</p>
           <div id="hotspots-list" class="item-list"></div>
         </article>
 
         <article class="panel">
           <p class="eyebrow">Entry Points</p>
+          <p class="panel-desc">Top-level files and executable symbols</p>
           <div id="entrypoints-list" class="item-list"></div>
         </article>
 
@@ -55,6 +60,36 @@
       </aside>
     </section>
 
+    <!-- ── God Nodes + Surprising Connections ────────────────────── -->
+    <section class="insight-grid">
+
+      <article class="panel insight-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow insight-accent">God Nodes</p>
+            <h2>Core abstractions</h2>
+          </div>
+          <span class="insight-badge" title="Symbols with the highest combined in+out degree — your true architectural load-bearers">graphify</span>
+        </div>
+        <p class="panel-desc">The most-connected symbols in the codebase. Changing these has the widest blast radius.</p>
+        <div id="god-nodes-list" class="god-grid"></div>
+      </article>
+
+      <article class="panel insight-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow insight-accent-2">Surprising Connections</p>
+            <h2>Hidden coupling</h2>
+          </div>
+          <span class="insight-badge insight-badge-2" title="Cross-community or cross-language edges that are non-obvious from file structure">graphify</span>
+        </div>
+        <p class="panel-desc">Edges that cross module boundaries or language families — worth reviewing for unintended coupling.</p>
+        <div id="surprising-list" class="item-list"></div>
+      </article>
+
+    </section>
+
+    <!-- ── Bottom row ─────────────────────────────────────────────── -->
     <section class="bottom-grid">
       <article class="panel">
         <p class="eyebrow">Layers</p>

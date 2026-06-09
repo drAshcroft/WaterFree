@@ -279,7 +279,67 @@ p {
   background: color-mix(in srgb, var(--border) 70%, transparent);
 }
 
+.tree-task.draggable {
+  cursor: grab;
+}
+
+.tree-task.dragging {
+  opacity: 0.45;
+}
+
+.tree-task.drop-before::after,
+.tree-task.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.tree-task.drop-before::after { top: -1px; }
+.tree-task.drop-after::after { bottom: -1px; }
+
+.tree-group-body.drop-into {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.tree-task-line {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.tree-twistie {
+  flex: 0 0 auto;
+  width: 16px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-twistie:hover:enabled {
+  color: var(--accent);
+  background: transparent;
+  border-color: transparent;
+}
+
+.tree-twistie--leaf {
+  visibility: hidden;
+}
+
 .tree-task-row {
+  flex: 1;
   width: 100%;
   min-height: 24px;
   padding: 2px 6px;

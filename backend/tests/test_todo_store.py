@@ -109,6 +109,26 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(data.tasks[2].phase, "Foundation")
         self.assertEqual(data.phases, ["Execution", "Foundation", "Wrap Up"])
 
+    def test_save_task_board_applies_priority_from_layout(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        first = store.add_task({"title": "First task", "priority": "P2"})
+        second = store.add_task({"title": "Second task", "priority": "P2"})
+
+        data = store.save_task_board(
+            layout=[
+                {"id": second.id, "priority": "P0"},
+                {"id": first.id},
+            ],
+            phases=[],
+        )
+
+        self.assertEqual([task.id for task in data.tasks], [second.id, first.id])
+        self.assertEqual(data.tasks[0].priority.value, "P0")
+        # Tasks whose layout item omits priority keep their existing value.
+        self.assertEqual(data.tasks[1].priority.value, "P2")
+
     def test_sql_backed_priority_phase_owner_and_blocked_queries(self) -> None:
         workspace = self.make_workspace()
         store = TaskStore(str(workspace))

@@ -46,6 +46,10 @@ class ArchitectureService:
             text = store.get_summary(project)
             if text:
                 out["adr"] = {"text": text}
+        if "all" in aspects or "god_nodes" in aspects:
+            out["god_nodes"] = self._god_nodes(store, project)
+        if "all" in aspects or "surprising_connections" in aspects:
+            out["surprising_connections"] = self._surprising_connections(store, project)
 
         return out
 
@@ -295,6 +299,90 @@ class ArchitectureService:
             "total_modules": len(node_stats),
             "visible_modules": len(graph_nodes),
         }
+
+    def _god_nodes(self, store: GraphStore, project: str) -> list[dict]:
+        """Most-connected symbols (high in+out degree) — core architectural abstractions."""
+        try:
+            from backend.graph.graphify_adapter import run_analysis
+            nodes = [
+                {
+                    "id": n["qualified_name"],
+                    "label": n["label"],
+                    "source_file": n["file_path"],
+                    "source_location": f"L{n.get('line', 1)}",
+                }
+                for n in store.get_all_nodes(project)
+            ]
+            edges = []
+            for e in store.get_all_edges(project):
+                src_qn = e.get("source_qualified_name") or ""
+                tgt_qn = e.get("target_qualified_name") or ""
+                if src_qn and tgt_qn:
+                    edges.append({
+                        "source": src_qn,
+                        "target": tgt_qn,
+                        "relation": e.get("relation", "calls").lower(),
+                        "source_file": e.get("source_file_path") or "",
+                        "confidence": "EXTRACTED",
+                        "weight": 1.0,
+                    })
+            analysis = run_analysis(nodes, edges)
+            result = []
+            for gn in analysis.get("god_nodes", []):
+                nid = gn.get("id") or ""
+                node = store.get_node_by_qn(project, nid)
+                result.append({
+                    "name": gn.get("label") or nid,
+                    "qualified_name": nid,
+                    "degree": gn.get("degree", 0),
+                    "file_path": node["file_path"] if node else "",
+                    "label": node["label"] if node else "Function",
+                })
+            return result
+        except Exception as e:
+            log.debug("god_nodes analysis failed: %s", e)
+            return self._hotspots(store, project)[:8]
+
+    def _surprising_connections(self, store: GraphStore, project: str) -> list[dict]:
+        """Cross-community or cross-language edges that reveal non-obvious coupling."""
+        try:
+            from backend.graph.graphify_adapter import run_analysis
+            nodes = [
+                {
+                    "id": n["qualified_name"],
+                    "label": n["label"],
+                    "source_file": n["file_path"],
+                    "source_location": f"L{n.get('line', 1)}",
+                }
+                for n in store.get_all_nodes(project)
+            ]
+            edges = []
+            for e in store.get_all_edges(project):
+                src_qn = e.get("source_qualified_name") or ""
+                tgt_qn = e.get("target_qualified_name") or ""
+                if src_qn and tgt_qn:
+                    edges.append({
+                        "source": src_qn,
+                        "target": tgt_qn,
+                        "relation": e.get("relation", "calls").lower(),
+                        "source_file": e.get("source_file_path") or "",
+                        "confidence": "EXTRACTED",
+                        "weight": 1.0,
+                    })
+            analysis = run_analysis(nodes, edges)
+            result = []
+            for conn in analysis.get("surprising_connections", []):
+                result.append({
+                    "source": conn.get("source") or conn.get("u") or "",
+                    "target": conn.get("target") or conn.get("v") or "",
+                    "relation": conn.get("relation") or conn.get("edge_type") or "calls",
+                    "reasons": conn.get("reasons") or [],
+                    "score": conn.get("score") or 0,
+                })
+            return result
+        except Exception as e:
+            log.debug("surprising_connections analysis failed: %s", e)
+            return []
 
     def _relative_path(self, file_path: str, root: str) -> str:
         if not file_path:

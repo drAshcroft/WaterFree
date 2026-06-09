@@ -3,6 +3,7 @@ Unified entry point — used by the PyInstaller-built executable.
 
 Usage:
     waterfree serve                  VS Code bridge server
+    waterfree doctor                 Verify bundled runtime dependencies
     waterfree <area> <action> ...    CLI subcommand
                                      (see docs/cli-surface.md)
 
@@ -29,6 +30,10 @@ def main() -> None:
         from backend.server import run
         run()
         return
+
+    if command == "doctor":
+        from backend.diagnostics import run_doctor
+        sys.exit(run_doctor(args[1:]))
 
     if command in _CLI_AREAS:
         from backend.cli.dispatcher import dispatch

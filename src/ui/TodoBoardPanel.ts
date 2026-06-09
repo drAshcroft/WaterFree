@@ -68,7 +68,7 @@ export type TodoBoardAction =
   | { type: "addTask"; task: Record<string, unknown> }
   | { type: "updateTask"; taskId: string; patch: Record<string, unknown> }
   | { type: "deleteTask"; taskId: string }
-  | { type: "saveBoard"; tasks: Array<{ id: string; phase?: string | null }>; phases: string[] };
+  | { type: "saveBoard"; tasks: Array<{ id: string; phase?: string | null; priority?: string }>; phases: string[] };
 
 export class TodoBoardPanel implements vscode.Disposable {
   private readonly _actionEmitter = new vscode.EventEmitter<TodoBoardAction>();
@@ -189,10 +189,18 @@ export class TodoBoardPanel implements vscode.Disposable {
         if (Array.isArray(message.tasks) && Array.isArray(message.phases)) {
           const tasks = message.tasks
             .filter(isRecord)
-            .map((item) => ({
-              id: typeof item.id === "string" ? item.id : "",
-              phase: typeof item.phase === "string" ? item.phase : null,
-            }))
+            .map((item) => {
+              const entry: { id: string; phase?: string | null; priority?: string } = {
+                id: typeof item.id === "string" ? item.id : "",
+              };
+              if ("phase" in item) {
+                entry.phase = typeof item.phase === "string" ? item.phase : null;
+              }
+              if (typeof item.priority === "string" && item.priority) {
+                entry.priority = item.priority;
+              }
+              return entry;
+            })
             .filter((item) => item.id);
           const phases = message.phases.map((phase) => String(phase));
           this._actionEmitter.fire({ type: "saveBoard", tasks, phases });

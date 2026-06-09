@@ -1,5 +1,6 @@
 # What ships in waterfree.vsix:
 #   - out/extension.js      (esbuild bundle)
+#   - src/ui/**/*.{html,css,js}  (webview assets, read at runtime)
 #   - package.json
 #   - README.md
 #   - resources/            (extension icons)
@@ -14,12 +15,27 @@ src/**
 tsconfig.json
 esbuild.config.js
 
+# ...but the webview panels read their HTML/CSS/JS from src/ui at runtime
+# (fs.readFileSync + localResourceRoots), so those assets MUST ship.
+!src/ui/**/*.html
+!src/ui/**/*.css
+!src/ui/**/*.js
+
 # Build / packaging artifacts that are NOT the VSIX itself
 bin/**
 build/**
 dist/**
 out/**/*.map
 *.vsix
+
+# Local scratch / cache artifacts (vsce ignores .gitignore when .vscodeignore exists)
+.tmp/**
+tmpHome/**
+graphify-out/**
+**/graphify-out/**
+tmp-*.json
+debug.log
+=*
 
 # Backend (compiled to waterfree.exe — installed separately by the MSI)
 backend/**

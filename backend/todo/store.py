@@ -230,6 +230,9 @@ class TaskStore:
             if "phase" in item:
                 task.phase = self._normalize_phase(item.get("phase"))
 
+            if "priority" in item:
+                task.priority = TaskPriority(str(item.get("priority")))
+
             ordered.append(task)
             seen.add(task_id)
 

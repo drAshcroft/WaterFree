@@ -336,10 +336,134 @@ p {
   stroke-linejoin: round;
 }
 
+/* ── Panel description subtitle ──────────────────────────────────────────── */
+
+.panel-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+/* ── Insight grid (god nodes + surprising connections) ───────────────────── */
+
+.insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.insight-panel {
+  position: relative;
+}
+
+.insight-accent {
+  color: #f97316;
+}
+
+.insight-accent-2 {
+  color: #d946ef;
+}
+
+.insight-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid color-mix(in srgb, #f97316 40%, var(--border) 60%);
+  color: #f97316;
+  background: color-mix(in srgb, #f97316 10%, transparent);
+}
+
+.insight-badge-2 {
+  border-color: color-mix(in srgb, #d946ef 40%, var(--border) 60%);
+  color: #d946ef;
+  background: color-mix(in srgb, #d946ef 10%, transparent);
+}
+
+/* ── God node cards ──────────────────────────────────────────────────────── */
+
+.god-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.god-node-card {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--panel-alt);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.god-node-rank {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+  text-align: center;
+  letter-spacing: -0.02em;
+}
+
+.god-node-body {
+  min-width: 0;
+}
+
+.god-node-name {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.god-node-meta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.god-bar-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 75%, var(--border) 25%);
+  overflow: hidden;
+}
+
+.god-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  opacity: 0.85;
+}
+
+.god-node-degree {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
+}
+
+/* ── Responsive breakpoints ──────────────────────────────────────────────── */
+
 @media (max-width: 1200px) {
   .content-grid,
   .bottom-grid,
-  .stats-grid {
+  .stats-grid,
+  .insight-grid {
     grid-template-columns: 1fr;
   }
 

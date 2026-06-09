@@ -61,20 +61,73 @@
 
 [CmdletBinding()]
 param(
-    [string]$ProductVersion = "0.1.0",
+    # Leave empty to auto-assign an ever-increasing 0.1.<build> version. A new
+    # version is required on every build: the MSI's components key off registry
+    # values, so without a MajorUpgrade (triggered by a higher version) Windows
+    # Installer leaves ALL payload files stale on reinstall — the helper exe,
+    # the runtime zip, skills, vsix. Pass an explicit value only for releases.
+    [string]$ProductVersion = "",
     [switch]$Clean,
     [switch]$SkipExe,
     [switch]$SkipVsix,
     [switch]$SkipMsi,
     [switch]$SkipExeSmoke,
-    [switch]$SkipPrereqCheck
+    [switch]$SkipPrereqCheck,
+    [switch]$NoPause
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $global:LASTEXITCODE = 0
 
+# ---------------------------------------------------------------------------
+# Keep the window open so failures are readable.
+# When launched by double-click / "Run with PowerShell", the console closes the
+# instant the script ends — a build error just flashes past. Pause before
+# exiting unless output is redirected (CI / piped to a file) or -NoPause is set.
+# ---------------------------------------------------------------------------
+function Invoke-ExitPause {
+    if ($NoPause -or $env:WATERFREE_NONINTERACTIVE) { return }
+    try { if ([Console]::IsOutputRedirected -or [Console]::IsInputRedirected) { return } } catch { return }
+    Write-Host ""
+    Read-Host "Press Enter to close this window" | Out-Null
+}
+
+function Stop-Build([int]$code) {
+    Invoke-ExitPause
+    exit $code
+}
+
+# Assign a monotonically increasing 0.1.<build> version when one isn't given,
+# so each build supersedes the last (MajorUpgrade) and refreshes every file.
+# The counter lives outside the dirs wiped by -Clean so it never goes backward
+# (a lower version would be blocked by AllowDowngrades=no).
+function Resolve-ProductVersion([string]$requested, [string]$repoRoot) {
+    if ($requested) { return $requested }
+    $counterFile = Join-Path $repoRoot "installer\.build-number"
+    $n = 0
+    if (Test-Path $counterFile) {
+        [int]::TryParse((Get-Content $counterFile -Raw).Trim(), [ref]$n) | Out-Null
+    }
+    $n = ($n + 1)
+    if ($n -gt 65535) { $n = 1 }   # MSI version field max
+    Set-Content -Path $counterFile -Value $n -Encoding ascii
+    return "0.1.$n"
+}
+
+# Catch any terminating error ($ErrorActionPreference = Stop) so it is shown and
+# the window held open instead of vanishing.
+trap {
+    Write-Host ""
+    Write-Host "BUILD ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    if ($_.ScriptStackTrace) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
+    Invoke-ExitPause
+    exit 1
+}
+
 $RepoRoot   = $PSScriptRoot
+$ProductVersion = Resolve-ProductVersion $ProductVersion $RepoRoot
+Write-Host "==> Building WaterFree $ProductVersion" -ForegroundColor Cyan
 $DistDir    = Join-Path $RepoRoot "dist"
 $BinDir     = Join-Path $RepoRoot "bin"
 $WixDir     = Join-Path $RepoRoot "installer"
@@ -116,7 +169,7 @@ function Invoke-Stage([string]$name, [scriptblock]$body) {
     $code = $global:LASTEXITCODE
     if ($code -and $code -ne 0) {
         Write-Host "FAILED ($name) exit=$code" -ForegroundColor Red
-        exit $code
+        Stop-Build $code
     }
     $elapsed = (Get-Date) - $stageStart
     Write-Host ("    ({0:n1}s)" -f $elapsed.TotalSeconds) -ForegroundColor DarkGray
@@ -127,8 +180,17 @@ function Test-Command([string]$name) {
 }
 
 function Test-PythonModule([string]$module) {
-    & python -c "import $module" 2>$null
-    return ($LASTEXITCODE -eq 0)
+    # Run with errors non-terminating: on PowerShell 7+ a native command that
+    # writes to stderr can otherwise throw under $ErrorActionPreference=Stop,
+    # turning "module not installed" into an unhandled error.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & python -c "import $module" 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +228,7 @@ if (-not $SkipPrereqCheck) {
             Write-Host ""
             Write-Host "Install the items above, then re-run build_installer.ps1." -ForegroundColor Yellow
             Write-Host "(To bypass this check, pass -SkipPrereqCheck.)" -ForegroundColor DarkGray
-            exit 2
+            Stop-Build 2
         }
         Write-Host "    All required toolchains present." -ForegroundColor DarkGray
     }
@@ -193,11 +255,11 @@ if ($SkipExe) {
     Write-Stage "Stage 1: PyInstaller (skipped, -SkipExe)"
     if (-not (Test-Path $ExePath)) {
         Write-Host "FAILED: -SkipExe was passed but $ExePath does not exist." -ForegroundColor Red
-        exit 3
+        Stop-Build 3
     }
     if (-not (Test-Path $RuntimeZipPath)) {
         Write-Host "FAILED: -SkipExe was passed but $RuntimeZipPath does not exist." -ForegroundColor Red
-        exit 3
+        Stop-Build 3
     }
 } else {
     Invoke-Stage "Stage 1: PyInstaller -> $RuntimeDirName" {
@@ -209,7 +271,7 @@ if ($SkipExe) {
         }
         if (-not (Test-Path $PyInstallerLauncher)) {
             Write-Host "FAILED: PyInstaller succeeded but $PyInstallerLauncher is missing." -ForegroundColor Red
-            exit 1
+            Stop-Build 1
         }
         # WiX consumes a zip from bin/; PyInstaller puts the one-dir runtime in dist/.
         New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
@@ -235,6 +297,15 @@ if ($SkipExeSmoke) {
     Invoke-Stage "Stage 1.5: Smoke test compiled exe" {
         Push-Location $RepoRoot
         try {
+            # Dependency self-check first: a bundle missing required Python
+            # packages (e.g. networkx, tree-sitter grammars) imports fine but
+            # degrades at runtime. `doctor` exits non-zero so we never ship one.
+            & $ExePath doctor
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "FAILED: 'waterfree doctor' reported missing runtime dependencies (exit=$LASTEXITCODE)." -ForegroundColor Red
+                Write-Host "The build environment is missing packages from backend/requirements.txt." -ForegroundColor Yellow
+                Stop-Build $LASTEXITCODE
+            }
             & python -m backend.tests.smoke_compiled_exe --exe $ExePath
         } finally {
             Pop-Location
@@ -249,7 +320,7 @@ if ($SkipVsix) {
     Write-Stage "Stage 2: npm run package (skipped, -SkipVsix)"
     if (-not (Test-Path $VsixPath)) {
         Write-Host "FAILED: -SkipVsix was passed but $VsixPath does not exist." -ForegroundColor Red
-        exit 3
+        Stop-Build 3
     }
 } else {
     Invoke-Stage "Stage 2: npm run package -> waterfree.vsix" {
@@ -262,7 +333,7 @@ if ($SkipVsix) {
     }
     if (-not (Test-Path $VsixPath)) {
         Write-Host "FAILED: npm run package succeeded but $VsixPath is missing." -ForegroundColor Red
-        exit 1
+        Stop-Build 1
     }
 }
 
@@ -288,7 +359,7 @@ if ($SkipMsi) {
                     Select-Object -First 1
     if (-not $msiCandidate) {
         Write-Host "FAILED: WiX build finished but no MSI was found under $WixDir\bin." -ForegroundColor Red
-        exit 1
+        Stop-Build 1
     }
 }
 
@@ -320,3 +391,4 @@ $total = (Get-Date) - $Start
 Write-Host ""
 Write-Host ("==> Build complete in {0:n1}s" -f $total.TotalSeconds) -ForegroundColor Green
 Write-Host "    Artifacts: $DistDir" -ForegroundColor Green
+Invoke-ExitPause

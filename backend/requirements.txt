@@ -3,11 +3,37 @@ deepagents>=0.3.1
 langchain-anthropic>=0.3.0
 langchain-openai>=0.3.0
 langchain-ollama>=0.2.0
-tree-sitter>=0.25.0
+pathspec>=0.12.0
+
+# ── graphify extraction engine (40+ languages via tree-sitter) ──────────────
+networkx>=3.4
+datasketch>=1.6
+rapidfuzz>=3.0
+
+# Core tree-sitter runtime
+tree-sitter>=0.23.0
+
+# Language grammars (must all be installed for full 40-language coverage)
 tree-sitter-python>=0.25.0
 tree-sitter-typescript>=0.23.0
 tree-sitter-javascript>=0.25.0
-tree-sitter-c-sharp 
-pathspec>=0.12.0            # gitignore/vscodeignore pattern matching for indexer
-# graph engine (internal codebase indexer — no external binary needed)
-# sqlite3 is stdlib; no extra package required
+tree-sitter-c-sharp
+tree-sitter-go
+tree-sitter-rust
+tree-sitter-java
+tree-sitter-groovy
+tree-sitter-c
+tree-sitter-cpp
+tree-sitter-ruby
+tree-sitter-kotlin
+tree-sitter-scala
+tree-sitter-php
+tree-sitter-swift
+tree-sitter-lua
+tree-sitter-zig
+tree-sitter-powershell
+tree-sitter-elixir
+tree-sitter-objc
+tree-sitter-julia
+tree-sitter-bash
+tree-sitter-json

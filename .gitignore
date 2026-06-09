@@ -157,3 +157,6 @@ tmp-object.json
 /installer/obj
 /installer/bin/Release
 /bin
+
+# WaterFree installer auto-version counter
+installer/.build-number

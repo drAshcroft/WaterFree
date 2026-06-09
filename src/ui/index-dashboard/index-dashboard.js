@@ -13,6 +13,8 @@ const languagesEl = /** @type {HTMLElement} */ (document.getElementById("languag
 const layersEl = /** @type {HTMLElement} */ (document.getElementById("layers-list"));
 const schemaEl = /** @type {HTMLElement} */ (document.getElementById("schema-list"));
 const clustersEl = /** @type {HTMLElement} */ (document.getElementById("clusters-list"));
+const godNodesEl = /** @type {HTMLElement} */ (document.getElementById("god-nodes-list"));
+const surprisingEl = /** @type {HTMLElement} */ (document.getElementById("surprising-list"));
 const refreshMetaEl = /** @type {HTMLElement} */ (document.getElementById("refresh-meta"));
 const btnRefresh = /** @type {HTMLButtonElement} */ (document.getElementById("btn-refresh"));
 const btnReindex = /** @type {HTMLButtonElement} */ (document.getElementById("btn-reindex"));
@@ -63,6 +65,8 @@ function renderDashboard() {
   const hotspots = Array.isArray(architecture.hotspots) ? architecture.hotspots : [];
   const entryPoints = Array.isArray(architecture.entry_points) ? architecture.entry_points : [];
   const clusters = Array.isArray(architecture.clusters) ? architecture.clusters : [];
+  const godNodes = Array.isArray(architecture.god_nodes) ? architecture.god_nodes : [];
+  const surprising = Array.isArray(architecture.surprising_connections) ? architecture.surprising_connections : [];
 
   workspacePathEl.textContent = dashboardState.workspacePath || status.root_path || "";
   graphNoteEl.textContent = `${moduleGraph.visible_modules || moduleGraph.nodes.length || 0} shown of ${moduleGraph.total_modules || moduleGraph.nodes.length || 0} modules`;
@@ -116,6 +120,8 @@ function renderDashboard() {
       )).join("")
     : '<div class="empty-state">No multi-node CALLS clusters found.</div>';
 
+  renderGodNodes(godNodes);
+  renderSurprisingConnections(surprising);
   renderModuleGraph(moduleGraph);
 }
 
@@ -168,6 +174,55 @@ function renderLanguageMeters(languages) {
       '<div class="meter-track"><div class="meter-fill" style="width:' + pct + '%;background:' + PALETTE[index % PALETTE.length] + '"></div></div>',
       '</div>',
     ].join("");
+  }).join("");
+}
+
+function renderGodNodes(godNodes) {
+  if (!godNodes.length) {
+    godNodesEl.innerHTML = '<div class="empty-state">God node analysis will appear after indexing with graphify enabled.</div>';
+    return;
+  }
+  godNodesEl.innerHTML = godNodes.slice(0, 12).map((node, index) => {
+    const degree = Number(node.degree || 0);
+    const maxDegree = Number(godNodes[0].degree || 1);
+    const barPct = Math.max(8, Math.round((degree / maxDegree) * 100));
+    const color = PALETTE[index % PALETTE.length];
+    const label = String(node.label || node.name || "symbol");
+    const qn = String(node.qualified_name || "");
+    const file = shortPath(String(node.file_path || ""));
+    return [
+      '<div class="god-node-card">',
+      '  <div class="god-node-rank">' + escapeHtml(String(index + 1)) + '</div>',
+      '  <div class="god-node-body">',
+      '    <div class="god-node-name">' + escapeHtml(label) + '</div>',
+      '    <div class="god-node-meta">' + escapeHtml(file || qn) + '</div>',
+      '    <div class="god-bar-track">',
+      '      <div class="god-bar-fill" style="width:' + barPct + '%;background:' + color + '"></div>',
+      '    </div>',
+      '  </div>',
+      '  <div class="god-node-degree" style="color:' + color + '">' + escapeHtml(formatNumber(degree)) + '</div>',
+      '</div>',
+    ].join("");
+  }).join("");
+}
+
+function renderSurprisingConnections(surprising) {
+  if (!surprising.length) {
+    surprisingEl.innerHTML = '<div class="empty-state">No surprising connections detected — clean architecture!</div>';
+    return;
+  }
+  surprisingEl.innerHTML = surprising.slice(0, 8).map((conn) => {
+    const src = String(conn.source || conn.u || "");
+    const tgt = String(conn.target || conn.v || "");
+    const relation = String(conn.relation || "calls");
+    const reasons = Array.isArray(conn.reasons) ? conn.reasons : [];
+    const srcShort = src.split(".").slice(-2).join(".") || src;
+    const tgtShort = tgt.split(".").slice(-2).join(".") || tgt;
+    return renderInfoCard(
+      srcShort + " → " + tgtShort,
+      relation.toUpperCase() + (reasons.length ? " · " + reasons[0] : ""),
+      reasons.slice(1).join(" · "),
+    );
   }).join("");
 }
 
