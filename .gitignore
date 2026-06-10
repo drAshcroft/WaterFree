@@ -160,3 +160,4 @@ tmp-object.json
 
 # WaterFree installer auto-version counter
 installer/.build-number
+/graphify-out

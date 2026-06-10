@@ -8,10 +8,12 @@ import os
 import tempfile
 from pathlib import Path
 
-# Output directory name — override with GRAPHIFY_OUT env var for worktrees or
-# shared-output setups. Accepts a relative name ("graphify-out-feature") or an
-# absolute path ("/shared/graphify-out").
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+# Output directory — resolved against the indexed project root. Lives under the
+# workspace-local .waterfree/ folder (beside graph.db) so indexing never litters
+# a project root with a top-level graphify-out/. Override with the GRAPHIFY_OUT
+# env var for worktrees or shared-output setups; accepts a relative path
+# (".waterfree/graphify-out-feature") or an absolute one ("/shared/graphify-out").
+_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", ".waterfree/graphify-out")
 
 
 def _body_content(content: bytes) -> bytes:

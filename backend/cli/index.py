@@ -61,6 +61,37 @@ def register(sub: _SubParsersAction) -> None:
 
     p_arch = actions.add_parser("architecture", help="High-level overview")
     add_workspace_arg(p_arch)
+    p_arch.add_argument(
+        "--aspect",
+        default="",
+        help="Comma-separated subset: languages, entry_points, hotspots, layers, "
+             "clusters, module_graph, god_nodes, surprising_connections, "
+             "import_cycles, adr. Default: all.",
+    )
+
+    p_god = actions.add_parser("god-nodes",
+                               help="Most-connected symbols (core abstractions / refactor risks)")
+    add_workspace_arg(p_god)
+    p_god.add_argument("--limit", type=int, default=12)
+
+    p_surprising = actions.add_parser("surprising",
+                                      help="Non-obvious cross-layer / cross-language coupling")
+    add_workspace_arg(p_surprising)
+    p_surprising.add_argument("--limit", type=int, default=8)
+
+    p_cycles = actions.add_parser("import-cycles", help="Circular import dependencies (file-level)")
+    add_workspace_arg(p_cycles)
+
+    p_clusters = actions.add_parser("clusters", help="Connected-component module clusters")
+    add_workspace_arg(p_clusters)
+
+    p_query = actions.add_parser("query", help="Run a pseudo-Cypher graph query")
+    add_workspace_arg(p_query)
+    p_query.add_argument("query")
+
+    p_schema = actions.add_parser("schema",
+                                  help="Node labels, edge types, and relationship patterns")
+    add_workspace_arg(p_schema)
 
     actions.add_parser("list-projects", help="Projects in the global graph DB")
 
@@ -123,7 +154,36 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "architecture":
-        emit_json(client.get_architecture())
+        aspects = [a.strip() for a in args.aspect.split(",") if a.strip()] or None
+        emit_json(client.get_architecture(aspects=aspects))
+        return EXIT_OK
+
+    if action == "god-nodes":
+        arch = client.get_architecture(aspects=["god_nodes"])
+        emit_json({"god_nodes": arch.get("god_nodes", [])[: args.limit]})
+        return EXIT_OK
+
+    if action == "surprising":
+        arch = client.get_architecture(aspects=["surprising_connections"])
+        emit_json({"surprising_connections": arch.get("surprising_connections", [])[: args.limit]})
+        return EXIT_OK
+
+    if action == "import-cycles":
+        arch = client.get_architecture(aspects=["import_cycles"])
+        emit_json({"import_cycles": arch.get("import_cycles", [])})
+        return EXIT_OK
+
+    if action == "clusters":
+        arch = client.get_architecture(aspects=["clusters"])
+        emit_json({"clusters": arch.get("clusters", [])})
+        return EXIT_OK
+
+    if action == "query":
+        emit_json(client.query_graph(args.query))
+        return EXIT_OK
+
+    if action == "schema":
+        emit_json(client.get_graph_schema())
         return EXIT_OK
 
     return emit_error(f"unknown action: {action}", exit_code=EXIT_USAGE)

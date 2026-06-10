@@ -11,30 +11,27 @@ Falls back gracefully when graphify or its optional deps are missing.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Keep graphify's output (cache/ast, stat-index, graph.json, …) inside the
-# workspace-local .waterfree/ folder rather than polluting the user's project
-# root with a top-level graphify-out/ directory. graphify reads GRAPHIFY_OUT at
-# module-import time and resolves a relative value against the indexed project
-# root, so this must run *before* the backend.graphify.* imports below. We use
-# setdefault so an explicit GRAPHIFY_OUT (e.g. for worktrees) still wins.
-os.environ.setdefault("GRAPHIFY_OUT", str(Path(".waterfree") / "graphify-out"))
+# graphify's output (cache/ast, stat-index, graph.json, …) lives under the
+# workspace-local .waterfree/ folder — that default is set in the graphify
+# package itself (backend.graph.graphify.cache._GRAPHIFY_OUT), resolved against
+# the indexed project root, so no env-var juggling is needed here.
 
 # ---------------------------------------------------------------------------
 # Optional graphify import
 # ---------------------------------------------------------------------------
 
 try:
-    from backend.graphify.extract import collect_files as _gfy_collect_files
-    from backend.graphify.extract import extract as _gfy_extract
-    from backend.graphify.build import build_from_json as _gfy_build
-    from backend.graphify.analyze import god_nodes as _gfy_god_nodes
-    from backend.graphify.analyze import surprising_connections as _gfy_surprising
+    from backend.graph.graphify.extract import collect_files as _gfy_collect_files
+    from backend.graph.graphify.extract import extract as _gfy_extract
+    from backend.graph.graphify.build import build_from_json as _gfy_build
+    from backend.graph.graphify.analyze import god_nodes as _gfy_god_nodes
+    from backend.graph.graphify.analyze import surprising_connections as _gfy_surprising
+    from backend.graph.graphify.analyze import find_import_cycles as _gfy_import_cycles
     import networkx as _nx
     _GFY_OK = True
 except Exception as _e:
@@ -74,14 +71,8 @@ def run_extraction(root_path: str) -> tuple[list[dict], list[dict]]:
     return nodes, edges
 
 
-def run_analysis(nodes: list[dict], edges: list[dict]) -> dict:
-    """
-    Run graphify's analysis (god nodes, surprising connections) on a node/edge list.
-    Returns a dict with "god_nodes" and "surprising_connections" keys.
-    """
-    if not _GFY_OK:
-        return {"god_nodes": [], "surprising_connections": []}
-
+def _build_nx_graph(nodes: list[dict], edges: list[dict]) -> "_nx.DiGraph":
+    """Assemble a networkx DiGraph from WaterFree node/edge dicts for analysis."""
     G = _nx.DiGraph()
     for node in nodes:
         nid = node.get("id") or node.get("qualified_name") or ""
@@ -92,7 +83,18 @@ def run_analysis(nodes: list[dict], edges: list[dict]) -> dict:
         tgt = edge.get("target") or edge.get("graphify_target_id") or ""
         if src and tgt and G.has_node(src) and G.has_node(tgt):
             G.add_edge(src, tgt, **{k: v for k, v in edge.items() if k not in ("source", "target")})
+    return G
 
+
+def run_analysis(nodes: list[dict], edges: list[dict]) -> dict:
+    """
+    Run graphify's analysis (god nodes, surprising connections) on a node/edge list.
+    Returns a dict with "god_nodes" and "surprising_connections" keys.
+    """
+    if not _GFY_OK:
+        return {"god_nodes": [], "surprising_connections": []}
+
+    G = _build_nx_graph(nodes, edges)
     if not G.number_of_nodes():
         return {"god_nodes": [], "surprising_connections": []}
 
@@ -100,6 +102,30 @@ def run_analysis(nodes: list[dict], edges: list[dict]) -> dict:
         "god_nodes": _gfy_god_nodes(G, top_n=12),
         "surprising_connections": _gfy_surprising(G, top_n=8),
     }
+
+
+def run_import_cycles(
+    nodes: list[dict],
+    edges: list[dict],
+    max_cycle_length: int = 5,
+    top_n: int = 20,
+) -> list[dict]:
+    """
+    Detect circular import dependencies (file-level) via graphify's analyzer.
+
+    Edges must carry relation "imports_from" (the relation graphify's cycle
+    detector keys on) and a "source_file" attribute identifying the importing
+    file; nodes must carry "source_file". The caller is responsible for that
+    mapping — see ArchitectureService._import_cycles.
+
+    Returns a list of {"cycle": [...files...], "length": int, "why": str}.
+    """
+    if not _GFY_OK:
+        return []
+    G = _build_nx_graph(nodes, edges)
+    if not G.number_of_nodes():
+        return []
+    return _gfy_import_cycles(G, max_cycle_length=max_cycle_length, top_n=top_n)
 
 
 # ---------------------------------------------------------------------------

@@ -179,7 +179,7 @@ function renderLanguageMeters(languages) {
 
 function renderGodNodes(godNodes) {
   if (!godNodes.length) {
-    godNodesEl.innerHTML = '<div class="empty-state">God node analysis will appear after indexing with graphify enabled.</div>';
+    godNodesEl.innerHTML = '<div class="empty-state">God node analysis will appear after indexing.</div>';
     return;
   }
   godNodesEl.innerHTML = godNodes.slice(0, 12).map((node, index) => {

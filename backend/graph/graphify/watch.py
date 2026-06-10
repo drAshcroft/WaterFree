@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", ".waterfree/graphify-out")
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 

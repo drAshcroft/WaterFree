@@ -9,12 +9,24 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections import deque
 from pathlib import Path
 
 from backend.graph.store import GraphStore
+
+log = logging.getLogger(__name__)
+
+# GraphStore persists the edge kind in the `type` column (CALLS/IMPORTS/…).
+# Map it back to graphify's relation vocabulary for the analysis helpers.
+_EDGE_TYPE_TO_RELATION: dict[str, str] = {
+    "CALLS": "calls",
+    "IMPORTS": "imports_from",
+    "INHERITS": "inherits",
+    "DEFINES": "contains",
+}
 
 
 class ArchitectureService:
@@ -50,6 +62,8 @@ class ArchitectureService:
             out["god_nodes"] = self._god_nodes(store, project)
         if "all" in aspects or "surprising_connections" in aspects:
             out["surprising_connections"] = self._surprising_connections(store, project)
+        if "all" in aspects or "import_cycles" in aspects:
+            out["import_cycles"] = self._import_cycles(store, project)
 
         return out
 
@@ -321,7 +335,7 @@ class ArchitectureService:
                     edges.append({
                         "source": src_qn,
                         "target": tgt_qn,
-                        "relation": e.get("relation", "calls").lower(),
+                        "relation": _EDGE_TYPE_TO_RELATION.get(e.get("type") or "", "calls"),
                         "source_file": e.get("source_file_path") or "",
                         "confidence": "EXTRACTED",
                         "weight": 1.0,
@@ -364,7 +378,7 @@ class ArchitectureService:
                     edges.append({
                         "source": src_qn,
                         "target": tgt_qn,
-                        "relation": e.get("relation", "calls").lower(),
+                        "relation": _EDGE_TYPE_TO_RELATION.get(e.get("type") or "", "calls"),
                         "source_file": e.get("source_file_path") or "",
                         "confidence": "EXTRACTED",
                         "weight": 1.0,
@@ -382,6 +396,37 @@ class ArchitectureService:
             return result
         except Exception as e:
             log.debug("surprising_connections analysis failed: %s", e)
+            return []
+
+    def _import_cycles(self, store: GraphStore, project: str) -> list[dict]:
+        """Circular import dependencies at the file level (graphify analyzer)."""
+        try:
+            from backend.graph.graphify_adapter import run_import_cycles
+            nodes = [
+                {
+                    "id": n["qualified_name"],
+                    "label": n["label"],
+                    "source_file": n["file_path"],
+                }
+                for n in store.get_all_nodes(project)
+            ]
+            # graphify's cycle detector keys on relation "imports_from" and an
+            # edge "source_file" that names the importing file; map the store's
+            # IMPORTS edges into that shape.
+            edges = []
+            for e in store.get_all_edges(project, "IMPORTS"):
+                src_qn = e.get("source_qualified_name") or ""
+                tgt_qn = e.get("target_qualified_name") or ""
+                if src_qn and tgt_qn:
+                    edges.append({
+                        "source": src_qn,
+                        "target": tgt_qn,
+                        "relation": "imports_from",
+                        "source_file": e.get("source_file_path") or "",
+                    })
+            return run_import_cycles(nodes, edges)
+        except Exception as e:
+            log.debug("import_cycles analysis failed: %s", e)
             return []
 
     def _relative_path(self, file_path: str, root: str) -> str:

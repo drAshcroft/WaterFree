@@ -149,7 +149,7 @@ datas_extra += _collect_data_tree(
 
 # Collect graphify package — includes skill*.md and always_on/*.md data files
 try:
-    d, b, h = collect_all("backend.graphify")
+    d, b, h = collect_all("backend.graph.graphify")
     datas_extra    += d
     binaries_extra += b
     hiddenimports_extra += h

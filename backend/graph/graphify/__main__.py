@@ -17,9 +17,11 @@ try:
 except Exception:
     __version__ = "unknown"
 
-# Output directory — override with GRAPHIFY_OUT env var for worktrees or shared-output setups.
-# Accepts a relative name ("graphify-out-feature") or an absolute path ("/shared/graphify-out").
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+# Output directory — lives under the workspace-local .waterfree/ folder (beside
+# graph.db) so indexing never litters a project root with a top-level graphify-out/.
+# Override with GRAPHIFY_OUT for worktrees or shared-output setups; accepts a
+# relative path (".waterfree/graphify-out-feature") or an absolute one.
+_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", ".waterfree/graphify-out")
 
 
 @functools.lru_cache(maxsize=None)
@@ -2648,7 +2650,7 @@ def main() -> None:
         from .serve import _query_graph_text
         from .security import sanitize_label
         from networkx.readwrite import json_graph
-        from graphify import querylog
+        from . import querylog
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
@@ -2895,7 +2897,7 @@ def main() -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
-        from graphify import querylog
+        from . import querylog
         querylog.log_query(
             kind="path",
             question=f"{sys.argv[2]} -> {sys.argv[3]}",
@@ -2960,7 +2962,7 @@ def main() -> None:
                 print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]")
             if len(connections) > 20:
                 print(f"  ... and {len(connections) - 20} more")
-        from graphify import querylog
+        from . import querylog
         querylog.log_query(
             kind="explain",
             question=sys.argv[2],

@@ -687,7 +687,7 @@ def _build_server(graph_path: str):
 
     def _tool_query_graph(arguments: dict) -> str:
         import time as _time
-        from graphify import querylog
+        from . import querylog
         question = arguments["question"]
         mode = arguments.get("mode", "bfs")
         depth = min(int(arguments.get("depth", 3)), 6)

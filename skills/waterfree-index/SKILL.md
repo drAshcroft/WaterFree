@@ -1,13 +1,14 @@
 ---
 name: waterfree-index
-description: Use the `waterfree index` CLI to inspect architecture, locate symbols, trace callers and callees, and assess change impact before editing code.
+description: Use the `waterfree index` CLI to inspect architecture, locate symbols, trace callers and callees, find god nodes / surprising couplings / import cycles, query the graph, and assess change impact before editing code.
 ---
 
 # WaterFree — Codebase Index (Graph)
 
-You have access to a codebase dependency graph via the `waterfree` CLI. It
-indexes Python and TypeScript/JavaScript projects using AST parsing and stores
-a symbol graph (nodes = functions/classes/modules, edges = calls/imports/inherits).
+You have access to a codebase dependency graph via the `waterfree` CLI. It is
+powered by the built-in **graphify** engine, which extracts symbols across 40+
+languages via tree-sitter and stores a symbol graph (nodes =
+functions/classes/modules, edges = calls/imports/inherits/defines).
 
 Each invocation is a short shell command — run it through Bash. All commands
 emit JSON to stdout.
@@ -17,6 +18,12 @@ emit JSON to stdout.
 - Understand an unfamiliar codebase quickly — `waterfree index architecture`
 - Find where a function or class is defined — `waterfree index search-code` or `search-graph`
 - Understand what calls a function (callers) or what it calls (callees) — `waterfree index trace`
+- Find the core abstractions / refactor risks (most-connected symbols) — `waterfree index god-nodes`
+- Spot non-obvious coupling that crosses layers or languages — `waterfree index surprising`
+- Detect circular import dependencies — `waterfree index import-cycles`
+- See module clusters / communities — `waterfree index clusters`
+- Run a targeted graph query — `waterfree index query`
+- Inspect the graph shape (labels, edge types, patterns) — `waterfree index schema`
 - Assess the blast radius of a change before making it — `waterfree index detect-changes`
 - Read a symbol's source code without manually navigating the file tree — `waterfree index get-snippet`
 - Check if a project is already indexed — `waterfree index status`
@@ -46,7 +53,66 @@ waterfree index build --workspace .
 ```bash
 waterfree index architecture --workspace .
 ```
-Returns high-level modules, layers, and key entry points.
+Returns the full picture: `languages`, `entry_points`, `hotspots`, `layers`,
+`clusters`, `module_graph`, `god_nodes`, `surprising_connections`,
+`import_cycles`, and `adr`. This is a large payload — to pull just what you
+need, use `--aspect` with a comma-separated subset:
+```bash
+waterfree index architecture --workspace . --aspect languages,layers
+waterfree index architecture --workspace . --aspect god_nodes,import_cycles
+```
+
+### God nodes (core abstractions / refactor risks)
+```bash
+waterfree index god-nodes --workspace . --limit 12
+```
+The most-connected symbols (high in+out degree). These are the load-bearing
+parts of the architecture — touch them carefully. Each entry has
+`qualified_name`, `degree`, `file_path`, and `label`.
+
+### Surprising connections
+```bash
+waterfree index surprising --workspace . --limit 8
+```
+Edges that cross community / layer / language boundaries — non-obvious coupling
+worth a second look. Each entry has `source`, `target`, `relation`, `reasons`,
+and a `score`.
+
+### Import cycles
+```bash
+waterfree index import-cycles --workspace .
+```
+Circular import dependencies at the file level. Each entry is a
+`{cycle: [files...], length, why}` record (shortest cycles first).
+
+### Module clusters
+```bash
+waterfree index clusters --workspace .
+```
+Connected-component clusters of symbols — a quick map of cohesive subsystems.
+
+### Graph query (pseudo-Cypher)
+```bash
+waterfree index query "MATCH (n:Function)" --workspace .
+waterfree index query "MATCH (n:Class) WHERE name =~ 'Auth'" --workspace .
+waterfree index query "MATCH (n:Function) CALLS ->" --workspace .
+```
+A lightweight pseudo-Cypher interpreter over the symbol graph. It supports a
+small, fixed subset:
+- `(n:Label)` — filter by node label (`Function`, `Method`, `Class`, `Module`)
+- `name =~ 'regex'` or `name = 'exact'` — filter by symbol name
+- include `CALLS ->` in the query to expand each matched node's outbound
+  `CALLS` edges (returns `source`/`target` rows)
+
+For richer relationship traversal use `trace` (callers/callees) rather than
+`query`.
+
+### Graph schema
+```bash
+waterfree index schema --workspace .
+```
+Node-label counts, edge-type counts, common relationship patterns, and sample
+nodes — useful before writing a `query`.
 
 ### Search for a symbol
 ```bash
