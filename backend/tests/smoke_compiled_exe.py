@@ -136,7 +136,35 @@ def run_checks(exe: Path) -> list[tuple[str, bool, str]]:
             # Acceptable if the dep-missing exit code is used.
             record("index status (fresh)", r.returncode in (0, 4), f"exit={r.returncode}")
 
-        # 6. testing list on a fresh workspace — empty array but valid JSON.
+        # 6. index build with enough files to exercise graphify's process pool.
+        index_ws = ws / "indexable"
+        index_ws.mkdir()
+        for i in range(25):
+            (index_ws / f"module_{i:02d}.py").write_text(
+                f"def func_{i:02d}():\n    return {i}\n",
+                encoding="utf-8",
+            )
+        r = _run(exe, ["index", "build"], workspace=index_ws)
+        if r.returncode == 0:
+            try:
+                data = _check_json(r.stdout, "index build")
+                ok = (
+                    isinstance(data, dict)
+                    and data.get("files_indexed", 0) > 0
+                    and data.get("nodes", 0) > 0
+                )
+                record(
+                    "index build (process pool)",
+                    ok,
+                    f"files={data.get('files_indexed') if isinstance(data, dict) else '?'} "
+                    f"nodes={data.get('nodes') if isinstance(data, dict) else '?'}",
+                )
+            except AssertionError as exc:
+                record("index build (process pool)", False, str(exc))
+        else:
+            record("index build (process pool)", False, f"exit={r.returncode} stderr={r.stderr[:300]}")
+
+        # 7. testing list on a fresh workspace - empty array but valid JSON.
         r = _run(exe, ["testing", "list"], workspace=ws)
         if r.returncode == 0:
             try:
@@ -147,7 +175,7 @@ def run_checks(exe: Path) -> list[tuple[str, bool, str]]:
         else:
             record("testing list (fresh)", False, f"exit={r.returncode} stderr={r.stderr[:200]}")
 
-        # 7. Unknown subcommand returns usage exit code (2).
+        # 8. Unknown subcommand returns usage exit code (2).
         r = _run(exe, ["bogus", "action"], workspace=ws)
         record("bogus subcommand -> usage error", r.returncode in (1, 2), f"exit={r.returncode}")
 

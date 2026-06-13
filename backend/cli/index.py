@@ -102,7 +102,7 @@ def _client_indexed(workspace_path: str) -> GraphClient:
     """Return a client that has already indexed the workspace."""
     client = GraphClient()
     status = client.index_status(repo_path=workspace_path)
-    if not status.get("indexed"):
+    if status.get("status") != "ready":
         client.index(workspace_path)
     return client
 

@@ -11,12 +11,15 @@ Areas: todos | knowledge | index | testing | qa-summary
 """
 from __future__ import annotations
 
+import multiprocessing
 import sys
 
 _CLI_AREAS = ("todos", "knowledge", "index", "testing", "qa-summary")
 
 
 def main() -> None:
+    multiprocessing.freeze_support()
+
     args = sys.argv[1:]
     if not args:
         _usage()

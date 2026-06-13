@@ -97,6 +97,46 @@ class GraphEngineP0Tests(unittest.TestCase):
         self.assertEqual(status_after["root_path"], str(repo.resolve()))
         self.assertTrue(Path(status_after["db_path"]).is_file())
 
+    def test_index_status_explicit_workspace_does_not_depend_on_cwd(self) -> None:
+        root = self.make_temp_root()
+        repo = self.make_repo(
+            root,
+            "indexed/status_repo",
+            {"service.py": "def run():\n    return 'ok'\n"},
+        )
+        other_cwd = self.make_repo(root, "other/cwd", {"placeholder.py": "VALUE = 1\n"})
+
+        engine = GraphEngine()
+        try:
+            indexed = engine.index_repository(str(repo))
+        finally:
+            engine.close()
+
+        with working_directory(other_cwd):
+            restarted = GraphEngine()
+            self.addCleanup(restarted.close)
+            status = restarted.index_status(repo_path=str(repo))
+
+        self.assertEqual(status["status"], "ready")
+        self.assertEqual(status["project"], indexed["project"])
+        self.assertEqual(status["root_path"], str(repo.resolve()))
+        self.assertTrue(Path(status["db_path"]).is_file())
+
+    def test_index_status_explicit_unindexed_workspace_does_not_create_db(self) -> None:
+        root = self.make_temp_root()
+        repo = root / "fresh_repo"
+        repo.mkdir()
+        other_cwd = self.make_repo(root, "other/cwd", {"placeholder.py": "VALUE = 1\n"})
+
+        with working_directory(other_cwd):
+            engine = GraphEngine()
+            self.addCleanup(engine.close)
+            status = engine.index_status(repo_path=str(repo))
+
+        self.assertEqual(status["status"], "not_indexed")
+        self.assertEqual(status["project"], _project_name(str(repo.resolve())))
+        self.assertFalse((repo / ".waterfree" / "graph.db").exists())
+
     def test_deleted_file_cleanup_removes_nodes_edges_and_hashes(self) -> None:
         root = self.make_temp_root()
         repo = self.make_repo(

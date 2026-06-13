@@ -77,6 +77,13 @@ class GraphEngine:
         for project in store.list_projects():
             self._stores[project["name"]] = (store, project["root_path"])
 
+    def _load_store_for_root(self, root_path: str) -> bool:
+        db_path = Path(_db_path_for(root_path))
+        if not db_path.is_file():
+            return False
+        self._load_store_from_db(db_path)
+        return True
+
     def _discover_stores(self) -> None:
         if self._discovered:
             return
@@ -162,10 +169,16 @@ class GraphEngine:
 
     def index_status(self, project: str = "", repo_path: str = "") -> dict:
         if repo_path:
-            project = _project_name(repo_path)
-        project = self._resolve(project)
-        if not project:
-            return {"status": "not_indexed", "project": ""}
+            root = str(Path(repo_path).resolve())
+            project = _project_name(root)
+            if project not in self._stores:
+                self._load_store_for_root(root)
+            if project not in self._stores:
+                return {"status": "not_indexed", "project": project}
+        else:
+            project = self._resolve(project)
+            if not project:
+                return {"status": "not_indexed", "project": ""}
         store = self._store(project)
         project_row = store.get_project(project)
         if not project_row:

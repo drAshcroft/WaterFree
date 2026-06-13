@@ -11218,9 +11218,12 @@ def _extract_parallel(
                 except Exception as exc:
                     idx = futures[future]
                     print(
-                        f"  warning: worker failed for {work_items[idx][1]}: {exc}",
-                        file=sys.stderr, flush=True,
+                        f"  warning: parallel worker failed for {work_items[idx][1]}: {exc}; "
+                        "falling back to sequential extraction",
+                        file=sys.stderr,
+                        flush=True,
                     )
+                    return False
                 done_count += 1
                 if (
                     total_files >= _PROGRESS_INTERVAL
