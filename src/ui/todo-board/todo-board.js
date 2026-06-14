@@ -97,6 +97,14 @@ document.addEventListener("click", (event) => {
     }
     return;
   }
+  if (action === "quickStatus") {
+    const taskId = el.getAttribute("data-task-id") || "";
+    const status = el.getAttribute("data-status") || "complete";
+    if (state.board.tasksById[taskId]) {
+      vscode.postMessage({ type: "updateTask", taskId, patch: { status } });
+    }
+    return;
+  }
   if (action === "createTask") { createTask(); return; }
   if (action === "saveTask") { saveSelectedTask(); return; }
   if (action === "deleteTask") {
@@ -131,11 +139,23 @@ document.addEventListener("change", (event) => {
     renderTree();
     return;
   }
+  const statusTaskId = target.getAttribute("data-status-select");
+  if (statusTaskId) {
+    const task = state.board.tasksById[statusTaskId];
+    if (task && task.status !== target.value) {
+      vscode.postMessage({ type: "updateTask", taskId: statusTaskId, patch: { status: target.value } });
+    }
+    return;
+  }
   const draftField = target.getAttribute("data-draft-field");
   if (draftField) { state.draftTask[draftField] = target.value; persist(); }
 });
 
 treeEl.addEventListener("dragstart", (event) => {
+  if (event.target instanceof Element && event.target.closest(".tree-task-controls")) {
+    event.preventDefault();
+    return;
+  }
   const node = event.target instanceof Element ? event.target.closest('.tree-task[draggable="true"]') : null;
   if (!node) { return; }
   dragTaskId = node.getAttribute("data-task-id");
@@ -444,7 +464,26 @@ function renderTreeTask(task, depth, extra, twistie) {
     `<span class="tree-status-dot ${esc(task.status)}" title="${esc(labelize(task.status))}"></span>`,
     '</div>',
     '</button>',
+    renderRowControls(task),
     '</div>',
+    '</div>',
+  ].join("");
+}
+
+// Inline per-row controls so a human can set status / close a task without
+// opening the editor. Kept outside the selectTask button (siblings, not children)
+// so interacting with them never triggers row selection.
+function renderRowControls(task) {
+  const options = STATUSES
+    .map((value) => `<option value="${esc(value)}"${value === task.status ? " selected" : ""}>${esc(labelize(value))}</option>`)
+    .join("");
+  const quickBtn = task.status === "complete"
+    ? `<button type="button" class="tree-quick-btn tree-quick-reopen" data-action="quickStatus" data-task-id="${esc(task.id)}" data-status="pending" title="Reopen (set pending)">&#8634;</button>`
+    : `<button type="button" class="tree-quick-btn tree-quick-complete" data-action="quickStatus" data-task-id="${esc(task.id)}" data-status="complete" title="Mark complete">&#10003;</button>`;
+  return [
+    '<div class="tree-task-controls">',
+    `<select class="tree-status-select" data-status-select="${esc(task.id)}" title="Set status">${options}</select>`,
+    quickBtn,
     '</div>',
   ].join("");
 }

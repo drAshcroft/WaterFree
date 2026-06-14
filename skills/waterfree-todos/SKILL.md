@@ -1,165 +1,74 @@
 ---
 name: waterfree-todos
-description: Use the `waterfree todos` CLI to inspect the workspace backlog, find ready work, add tasks, and update task status as implementation progresses.
+description: Use the `waterfree todos` CLI to find the next ready task, record new work, and update task status as you implement.
 ---
 
 # WaterFree — Task / Todo Store
 
-You have access to the workspace task backlog via the `waterfree` CLI. Each
-invocation is a short shell command — run it through Bash. Tasks are stored
-per-workspace in `.waterfree/tasks.db` (SQLite).
+Workspace backlog in `.waterfree/tasks.db`. Run each command in whatever shell
+you have — Bash or PowerShell. `waterfree` is on PATH, so the command text is
+identical in both; every example below is a single line so nothing depends on
+shell-specific line continuations. Every command prints JSON to stdout (parse
+with `json.loads`). Add `--workspace <path>` to target a project other than the CWD.
 
-All commands emit JSON to stdout; parse with `json.loads` rather than grepping.
+Output is **compact** by default — null/empty/default fields are omitted (no
+`owner` ⇒ unassigned, no `timing` ⇒ one_time, no `taskType` ⇒ impl). Add `--full`
+only when you specifically need the raw shape.
 
-## When to Use
-
-- See what work is planned or in progress — `waterfree todos list`
-- Find tasks related to a specific area — `waterfree todos search <query>`
-- Record a new piece of work that was identified — `waterfree todos add`
-- Mark a task complete after finishing it — `waterfree todos update <id> --patch '{"status":"complete"}'`
-- Check what to work on next (highest-priority, no blockers) — `waterfree todos get-next`
-- See only unblocked work — `waterfree todos get-ready`
-- If an off-subject item needs to be addressed later, push it into todos for future work.
-
-## Task Model
-
-Each task has:
-
-**Identity & classification**
-- `id` — UUID (auto-generated)
-- `title` — one-line summary
-- `description` — full description of what needs to be done
-- `rationale` — *why* this task exists (motivation, not steps)
-- `taskType` — `impl` | `test` | `spike` | `review` | `refactor` | `protocol` | `bug_fix` | `feature` | `task`
-- `phase` — optional milestone/sprint label for grouping
-
-**Priority & status**
-- `priority` — `P0` (blocker) | `P1` (critical path) | `P2` (default) | `P3` (backlog) | `spike` (research)
-- `status` — `pending` | `executing` | `complete` | `skipped`
-
-**Scheduling & recurrence**
-- `timing` — `one_time` (default) | `recurring`
-  - Recurring tasks auto-reset to `pending` when marked `complete`.
-- `trigger` — free-text description of *what event or condition* should prompt re-evaluation.
-
-**Completion gate**
-- `acceptanceCriteria` — free-text definition of done.
-
-**Ownership**
-- `owner` — `{ type: "human"|"agent"|"unassigned", name: "..." }`
-
-**Location anchors**
-- `targetCoord` — primary file/line the task applies to.
-- `contextCoords` — additional file/line anchors for related context.
-
-**Dependencies**
-- `dependsOn` — list of `{ taskId, type }` entries
-  - `type: "blocks"` — hard dependency.
-  - `type: "informs"` — soft: that task's output changes how this task is done.
-  - `type: "shares-file"` — warns of conflict risk if worked in parallel.
-
-**Effort tracking**
-- `estimatedMinutes` / `actualMinutes` — optional.
-
-**Notes**
-- `humanNotes` — notes from a human for the implementor.
-- `aiNotes` — notes from an agent (observations, blockers, progress).
-
-## CLI
-
-Every command accepts `--workspace <path>` (defaults to CWD).
-
-### List tasks
-```bash
-waterfree todos list --workspace /abs/path/to/project
-waterfree todos list --workspace . --status pending
-waterfree todos list --workspace . --priority P0
-waterfree todos list --workspace . --phase v2-launch
-waterfree todos list --workspace . --owner agent --ready-only
-```
-
-### Search tasks
-```bash
-waterfree todos search "authentication" --workspace .
-waterfree todos search "database migration" --workspace . --limit 10
-```
-Matches title, description, rationale, file paths, owner, acceptance criteria, and trigger.
-
-### Next task to work on
-```bash
-waterfree todos get-next --workspace .
-waterfree todos get-next --workspace . --owner agent
-```
-Returns the highest-priority task with no blocking dependencies, or `null`.
-
-### Ready tasks (no blockers)
-```bash
-waterfree todos get-ready --workspace . --limit 10
-```
-
-### Add a task
-```bash
-waterfree todos add --workspace . \
-    --title "Add rate limiting to /api/auth" \
-    --description "Implement token-bucket rate limiting on the auth endpoint." \
-    --priority P1 \
-    --phase security-hardening \
-    --owner-type agent \
-    --target-file src/api/auth.py \
-    --target-line 42
-```
-
-`--target-line` behaviour:
-- omitted — top of file (no line anchor)
-- `-1` — end of file
-- positive integer — that exact line number
-
-### Update a task
-```bash
-waterfree todos update --workspace . <task-id> \
-    --patch '{"status":"complete","actualMinutes":45}'
-```
-
-Supported patch keys: `title`, `description`, `rationale`, `priority`, `phase`,
-`status`, `taskType`, `timing`, `trigger`, `acceptanceCriteria`, `owner`,
-`blockedReason`, `humanNotes`, `aiNotes`, `estimatedMinutes`, `actualMinutes`,
-`targetCoord`, `dependsOn`, `contextCoords`, `startedAt`, `completedAt`.
-
-### Delete a task
-```bash
-waterfree todos delete --workspace . <task-id>
-```
-
-## Recurring task pattern
+## Reading — start here
 
 ```bash
-# 1. Create the task
-waterfree todos add --workspace . --title "Review test coverage" \
-    --description "Check that critical paths still have coverage."
-
-# 2. Patch it to recurring
-waterfree todos update --workspace . <task-id> \
-    --patch '{"timing":"recurring","trigger":"after each release"}'
-
-# 3. Mark complete when done — auto-resets to pending
-waterfree todos update --workspace . <task-id> \
-    --patch '{"status":"complete","actualMinutes":15}'
+waterfree todos get-next                 # the one task to work on now (or null)
+waterfree todos get-ready --limit 5      # the next few unblocked tasks, by priority
+waterfree todos search "auth rate limit" # find a specific task by text
 ```
 
-## Tips
+`get-next` returns the highest-priority unblocked task. **Call it before starting
+work** so you don't duplicate effort. Reach for `get-ready`/`search` when you need
+more than one candidate.
 
-- Always call `get-next` before starting new work — don't duplicate effort.
-- Use `list --status executing` to see what's actively in progress.
-- When you finish a task, immediately update its status to `"complete"`.
-- Priority order: P0 > P1 > P2 > P3 > spike.
-- Use `acceptanceCriteria` when the definition of done is non-obvious.
-- Use `aiNotes` to leave breadcrumbs about what you discovered or why you stopped.
+> **Avoid `waterfree todos list`.** It dumps up to 50 tasks and burns tokens fast.
+> Use `get-next` / `get-ready` / `search` instead. Only fall back to `list` (with a
+> tight `--status`/`--priority`/`--limit` filter) when you truly need a full survey.
+
+## Updating a task — no JSON needed
+
+Use discrete flags for the common writes — they sidestep shell-quoting problems:
+
+```bash
+waterfree todos update <id> --status complete          # close a task
+waterfree todos update <id> --status executing         # mark it in progress
+waterfree todos update <id> --priority P1 --phase v2
+waterfree todos update <id> --ai-notes "blocked on missing migration"
+waterfree todos update <id> --owner-type agent --owner-name claude
+```
+
+Flags: `--status` `--priority` `--phase` `--owner-type` `--owner-name`
+`--ai-notes` `--human-notes` `--actual-minutes`. Statuses:
+`pending | executing | complete | skipped` (plus `annotating | negotiating` for
+the annotation flow). Priorities: `P0 | P1 | P2 | P3 | spike` (P0 highest).
+
+For a field without a flag, use `--patch '<json>'` (discrete flags win on conflict).
+Recurring tasks (`timing: recurring`) auto-reset to `pending` when set `complete`.
+
+- When you finish work, immediately `update <id> --status complete`.
+- Leave breadcrumbs with `--ai-notes` when you stop or hit a blocker.
+
+## Adding work
+
+```bash
+waterfree todos add --title "Add rate limiting to /api/auth" --description "Token-bucket rate limiting on the auth endpoint." --priority P1 --owner-type agent --target-file src/api/auth.py --target-line 42
+```
+
+`--target-line`: omit for top-of-file, `-1` for end-of-file, else the exact line.
+If an off-subject item surfaces mid-task, capture it here for later.
+
+## Deleting
+
+```bash
+waterfree todos delete <id>
+```
 
 ## Exit codes
 
-| Code | Meaning |
-|------|---------|
-| 0    | Success |
-| 2    | Usage / validation error |
-| 3    | Not found (task id) |
-| 1    | Internal error |
+`0` ok · `2` usage/validation · `3` task not found · `1` internal error.

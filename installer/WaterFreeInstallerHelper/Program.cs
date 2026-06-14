@@ -360,6 +360,12 @@ internal static class Program
         var binDir = Path.Combine(installDir, "bin");
         if (!Directory.Exists(binDir)) return;
 
+        // Free any locks first: on upgrade/repair a running waterfree.exe (the
+        // VS Code backend's `serve`, or an open shell) holds the launcher image,
+        // so the delete below — and the overwrite extract that follows — would
+        // throw "used by another process" and roll back the whole MSI.
+        StopRunningRuntime(log, binDir);
+
         // On re-install/upgrade the previous runtime may contain files that are
         // read-only or transiently locked (e.g. libcrypto-3.dll held by AV or a
         // running `waterfree serve`). A hard Directory.Delete throws
@@ -395,6 +401,55 @@ internal static class Program
         else
         {
             log.Info($"Removed extracted WaterFree runtime files from {binDir}");
+        }
+    }
+
+    private static void StopRunningRuntime(InstallerLog log, string binDir)
+    {
+        // Terminate any waterfree launcher (and its child python) running *from
+        // this install's bin dir* so its files can be replaced. Scoped by path so
+        // an unrelated 'waterfree' elsewhere on the machine is never touched.
+        Process[] procs;
+        try
+        {
+            procs = Process.GetProcessesByName("waterfree");
+        }
+        catch (Exception ex)
+        {
+            log.Info($"Could not enumerate running runtime processes: {ex.Message}");
+            return;
+        }
+
+        var prefix = binDir.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var stopped = 0;
+        foreach (var proc in procs)
+        {
+            try
+            {
+                string? exePath = null;
+                try { exePath = proc.MainModule?.FileName; }
+                catch { /* access denied or already exited — skip */ }
+                if (string.IsNullOrEmpty(exePath)) continue;
+                if (!exePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+
+                log.Info($"Stopping running runtime: {exePath} (pid={proc.Id}) so its files can be replaced.");
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(5000);
+                stopped++;
+            }
+            catch (Exception ex)
+            {
+                log.Info($"Could not stop runtime pid={proc.Id}: {ex.Message}");
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+
+        if (stopped > 0)
+        {
+            log.Info($"Stopped {stopped} running runtime process(es) under {binDir}.");
         }
     }
 
@@ -558,7 +613,13 @@ internal static class Program
             psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/c \"{codeCmd}\" --install-extension \"{vsixPath}\" --force",
+                // cmd.exe /s /c "<command>": with /s, cmd strips exactly the
+                // outermost pair of quotes and runs the remainder verbatim, so a
+                // code.cmd path containing spaces ("Microsoft VS Code") survives.
+                // Without the extra wrapping quotes cmd strips the quotes around
+                // the path itself and fails with:
+                //   '...\Local\Programs\Microsoft' is not recognized ...
+                Arguments = $"/s /c \"\"{codeCmd}\" --install-extension \"{vsixPath}\" --force\"",
                 UseShellExecute = false,
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,

@@ -10,8 +10,10 @@ powered by the built-in **graphify** engine, which extracts symbols across 40+
 languages via tree-sitter and stores a symbol graph (nodes =
 functions/classes/modules, edges = calls/imports/inherits/defines).
 
-Each invocation is a short shell command — run it through Bash. All commands
-emit JSON to stdout.
+Each invocation is a short shell command — run it in whatever shell you have
+(Bash or PowerShell). `waterfree` is on PATH, so the command text is identical
+in both; every example below is a single line so nothing depends on
+shell-specific line continuations. All commands emit JSON to stdout.
 
 ## When to Use
 
@@ -138,8 +140,7 @@ The response includes `source_start_line` / `source_end_line` showing the exact 
 
 ### Trace call paths
 ```bash
-waterfree index trace "process_payment" --workspace . \
-    --direction both --depth 3
+waterfree index trace "process_payment" --workspace . --direction both --depth 3
 ```
 `--direction` is `callers`, `callees`, or `both`.
 

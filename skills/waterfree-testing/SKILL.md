@@ -9,8 +9,10 @@ Provides a clean interface for running tests in any supported framework via the
 `waterfree` CLI. Auto-detects the framework from the project
 (pytest → jest → vitest → unittest).
 
-Each invocation is a short shell command — run it through Bash. All commands
-emit JSON to stdout (except `logs`, which prints raw test output).
+Each invocation is a short shell command — run it in whatever shell you have
+(Bash or PowerShell). `waterfree` is on PATH, so the command text is identical
+in both. All commands emit JSON to stdout (except `logs`, which prints raw test
+output).
 
 ## When to Use
 

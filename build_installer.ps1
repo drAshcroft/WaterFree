@@ -5,8 +5,12 @@
 .DESCRIPTION
     Single entry point for the WaterFree release pipeline. Stages, in order:
 
-      1. PyInstaller        -> bin/waterfree-<plat>-<arch>\waterfree.exe
+      1. Launcher build     -> bin/waterfree-<plat>-<arch>\waterfree.exe
+                              (a tiny .NET shim) + staged backend\ source
                               + bin/waterfree-runtime.zip
+                              The shim shells into the shared venv at run time,
+                              so only our own Python source ships (a few MB) —
+                              not a 4+ GB frozen torch/transformers bundle.
       2. npm run package    -> waterfree.vsix
       3. WiX (dotnet build) -> dist/WaterFreeSetup-<version>.msi
                               (the WiX project's BuildPayload target internally
@@ -31,7 +35,8 @@
     starting. Useful when artifacts feel stale.
 
 .PARAMETER SkipExe
-    Reuse an existing bin/waterfree-<plat>-<arch>.exe instead of running PyInstaller.
+    Reuse the existing bin/waterfree-<plat>-<arch>\ runtime instead of rebuilding
+    the launcher and re-staging the backend source.
 
 .PARAMETER SkipVsix
     Reuse an existing waterfree.vsix instead of running `npm run package`.
@@ -133,11 +138,11 @@ $BinDir     = Join-Path $RepoRoot "bin"
 $WixDir     = Join-Path $RepoRoot "installer"
 $WixProj    = Join-Path $WixDir   "WaterFreeInstaller.wixproj"
 $WixPayload = Join-Path $WixDir   "obj\payload"
-$BuildDir   = Join-Path $RepoRoot "build"   # PyInstaller scratch
+$BuildDir   = Join-Path $RepoRoot "build"   # build scratch (cleaned by -Clean)
 $VsixPath   = Join-Path $RepoRoot "waterfree.vsix"
-$SpecFile   = Join-Path $RepoRoot "waterfree.spec"
 
-# Match waterfree.spec's runtime naming: waterfree-<sys.platform>-<arch>/waterfree(.exe)
+# Runtime naming: waterfree-<sys.platform>-<arch>/waterfree(.exe). Mirrors the
+# path the VS Code extension probes (PythonBridge.start).
 $PlatformTag = switch -Regex ($env:OS) {
     "Windows" { "win32" }
     default   { "linux" }
@@ -146,12 +151,16 @@ $ArchTag = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
 $RuntimeDirName = "waterfree-$PlatformTag-$ArchTag"
 $LauncherName = if ($PlatformTag -eq "win32") { "waterfree.exe" } else { "waterfree" }
 $RuntimeZipName = "waterfree-runtime.zip"
-# PyInstaller writes to dist/<runtime-dir>/; WiX consumes bin/waterfree-runtime.zip.
-$PyInstallerOutDir = Join-Path $RepoRoot "dist\$RuntimeDirName"
-$PyInstallerLauncher = Join-Path $PyInstallerOutDir $LauncherName
 $RuntimeDirPath = Join-Path $BinDir $RuntimeDirName
 $ExePath = Join-Path $RuntimeDirPath $LauncherName
 $RuntimeZipPath = Join-Path $BinDir $RuntimeZipName
+
+# The launcher is a tiny .NET shim that shells into a Python interpreter at run
+# time. WATERFREE_PYTHON overrides; the default is the shared dev/internal venv.
+$VenvPython         = if ($env:WATERFREE_PYTHON) { $env:WATERFREE_PYTHON } else { "C:\Projects\.local\Scripts\python.exe" }
+$LauncherProj       = Join-Path $RepoRoot "installer\WaterFreeLauncher\WaterFreeLauncher.csproj"
+$LauncherPublishDir = Join-Path $RepoRoot "installer\WaterFreeLauncher\publish"
+$BackendSrc         = Join-Path $RepoRoot "backend"
 
 $Banner = "==>"
 $Start  = Get-Date
@@ -201,9 +210,13 @@ if (-not $SkipPrereqCheck) {
         $missing = @()
 
         if (-not $SkipExe) {
-            if (-not (Test-Command "python"))      { $missing += "Python 3.12+ (install from python.org or via winget install Python.Python.3.12)" }
-            elseif (-not (Test-PythonModule "PyInstaller")) {
-                $missing += "PyInstaller python package (install: pip install pyinstaller)"
+            # The launcher is built with `dotnet publish` (no Python needed to build it).
+            if (-not (Test-Command "dotnet")) {
+                $missing += ".NET SDK 10 (install via winget install Microsoft.DotNet.SDK.10)"
+            }
+            # The exe smoke test runs the launcher, which shells into the venv.
+            if (-not $SkipExeSmoke -and -not (Test-Path $VenvPython)) {
+                $missing += "Shared venv Python at '$VenvPython' (the launcher shells into it; set WATERFREE_PYTHON or create the venv). Needed for the exe smoke test."
             }
         }
 
@@ -224,7 +237,7 @@ if (-not $SkipPrereqCheck) {
         if ($missing.Count -gt 0) {
             Write-Host ""
             Write-Host "Missing prerequisites:" -ForegroundColor Red
-            foreach ($m in $missing) { Write-Host "  - $m" -ForegroundColor Red }
+            foreach ($m in ($missing | Select-Object -Unique)) { Write-Host "  - $m" -ForegroundColor Red }
             Write-Host ""
             Write-Host "Install the items above, then re-run build_installer.ps1." -ForegroundColor Yellow
             Write-Host "(To bypass this check, pass -SkipPrereqCheck.)" -ForegroundColor DarkGray
@@ -262,23 +275,54 @@ if ($SkipExe) {
         Stop-Build 3
     }
 } else {
-    Invoke-Stage "Stage 1: PyInstaller -> $RuntimeDirName" {
-        Push-Location $RepoRoot
-        try {
-            & python -m PyInstaller --noconfirm $SpecFile
-        } finally {
-            Pop-Location
-        }
-        if (-not (Test-Path $PyInstallerLauncher)) {
-            Write-Host "FAILED: PyInstaller succeeded but $PyInstallerLauncher is missing." -ForegroundColor Red
-            Stop-Build 1
-        }
-        # WiX consumes a zip from bin/; PyInstaller puts the one-dir runtime in dist/.
+    Invoke-Stage "Stage 1: Launcher + backend -> $RuntimeDirName" {
         New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+
+        # Start from a clean runtime dir so stale files never leak into the zip.
         if (Test-Path $RuntimeDirPath) {
             Remove-Item -Recurse -Force -Path $RuntimeDirPath
         }
-        Copy-Item -Recurse -Force $PyInstallerOutDir $RuntimeDirPath
+        New-Item -ItemType Directory -Force -Path $RuntimeDirPath | Out-Null
+
+        # 1) Build the tiny native launcher (waterfree.exe). Framework-dependent
+        #    single file -> a few hundred KB, not a frozen Python runtime.
+        if (Test-Path $LauncherPublishDir) {
+            Remove-Item -Recurse -Force -Path $LauncherPublishDir
+        }
+        & dotnet publish $LauncherProj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $LauncherPublishDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAILED: dotnet publish of the launcher returned $LASTEXITCODE." -ForegroundColor Red
+            Stop-Build $LASTEXITCODE
+        }
+        $publishedExe = Join-Path $LauncherPublishDir $LauncherName
+        if (-not (Test-Path $publishedExe)) {
+            Write-Host "FAILED: launcher publish succeeded but $publishedExe is missing." -ForegroundColor Red
+            Stop-Build 1
+        }
+        # Copy the launcher (exe + any runtimeconfig/deps json) — never the pdb.
+        Get-ChildItem -Path $LauncherPublishDir -File |
+            Where-Object { $_.Extension -ne ".pdb" } |
+            ForEach-Object { Copy-Item -Force $_.FullName (Join-Path $RuntimeDirPath $_.Name) }
+
+        # 2) Stage the pure-Python backend source next to the launcher. The heavy
+        #    third-party deps come from the shared venv at run time, so only our
+        #    own source ships — a few MB instead of 4+ GB.
+        $backendDest = Join-Path $RuntimeDirPath "backend"
+        Copy-Item -Recurse -Force $BackendSrc $backendDest
+        # Drop test trees and stale bytecode from the shipped copy (deepest first).
+        Get-ChildItem -Path $backendDest -Recurse -Directory -Force |
+            Where-Object { $_.Name -in @("__pycache__", "tests", ".pytest_cache") } |
+            Sort-Object FullName -Descending |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $backendDest -Recurse -File -Force -Filter *.pyc |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path (Join-Path $backendDest "main.py"))) {
+            Write-Host "FAILED: backend\main.py missing from staged runtime ($backendDest)." -ForegroundColor Red
+            Stop-Build 1
+        }
+
+        # 3) Zip the runtime contents (not the dir) for the MSI helper to extract
+        #    straight into %LocalAppData%\WaterFree\bin\.
         if (Test-Path $RuntimeZipPath) {
             Remove-Item -Force -Path $RuntimeZipPath
         }
@@ -303,10 +347,12 @@ if ($SkipExeSmoke) {
             & $ExePath doctor
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "FAILED: 'waterfree doctor' reported missing runtime dependencies (exit=$LASTEXITCODE)." -ForegroundColor Red
-                Write-Host "The build environment is missing packages from backend/requirements.txt." -ForegroundColor Yellow
+                Write-Host "The shared venv ($VenvPython) is missing packages from backend/requirements.txt." -ForegroundColor Yellow
                 Stop-Build $LASTEXITCODE
             }
-            & python -m backend.tests.smoke_compiled_exe --exe $ExePath
+            # Run the smoke harness with the venv interpreter — bare `python` may
+            # not be on PATH, and the harness only needs stdlib to drive the exe.
+            & $VenvPython -m backend.tests.smoke_compiled_exe --exe $ExePath
         } finally {
             Pop-Location
         }

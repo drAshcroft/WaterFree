@@ -41,15 +41,18 @@ Mirrors `backend/mcp_todos.py`. Backed by `.waterfree/tasks.db` via
 
 | Action       | Flags / args                                                                       | MCP equivalent |
 |--------------|------------------------------------------------------------------------------------|----------------|
-| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--limit N`        | `list_tasks` |
-| `search`     | `<query>` (positional), `--limit N`                                                | `search_tasks` |
-| `get-next`   | `--owner NAME`                                                                     | `get_next_task` |
-| `get-ready`  | `--limit N`                                                                        | `get_ready_tasks` |
-| `add`        | `--title T`, `--description D`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line` | `add_task` |
-| `update`     | `<task-id>`, `--patch '<json>'`                                                    | `update_task` |
+| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--limit N`, `--full` | `list_tasks` |
+| `search`     | `<query>` (positional), `--limit N`, `--full`                                      | `search_tasks` |
+| `get-next`   | `--owner NAME`, `--full`                                                           | `get_next_task` |
+| `get-ready`  | `--limit N`, `--full`                                                              | `get_ready_tasks` |
+| `add`        | `--title T`, `--description D`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--full` | `add_task` |
+| `update`     | `<task-id>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--full` | `update_task` |
 | `delete`     | `<task-id>`                                                                        | `delete_task` |
 
-All actions accept `--workspace` (default: CWD).
+All actions accept `--workspace` (default: CWD). Read/write actions emit
+**compact** JSON (null/empty/default fields omitted) unless `--full` is passed.
+On `update`, discrete flags cover the common edits without JSON; `--patch` is for
+fields without a flag and discrete flags win on conflict.
 
 ## Area: knowledge
 

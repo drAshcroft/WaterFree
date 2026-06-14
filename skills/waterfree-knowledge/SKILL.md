@@ -8,8 +8,10 @@ description: Use the `waterfree knowledge` CLI to search shared code snippets, p
 You have access to a global knowledge store via the `waterfree` CLI. Knowledge
 is shared across all workspaces and stored at `~/.waterfree/global/knowledge.db`.
 
-Each invocation is a short shell command — run it through Bash. All commands
-emit JSON to stdout.
+Each invocation is a short shell command — run it in whatever shell you have
+(Bash or PowerShell). `waterfree` is on PATH, so the command text is identical
+in both; every example below is a single line so nothing depends on
+shell-specific line continuations. All commands emit JSON to stdout.
 
 ## When to Use (Read)
 
@@ -86,25 +88,17 @@ optionally sample entries from the selected branch.
 
 For short snippets, pass code inline:
 ```bash
-waterfree knowledge add \
-    --title "Exponential backoff retry decorator" \
-    --description "Retries a function up to N times with exponential backoff." \
-    --code 'def retry(max_attempts=3): ...' \
-    --snippet-type utility \
-    --source-repo WaterFree \
-    --source-file backend/llm/claude_client.py \
-    --hierarchy-path platform/reliability/retries \
-    --tag python --tag retry --tag error-handling --tag decorator \
-    --context "Requires Python 3.10+. Not suitable for DB transactions."
+waterfree knowledge add --title "Exponential backoff retry decorator" --description "Retries a function up to N times with exponential backoff." --code 'def retry(max_attempts=3): ...' --snippet-type utility --source-repo WaterFree --source-file backend/llm/claude_client.py --hierarchy-path platform/reliability/retries --tag python --tag retry --tag error-handling --tag decorator --context "Requires Python 3.10+. Not suitable for DB transactions."
 ```
 
-For multi-line code, write to a file and pass `--code-file`, or pipe via stdin
-with `--code-file -`:
+For multi-line code, write it to a file and pass `--code-file <path>`:
 ```bash
-cat my_snippet.py | waterfree knowledge add --code-file - \
-    --title "..." --description "..." --snippet-type pattern \
-    --source-repo WaterFree --tag python
+waterfree knowledge add --code-file my_snippet.py --title "..." --description "..." --snippet-type pattern --source-repo WaterFree --tag python
 ```
+
+You can also stream code via stdin with `--code-file -` and your shell's reader:
+`cat my_snippet.py | waterfree knowledge add --code-file - …` in Bash, or
+`Get-Content my_snippet.py | waterfree knowledge add --code-file - …` in PowerShell.
 
 Returns JSON with the new entry id. If the code is identical to an existing
 entry, `added` is `false` (deduplicated by SHA-256 of code).

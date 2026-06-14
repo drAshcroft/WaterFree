@@ -20,6 +20,77 @@ from backend.cli._common import (
 )
 from backend.todo.store import TaskStore
 
+# Statuses/priorities accepted by the discrete `update` flags. Kept in sync with
+# backend.session.task_models.TaskStatus / TaskPriority.
+_STATUSES = ("pending", "annotating", "negotiating", "executing", "complete", "skipped")
+_PRIORITIES = ("P0", "P1", "P2", "P3", "spike")
+
+# Field values that carry no information and are stripped from compact output.
+_DEFAULT_DROP = {"timing": "one_time", "taskType": "impl"}
+
+
+def _compact_coord(coord: Any) -> dict | None:
+    """Drop a coord with no file; otherwise keep only the meaningful anchors."""
+    if not isinstance(coord, dict):
+        return None
+    file = coord.get("file") or ""
+    if not file:
+        return None
+    out: dict[str, Any] = {"file": file}
+    if coord.get("line") is not None:
+        out["line"] = coord["line"]
+    if coord.get("class"):
+        out["class"] = coord["class"]
+    if coord.get("method"):
+        out["method"] = coord["method"]
+    anchor = coord.get("anchorType")
+    if anchor and anchor != "modify":
+        out["anchorType"] = anchor
+    return out
+
+
+def _compact_task(task: dict) -> dict:
+    """Strip null/empty/default fields from a task dict to cut token cost.
+
+    An omitted field means "empty or default": no owner means unassigned,
+    no `timing` means one_time, no `taskType` means impl, etc.
+    """
+    out: dict[str, Any] = {}
+    for key, value in task.items():
+        if value in (None, "", [], {}):
+            continue
+        if key in _DEFAULT_DROP and value == _DEFAULT_DROP[key]:
+            continue
+        if key == "owner":
+            if isinstance(value, dict) and value.get("type", "unassigned") == "unassigned" and not value.get("name"):
+                continue
+            out[key] = {k: v for k, v in value.items() if v not in (None, "")}
+            continue
+        if key == "targetCoord":
+            coord = _compact_coord(value)
+            if coord:
+                out[key] = coord
+            continue
+        if key == "contextCoords":
+            coords = [c for c in (_compact_coord(item) for item in value) if c]
+            if coords:
+                out[key] = coords
+            continue
+        out[key] = value
+    return out
+
+
+def _present(task: dict, full: bool) -> dict:
+    return task if full else _compact_task(task)
+
+
+def _add_full_flag(parser) -> None:
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Emit every field including nulls/defaults (default output is compact).",
+    )
+
 
 def register(sub: _SubParsersAction) -> None:
     p = sub.add_parser("todos", help="Workspace task backlog")
@@ -34,19 +105,23 @@ def register(sub: _SubParsersAction) -> None:
     p_list.add_argument("--owner", default="")
     p_list.add_argument("--ready-only", action="store_true")
     p_list.add_argument("--limit", type=int, default=50)
+    _add_full_flag(p_list)
 
     p_search = actions.add_parser("search", help="Full-text search across tasks")
     add_workspace_arg(p_search)
     p_search.add_argument("query")
     p_search.add_argument("--limit", type=int, default=20)
+    _add_full_flag(p_search)
 
     p_next = actions.add_parser("get-next", help="Highest-priority unblocked task")
     add_workspace_arg(p_next)
     p_next.add_argument("--owner", default="")
+    _add_full_flag(p_next)
 
     p_ready = actions.add_parser("get-ready", help="All unblocked tasks ordered by priority")
     add_workspace_arg(p_ready)
     p_ready.add_argument("--limit", type=int, default=20)
+    _add_full_flag(p_ready)
 
     p_add = actions.add_parser("add", help="Add a new task")
     add_workspace_arg(p_add)
@@ -59,12 +134,29 @@ def register(sub: _SubParsersAction) -> None:
                        choices=("human", "agent", "unassigned"))
     p_add.add_argument("--target-file", default="")
     p_add.add_argument("--target-line", type=int, default=None)
+    _add_full_flag(p_add)
 
-    p_update = actions.add_parser("update", help="Patch fields on an existing task")
+    p_update = actions.add_parser(
+        "update",
+        help="Update an existing task. Prefer the discrete flags; --patch is for "
+             "fields without a flag.",
+    )
     add_workspace_arg(p_update)
     p_update.add_argument("task_id")
-    p_update.add_argument("--patch", required=True,
-                          help="JSON object of fields to update")
+    # Discrete flags cover the common writes without JSON — no shell-quoting pain.
+    p_update.add_argument("--status", choices=_STATUSES, default=None)
+    p_update.add_argument("--priority", choices=_PRIORITIES, default=None)
+    p_update.add_argument("--phase", default=None)
+    p_update.add_argument("--owner-type", choices=("human", "agent", "unassigned"), default=None)
+    p_update.add_argument("--owner-name", default=None)
+    p_update.add_argument("--ai-notes", default=None, help="Replace aiNotes.")
+    p_update.add_argument("--human-notes", default=None, help="Replace humanNotes.")
+    p_update.add_argument("--actual-minutes", type=int, default=None)
+    p_update.add_argument(
+        "--patch", default=None,
+        help="JSON object for fields without a discrete flag. Discrete flags win on conflict.",
+    )
+    _add_full_flag(p_update)
 
     p_delete = actions.add_parser("delete", help="Remove a task by id")
     add_workspace_arg(p_delete)
@@ -87,7 +179,7 @@ def run(args: Namespace) -> int:
             limit=args.limit,
         )
         emit_json({
-            "tasks": [t.to_dict() for t in data.tasks],
+            "tasks": [_present(t.to_dict(), args.full) for t in data.tasks],
             "phases": data.phases,
             "total": len(data.tasks),
         })
@@ -95,17 +187,17 @@ def run(args: Namespace) -> int:
 
     if action == "search":
         tasks = store.search_tasks(query=args.query, limit=args.limit)
-        emit_json([t.to_dict() for t in tasks])
+        emit_json([_present(t.to_dict(), args.full) for t in tasks])
         return EXIT_OK
 
     if action == "get-next":
         task = store.get_next_task(owner_name=args.owner, include_unassigned=True)
-        emit_json(task.to_dict() if task else None)
+        emit_json(_present(task.to_dict(), args.full) if task else None)
         return EXIT_OK
 
     if action == "get-ready":
         tasks = store.get_ready_tasks()[: args.limit]
-        emit_json([t.to_dict() for t in tasks])
+        emit_json([_present(t.to_dict(), args.full) for t in tasks])
         return EXIT_OK
 
     if action == "add":
@@ -123,18 +215,45 @@ def run(args: Namespace) -> int:
                 coord["line"] = args.target_line
             payload["targetCoord"] = coord
         task = store.add_task(payload)
-        emit_json(task.to_dict())
+        emit_json(_present(task.to_dict(), args.full))
         return EXIT_OK
 
     if action == "update":
-        patch = parse_json_arg(args.patch, label="patch")
-        if not isinstance(patch, dict):
-            return emit_error("--patch must be a JSON object", exit_code=EXIT_USAGE)
+        patch: dict[str, Any] = {}
+        if args.patch is not None:
+            parsed = parse_json_arg(args.patch, label="patch")
+            if not isinstance(parsed, dict):
+                return emit_error("--patch must be a JSON object", exit_code=EXIT_USAGE)
+            patch.update(parsed)
+        # Discrete flags override --patch on conflict.
+        if args.status is not None:
+            patch["status"] = args.status
+        if args.priority is not None:
+            patch["priority"] = args.priority
+        if args.phase is not None:
+            patch["phase"] = args.phase
+        if args.ai_notes is not None:
+            patch["aiNotes"] = args.ai_notes
+        if args.human_notes is not None:
+            patch["humanNotes"] = args.human_notes
+        if args.actual_minutes is not None:
+            patch["actualMinutes"] = args.actual_minutes
+        if args.owner_type is not None or args.owner_name is not None:
+            # owner is replaced wholesale; set both flags to preserve type+name.
+            patch["owner"] = {
+                "type": args.owner_type or "unassigned",
+                "name": args.owner_name or "",
+            }
+        if not patch:
+            return emit_error(
+                "nothing to update: pass a flag like --status/--priority or --patch",
+                exit_code=EXIT_USAGE,
+            )
         try:
             task = store.update_task(task_id=args.task_id, patch=patch)
         except ValueError as exc:
             return emit_error(str(exc), exit_code=EXIT_NOT_FOUND)
-        emit_json(task.to_dict())
+        emit_json(_present(task.to_dict(), args.full))
         return EXIT_OK
 
     if action == "delete":

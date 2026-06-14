@@ -8,7 +8,9 @@ description: Map/reduce reader over a large file or URL. Reach for it whenever y
 Local-Ollama-powered map/reduce summarizer. Reads a file or URL, splits into
 chunks, fans out an analysis per chunk, then synthesizes a focused answer.
 
-Run via the `waterfree` CLI through Bash. Returns JSON on stdout.
+Run via the `waterfree` CLI in whatever shell you have (Bash or PowerShell) —
+`waterfree` is on PATH, so the command text is identical in both (every example
+below is a single line). Returns JSON on stdout.
 
 ## When to Use
 
@@ -36,11 +38,9 @@ waterfree qa-summary ask <file-or-url> -q "<your question>"
 
 Examples:
 ```bash
-waterfree qa-summary ask ./logs/build_2026_05_22.txt \
-    -q "What was the first error that caused the build to fail?"
+waterfree qa-summary ask ./logs/build_2026_05_22.txt -q "What was the first error that caused the build to fail?"
 
-waterfree qa-summary ask https://www.rfc-editor.org/rfc/rfc9110 \
-    -q "What does the spec say about idempotent PATCH requests?"
+waterfree qa-summary ask https://www.rfc-editor.org/rfc/rfc9110 -q "What does the spec say about idempotent PATCH requests?"
 ```
 
 Output shape:
