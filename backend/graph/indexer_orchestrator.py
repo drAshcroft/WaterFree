@@ -66,15 +66,35 @@ class IndexerOrchestrator:
             to_store_nodes,
             to_store_edges,
         )
+        from backend.graph.indexer import file_hash
 
         log.info("Indexing %r with graphify (40+ languages)", project)
+        stored_hashes = store.get_file_hashes(project)
         nodes_raw, edges_raw = run_extraction(root)
+        current_hashes: dict[str, str] = {}
+        for raw_node in nodes_raw:
+            raw_source_file = raw_node.get("source_file") or ""
+            if not raw_source_file:
+                continue
+            source_path = Path(str(raw_source_file))
+            if not source_path.is_absolute():
+                source_path = Path(root) / source_path
+            source_path = source_path.resolve()
+            try:
+                rel = str(source_path.relative_to(root)).replace("\\", "/")
+            except ValueError:
+                rel = str(source_path).replace("\\", "/")
+            if rel not in current_hashes:
+                sha = file_hash(str(source_path))
+                if sha:
+                    current_hashes[rel] = sha
+        deleted_files = len(set(stored_hashes) - set(current_hashes))
 
         if not nodes_raw:
             return {
                 "project": project,
                 "files_indexed": 0,
-                "deleted_files": 0,
+                "deleted_files": deleted_files,
                 "nodes": 0,
                 "edges": 0,
                 "status": "up_to_date",
@@ -116,32 +136,25 @@ class IndexerOrchestrator:
                 store.upsert_edge(project, src_id, tgt_id, e["relation"], e["metadata"])
         store.commit()
 
-        # Persist file hashes so incremental re-index knows what's current
-        files_seen: set[str] = set()
-        for n in store_nodes:
-            fp = n.get("file_path") or ""
-            if fp and fp not in files_seen:
-                files_seen.add(fp)
-                try:
-                    rel = str(Path(fp).relative_to(root)).replace("\\", "/")
-                except ValueError:
-                    rel = fp
-                from backend.graph.indexer import file_hash
-                sha = file_hash(fp)
-                if sha:
-                    store.upsert_file_hash(project, rel, sha)
+        # Persist file hashes so status and deletion accounting know what's current.
+        for rel, sha in current_hashes.items():
+            store.upsert_file_hash(project, rel, sha)
         store.commit()
 
         total_nodes = len(store.get_all_nodes(project))
         total_edges = store.count_edges(project)
+        changed_files = sum(
+            1 for rel, sha in current_hashes.items()
+            if stored_hashes.get(rel) != sha
+        )
 
         return {
             "project": project,
-            "files_indexed": len(files_seen),
-            "deleted_files": 0,
+            "files_indexed": changed_files,
+            "deleted_files": deleted_files,
             "nodes": total_nodes,
             "edges": total_edges,
-            "status": "indexed",
+            "status": "indexed" if changed_files else "up_to_date",
             "engine": "graphify",
         }
 

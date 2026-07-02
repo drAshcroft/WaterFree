@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -177,6 +178,8 @@ def chat(
         "messages": messages,
         "stream": False,
     }
+    if os.environ.get("WATERFREE_OLLAMA_THINK", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        payload["think"] = False
     if keep_alive:
         payload["keep_alive"] = keep_alive
     if options:

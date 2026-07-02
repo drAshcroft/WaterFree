@@ -212,7 +212,7 @@ if (-not $SkipPrereqCheck) {
         if (-not $SkipExe) {
             # The launcher is built with `dotnet publish` (no Python needed to build it).
             if (-not (Test-Command "dotnet")) {
-                $missing += ".NET SDK 10 (install via winget install Microsoft.DotNet.SDK.10)"
+                $missing += ".NET SDK 8+ (install via winget install Microsoft.DotNet.SDK.8)"
             }
             # The exe smoke test runs the launcher, which shells into the venv.
             if (-not $SkipExeSmoke -and -not (Test-Path $VenvPython)) {
@@ -227,7 +227,7 @@ if (-not $SkipPrereqCheck) {
 
         if (-not $SkipMsi) {
             if (-not (Test-Command "dotnet")) {
-                $missing += ".NET SDK 10 (install via winget install Microsoft.DotNet.SDK.10)"
+                $missing += ".NET SDK 8+ (install via winget install Microsoft.DotNet.SDK.8)"
             }
             # WiX 4 SDK is restored via NuGet from the wixproj, so no separate
             # tool needs to be on PATH. We do need `dotnet build` to be able to

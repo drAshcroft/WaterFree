@@ -290,6 +290,16 @@ MODEL_CATALOG: list[ModelDescriptor] = [
     # ── Ollama (local — cost is always 0) ─────────────────────────────────
 
     ModelDescriptor(
+        id="freehuntx/qwen3-coder:14b",
+        provider="ollama",
+        tier="balanced",
+        capabilities=("tools", "streaming", "long_context"),
+        context_window=40_960,
+        max_output=8_192,
+        input_cost_per_1m=0.0,
+        output_cost_per_1m=0.0,
+    ),
+    ModelDescriptor(
         id="llama3.2",
         provider="ollama",
         tier="efficient",

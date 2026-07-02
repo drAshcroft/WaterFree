@@ -251,7 +251,7 @@ def _resolve_tutorialize_model(server, workspace_path: str) -> str:
     """Pick the Ollama model to use for tutorialization.
 
     Prefers the workspace provider profile's knowledge-stage model when available,
-    falls back to llama3.2.
+    falls back to the local Qwen coder model used by the WaterFree installer.
     """
     try:
         profile = server._get_provider_profile(workspace_path)
@@ -264,4 +264,4 @@ def _resolve_tutorialize_model(server, workspace_path: str) -> str:
                     return models[0]
     except Exception:
         pass
-    return "llama3.2"
+    return os.environ.get("WATERFREE_TUTORIALIZE_MODEL", "freehuntx/qwen3-coder:14b")

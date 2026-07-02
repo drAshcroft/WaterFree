@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 
 from backend.tutorializer import ollama as ollama_client
 
-_DEFAULT_MODEL = os.environ.get("WATERFREE_QA_SUMMARY_MODEL", "qwen2.5:14b")
+_DEFAULT_MODEL = os.environ.get("WATERFREE_QA_SUMMARY_MODEL", "freehuntx/qwen3-coder:14b")
 _DEFAULT_OLLAMA_BASE = os.environ.get("WATERFREE_OLLAMA_BASE", "http://localhost:11434")
 _OLLAMA_KEEP_ALIVE = os.environ.get("WATERFREE_QA_SUMMARY_KEEP_ALIVE", "30m")
 _READ_TIMEOUT_SECONDS = 45

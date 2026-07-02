@@ -79,7 +79,7 @@ const PROVIDER_MODELS = {
     "qwen/qwen3-32b",
     "moonshotai/kimi-k2-instruct-0905",
   ],
-  ollama: ["llama3.2", "codestral", "qwen2.5-coder", "mistral"],
+  ollama: ["freehuntx/qwen3-coder:14b", "llama3.2", "codestral", "qwen2.5-coder", "mistral"],
   huggingface: [],
   mock: [],
 };

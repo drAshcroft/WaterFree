@@ -52,11 +52,11 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "debug": "llama-3.1-8b-instant",
     },
     "ollama": {
-        "default": "llama3.2",
-        "planning": "llama3.2",
-        "annotation": "llama3.2",
-        "execution": "llama3.2",
-        "debug": "llama3.2",
+        "default": "freehuntx/qwen3-coder:14b",
+        "planning": "freehuntx/qwen3-coder:14b",
+        "annotation": "freehuntx/qwen3-coder:14b",
+        "execution": "freehuntx/qwen3-coder:14b",
+        "debug": "freehuntx/qwen3-coder:14b",
     },
     "gemini": {
         "default": "gemini-2.0-flash",

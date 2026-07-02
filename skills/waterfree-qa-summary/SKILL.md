@@ -48,7 +48,7 @@ Output shape:
 {
   "source": "<file path or URL>",
   "question": "<the question>",
-  "model": "qwen2.5:14b",
+  "model": "freehuntx/qwen3-coder:14b",
   "source_characters": 124857,
   "chunks_processed": 11,
   "response": "1) Direct Answer ... 2) Supporting Details ... 3) Caveats ... 4) Suggested Next Checks"
@@ -64,7 +64,7 @@ Output shape:
 
 - Local Ollama daemon running at the default base URL (`http://localhost:11434`),
   or set `WATERFREE_OLLAMA_BASE`.
-- The `qwen2.5:14b` model installed by default, or set `WATERFREE_QA_SUMMARY_MODEL`.
+- The `freehuntx/qwen3-coder:14b` model installed by default, or set `WATERFREE_QA_SUMMARY_MODEL`.
 
 ## Exit codes
 

@@ -38,7 +38,7 @@ The CLI will:
 
 | Flag | Description |
 |------|-------------|
-| `--model llama3.2` | Skip model selection and use this model |
+| `--model freehuntx/qwen3-coder:14b` | Skip model selection and use this model |
 | `--focus "auth and permissions"` | Skip the interactive focus prompt |
 | `--areas "Auth,Router,Models"` | Only generate tutorials for these named areas |
 | `--base http://localhost:11434` | Ollama URL (default) |
@@ -58,7 +58,7 @@ python -m backend.tutorializer ~/repos/fastapi-app --model mistral --focus "API 
 python -m backend.tutorializer ~/repos/my-app --areas "Authentication,Database Models"
 
 # Non-interactive (for scripting)
-python -m backend.tutorializer ~/repos/my-app --model llama3.2 --focus "data pipeline"
+python -m backend.tutorializer ~/repos/my-app --model freehuntx/qwen3-coder:14b --focus "data pipeline"
 ```
 
 ---
@@ -98,7 +98,7 @@ the repo name slug, and the area name slug, making them easy to filter.
 ## Prerequisites
 
 - Ollama must be running locally: `ollama serve`
-- At least one model must be pulled: `ollama pull llama3.2`
+- At least one model must be pulled: `ollama pull freehuntx/qwen3-coder:14b`
 - The WaterFree backend must be importable (run from the WaterFree project root)
 
 ---

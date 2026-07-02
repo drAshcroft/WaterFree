@@ -11,6 +11,7 @@ Falls back gracefully when graphify or its optional deps are missing.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,12 @@ def _parse_line(loc: str | None) -> int:
         return 1
 
 
+def _clean_symbol_name(raw: object) -> str:
+    """Normalize graphify display labels into WaterFree symbol names."""
+    name = str(raw or "").strip()
+    return re.sub(r"\(\)$", "", name)
+
+
 def to_store_nodes(
     nodes: list[dict],
     project: str,
@@ -172,9 +179,13 @@ def to_store_nodes(
     result: list[dict] = []
 
     for node in nodes:
-        source_file = node.get("source_file") or ""
-        if not source_file:
+        raw_source_file = node.get("source_file") or ""
+        if not raw_source_file:
             continue
+        source_path = Path(str(raw_source_file))
+        if not source_path.is_absolute():
+            source_path = root / source_path
+        source_file = str(source_path.resolve())
 
         raw_label = str(node.get("label") or "")
         node_id = str(node.get("id") or "")
@@ -186,7 +197,7 @@ def to_store_nodes(
         else:
             label = _LABEL_MAP.get(raw_label.lower(), "Function")
 
-        name = node.get("name") or raw_label or node_id or "unknown"
+        name = _clean_symbol_name(node.get("name") or raw_label or node_id or "unknown")
 
         # For Module nodes the name is the clean file stem
         if label == "Module":
@@ -241,13 +252,14 @@ def to_store_edges(
         "implements": "INHERITS",
         "contains": "DEFINES",
         "method": "DEFINES",
+        "imports_from": "IMPORTS",
         "re_exports": "IMPORTS",
     }
 
     result: list[dict] = []
     for edge in edges:
-        src_id = str(edge.get("source") or "")
-        tgt_id = str(edge.get("target") or "")
+        src_id = str(edge.get("_src") or edge.get("source") or "")
+        tgt_id = str(edge.get("_tgt") or edge.get("target") or "")
         src_qn = id_to_qn.get(src_id)
         tgt_qn = id_to_qn.get(tgt_id)
         if not src_qn or not tgt_qn or src_qn == tgt_qn:
