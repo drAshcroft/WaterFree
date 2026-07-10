@@ -39,3 +39,11 @@ def dispatch(argv: Sequence[str]) -> int:
         parser.print_help(sys.stderr)
         return EXIT_USAGE
     return runner(args)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return dispatch(sys.argv[1:] if argv is None else argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

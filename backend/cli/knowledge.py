@@ -10,6 +10,8 @@ from backend.cli._common import (
     EXIT_NOT_FOUND,
     EXIT_OK,
     EXIT_USAGE,
+    add_full_arg,
+    add_workspace_arg,
     emit_error,
     emit_json,
 )
@@ -23,16 +25,21 @@ def register(sub: _SubParsersAction) -> None:
     actions.required = True
 
     p_search = actions.add_parser("search", help="Full-text search the knowledge store")
+    add_workspace_arg(p_search)
     p_search.add_argument("query")
     p_search.add_argument("--limit", type=int, default=10)
+    add_full_arg(p_search)
 
     p_browse = actions.add_parser("browse", help="Walk the knowledge taxonomy")
+    add_workspace_arg(p_browse)
     p_browse.add_argument("--path", default="")
     p_browse.add_argument("--depth", type=int, default=2)
     p_browse.add_argument("--include-entries", action="store_true")
     p_browse.add_argument("--entry-limit", type=int, default=10)
+    add_full_arg(p_browse)
 
     p_add = actions.add_parser("add", help="Add a knowledge entry")
+    add_workspace_arg(p_add)
     p_add.add_argument("--title", required=True)
     p_add.add_argument("--description", required=True)
     code_group = p_add.add_mutually_exclusive_group(required=True)
@@ -51,10 +58,16 @@ def register(sub: _SubParsersAction) -> None:
                        help="Slash-separated taxonomy path, e.g. platform/auth/jwt")
 
     p_delete = actions.add_parser("delete", help="Remove a knowledge entry by id")
+    add_workspace_arg(p_delete)
     p_delete.add_argument("entry_id")
 
-    actions.add_parser("list-sources", help="List all indexed repos/sources")
-    actions.add_parser("stats", help="Summary statistics")
+    p_list_sources = actions.add_parser("list-sources", help="List all indexed repos/sources")
+    add_workspace_arg(p_list_sources)
+    add_full_arg(p_list_sources)
+
+    p_stats = actions.add_parser("stats", help="Summary statistics")
+    add_workspace_arg(p_stats)
+    add_full_arg(p_stats)
 
     p.set_defaults(_runner=run)
 
@@ -102,7 +115,8 @@ def run(args: Namespace) -> int:
 
     if action == "search":
         entries = store.search(args.query, limit=args.limit)
-        emit_json([_entry_to_dict(e) for e in entries])
+        payload = [_entry_to_dict(e) for e in entries]
+        emit_json({"entries": payload, "total": len(payload)})
         return EXIT_OK
 
     if action == "browse":

@@ -19,6 +19,7 @@ Exit 0 on success, 1 on any failure. Prints a one-line summary per check.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -60,6 +61,50 @@ def _run(exe: Path, args: list[str], *, workspace: Path | None = None) -> subpro
         capture_output=True,
         text=True,
         timeout=60,
+    )
+
+
+def _run_bytes(
+    exe: Path, args: list[str], payload: bytes, *, workspace: Path,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(exe)] + args + ["--workspace", str(workspace)],
+        input=payload,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+def _run_powershell_utf8_pipe(
+    exe: Path, args: list[str], payload: dict | list, *, workspace: Path,
+) -> subprocess.CompletedProcess:
+    """Pipe UTF-8 JSON through Windows PowerShell into the installed launcher."""
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        raise RuntimeError("PowerShell is required for this Windows launcher check")
+    encoded_payload = base64.b64encode(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    powershell_args = ", ".join(
+        "'" + arg.replace("'", "''") + "'"
+        for arg in [*args, "--workspace", str(workspace)]
+    )
+    script = (
+        "$OutputEncoding = [Console]::OutputEncoding = "
+        "[System.Text.UTF8Encoding]::new($false); "
+        "$payload = [System.Text.Encoding]::UTF8.GetString("
+        f"[System.Convert]::FromBase64String('{encoded_payload}')); "
+        f"$waterfreeArgs = @({powershell_args}); "
+        "$payload | & $env:WATERFREE_TEST_EXE @waterfreeArgs"
+    )
+    environment = os.environ.copy()
+    environment["WATERFREE_TEST_EXE"] = str(exe)
+    return subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=environment,
     )
 
 
@@ -111,6 +156,72 @@ def run_checks(exe: Path) -> list[tuple[str, bool, str]]:
         if task_id:
             r = _run(exe, ["todos", "delete", task_id], workspace=ws)
             record("todos delete", r.returncode == 0, f"exit={r.returncode}")
+
+        # 3b. Windows PowerShell must pass UTF-8 JSON through the installed
+        # launcher unchanged for import, add, and update patch inputs.
+        if os.name == "nt":
+            unicode_title = "Maya’s “Cafe\u0301” — plan"
+            import_payload = [{
+                "key": "UTF8-IMPORT-001", "title": unicode_title, "description": "Unicode stdin",
+            }]
+            r_dry = _run_powershell_utf8_pipe(
+                exe, ["todos", "import", "--file", "-", "--dry-run"], import_payload, workspace=ws,
+            )
+            r_import = _run_powershell_utf8_pipe(
+                exe, ["todos", "import", "--file", "-"], import_payload, workspace=ws,
+            )
+            try:
+                dry_data = _check_json(r_dry.stdout, "PowerShell UTF-8 import dry-run")
+                import_data = _check_json(r_import.stdout, "PowerShell UTF-8 import")
+                import_ok = (
+                    r_dry.returncode == 0 and r_import.returncode == 0
+                    and dry_data["created"][0]["title"] == unicode_title
+                    and import_data["created"][0]["title"] == unicode_title
+                )
+                record("PowerShell UTF-8 import dry-run parity", import_ok,
+                       f"dry={r_dry.returncode} import={r_import.returncode}")
+            except (AssertionError, KeyError, IndexError, TypeError) as exc:
+                record("PowerShell UTF-8 import dry-run parity", False, str(exc))
+
+            r_add = _run_powershell_utf8_pipe(
+                exe, ["todos", "add", "--json-file", "-"],
+                {"title": "Maya’s “Cafe\u0301” — add", "description": "Unicode stdin"}, workspace=ws,
+            )
+            try:
+                added = _check_json(r_add.stdout, "PowerShell UTF-8 add")
+                add_ok = r_add.returncode == 0 and added["title"] == "Maya’s “Cafe\u0301” — add"
+                record("PowerShell UTF-8 add", add_ok, f"exit={r_add.returncode}")
+            except (AssertionError, KeyError, TypeError) as exc:
+                added = {}
+                record("PowerShell UTF-8 add", False, str(exc))
+
+            r_patch = _run_powershell_utf8_pipe(
+                exe, ["todos", "update", str(added.get("id", "")), "--patch-file", "-"],
+                {"title": "Maya’s “Cafe\u0301” — patch"}, workspace=ws,
+            )
+            try:
+                patched = _check_json(r_patch.stdout, "PowerShell UTF-8 patch")
+                patch_ok = r_patch.returncode == 0 and patched["title"] == "Maya’s “Cafe\u0301” — patch"
+                record("PowerShell UTF-8 patch", patch_ok, f"exit={r_patch.returncode}")
+            except (AssertionError, KeyError, TypeError) as exc:
+                record("PowerShell UTF-8 patch", False, str(exc))
+
+            malformed = _run_bytes(
+                exe,
+                ["todos", "import", "--file", "-", "--dry-run"],
+                b'[{"title":"bad \xff", "description":"d"}]',
+                workspace=ws,
+            )
+            malformed_error = malformed.stderr.decode("utf-8", errors="replace")
+            malformed_ok = (
+                malformed.returncode == 2
+                and malformed_error.startswith("error: --file")
+                and "Traceback" not in malformed_error
+            )
+            record("installed CLI rejects malformed UTF-8", malformed_ok,
+                   f"exit={malformed.returncode}")
+        else:
+            record("PowerShell UTF-8 stdin checks", True, "not applicable")
 
         # 4. knowledge stats (global, no --workspace).
         r = _run(exe, ["knowledge", "stats"])

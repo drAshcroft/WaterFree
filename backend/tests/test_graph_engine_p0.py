@@ -222,6 +222,48 @@ class GraphEngineP0Tests(unittest.TestCase):
         self.assertGreaterEqual(links.get(("src/main.py", "src/service.py"), 0), 1)
         self.assertTrue(architecture.get("layers"))
 
+    def test_trace_call_path_accepts_string_confidence_labels(self) -> None:
+        root = self.make_temp_root()
+        repo = self.make_repo(
+            root,
+            "confidence_repo",
+            {
+                "a.py": """
+                def foo():
+                    return 1
+                """,
+                "b.py": """
+                from a import foo
+
+                def caller():
+                    return foo()
+                """,
+            },
+        )
+
+        engine = GraphEngine()
+        self.addCleanup(engine.close)
+        indexed = engine.index_repository(str(repo))
+        project = indexed["project"]
+        store = engine._store(project)
+
+        foo = store.get_node_by_qn(project, f"{project}.a.foo")
+        caller = store.get_node_by_qn(project, f"{project}.b.caller")
+        self.assertIsNotNone(foo)
+        self.assertIsNotNone(caller)
+        store.upsert_edge(project, caller["id"], foo["id"], "CALLS", {"confidence": "EXTRACTED"})
+
+        result = engine.trace_call_path(
+            "foo",
+            direction="inbound",
+            depth=1,
+            min_confidence=0.5,
+            project=project,
+        )
+
+        self.assertEqual(result["edges"][0]["confidence"], "EXTRACTED")
+        self.assertEqual(result["edges"][0]["confidenceScore"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

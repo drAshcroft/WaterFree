@@ -23,7 +23,8 @@ output).
 
 ## CLI
 
-All commands accept `--workspace <path>` (defaults to CWD).
+All commands accept `--workspace <path>` (defaults to CWD). JSON-producing
+commands also accept `--full` for cross-area CLI compatibility.
 
 ### Run all tests
 ```bash

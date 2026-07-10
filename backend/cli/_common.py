@@ -26,6 +26,15 @@ def add_workspace_arg(parser: ArgumentParser, *, required: bool = False) -> None
     )
 
 
+def add_full_arg(parser: ArgumentParser) -> None:
+    """Add the standard --full flag for commands with compact output modes."""
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Emit every field when the command supports compact output.",
+    )
+
+
 def resolve_workspace(args: Namespace) -> str:
     ws = getattr(args, "workspace", None) or os.getcwd()
     return os.path.abspath(ws)

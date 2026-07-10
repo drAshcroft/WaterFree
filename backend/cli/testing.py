@@ -9,6 +9,7 @@ from argparse import Namespace, _SubParsersAction
 from backend.cli._common import (
     EXIT_OK,
     EXIT_USAGE,
+    add_full_arg,
     add_workspace_arg,
     emit_error,
     emit_json,
@@ -25,13 +26,16 @@ def register(sub: _SubParsersAction) -> None:
 
     p_run = actions.add_parser("run", help="Run the full test suite")
     add_workspace_arg(p_run)
+    add_full_arg(p_run)
 
     p_run_one = actions.add_parser("run-one", help="Run tests matching a substring")
     add_workspace_arg(p_run_one)
     p_run_one.add_argument("name_substr")
+    add_full_arg(p_run_one)
 
     p_list = actions.add_parser("list", help="Discover all test names")
     add_workspace_arg(p_list)
+    add_full_arg(p_list)
 
     p_logs = actions.add_parser("logs", help="Print raw output from the last run")
     add_workspace_arg(p_logs)

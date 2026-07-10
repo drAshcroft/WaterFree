@@ -13,7 +13,8 @@ with `json.loads`). Add `--workspace <path>` to target a project other than the 
 
 Output is **compact** by default — null/empty/default fields are omitted (no
 `owner` ⇒ unassigned, no `timing` ⇒ one_time, no `taskType` ⇒ impl). Add `--full`
-only when you specifically need the raw shape.
+only when you specifically need the raw shape. `list`, `search`, and `get-ready`
+return a consistent envelope: `{ "tasks": [...], "total": N }`.
 
 ## Reading — start here
 
@@ -21,11 +22,15 @@ only when you specifically need the raw shape.
 waterfree todos get-next                 # the one task to work on now (or null)
 waterfree todos get-ready --limit 5      # the next few unblocked tasks, by priority
 waterfree todos search "auth rate limit" # find a specific task by text
+waterfree todos validate                 # check backlog consistency
 ```
 
 `get-next` returns the highest-priority unblocked task. **Call it before starting
 work** so you don't duplicate effort. Reach for `get-ready`/`search` when you need
 more than one candidate.
+Run `validate` when task output looks inconsistent; it reports missing fields,
+duplicate keys, unresolved dependencies, cycles, and tasks that still have a
+blocked reason despite being ready.
 
 > **Avoid `waterfree todos list`.** It dumps up to 50 tasks and burns tokens fast.
 > Use `get-next` / `get-ready` / `search` instead. Only fall back to `list` (with a

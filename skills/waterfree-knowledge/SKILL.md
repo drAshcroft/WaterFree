@@ -61,7 +61,8 @@ Use `waterfree knowledge delete` when:
 
 ## CLI
 
-The knowledge store is global — no `--workspace` flag.
+The knowledge store is global. `--workspace` is accepted as a compatibility flag
+for agent muscle memory, but it does not change the global store location.
 
 ### Search
 ```bash
@@ -70,9 +71,10 @@ waterfree knowledge search "authentication middleware"
 waterfree knowledge search "sqlite connection pooling"
 ```
 
-BM25-ranked full-text search over title, description, tags, and code. Return
-fields: `id`, `title`, `description`, `snippet_type`, `code`, `tags`, `context`,
-`source_repo`, `source_file`, `source_repo_url`, `created_at`, `hierarchy_path`.
+BM25-ranked full-text search over title, description, tags, and code. Returns
+`{"entries": [...], "total": N}`. Each entry includes fields: `id`, `title`,
+`description`, `snippet_type`, `code`, `tags`, `context`, `source_repo`,
+`source_file`, `source_repo_url`, `created_at`, `hierarchy_path`.
 
 ### Browse the taxonomy
 ```bash

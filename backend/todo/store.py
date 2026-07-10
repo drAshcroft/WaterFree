@@ -58,6 +58,52 @@ class ImportResult:
     errors: list[dict] = field(default_factory=list)  # [{"index": i, "key": "...", "error": "..."}]
 
 
+@dataclass
+class ValidationIssue:
+    severity: str
+    code: str
+    message: str
+    task_id: str = ""
+    key: str = ""
+    title: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity,
+            "code": self.code,
+            "message": self.message,
+            "taskId": self.task_id,
+            "key": self.key,
+            "title": self.title,
+        }
+
+
+@dataclass
+class ValidationResult:
+    issues: list[ValidationIssue] = field(default_factory=list)
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "error")
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "warning")
+
+    @property
+    def ok(self) -> bool:
+        return self.error_count == 0
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "issueCount": len(self.issues),
+            "errorCount": self.error_count,
+            "warningCount": self.warning_count,
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
 class TaskStore:
     def __init__(self, workspace_path: str):
         self._workspace = Path(workspace_path).resolve()
@@ -171,6 +217,92 @@ class TaskStore:
 
     def get_next_task(self, owner_name: str = "", include_unassigned: bool = True) -> Optional[Task]:
         return self._deps.get_next_task(owner_name=owner_name, include_unassigned=include_unassigned)
+
+    def validate(self) -> ValidationResult:
+        """Validate the persisted backlog without mutating it."""
+        issues: list[ValidationIssue] = []
+        raw_tasks: list[dict] = []
+        parsed_tasks: list[Task] = []
+
+        def add_issue(
+            severity: str,
+            code: str,
+            message: str,
+            *,
+            task_id: str = "",
+            key: str = "",
+            title: str = "",
+        ) -> None:
+            issues.append(ValidationIssue(severity, code, message, task_id, key, title))
+
+        rows = self._conn.execute(
+            "SELECT id, key, title, payload FROM tasks ORDER BY sort_index ASC, id ASC"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except json.JSONDecodeError as exc:
+                add_issue("error", "invalid_payload", f"task payload is not valid JSON: {exc}", task_id=str(row["id"]))
+                continue
+            if not isinstance(payload, dict):
+                add_issue("error", "invalid_payload", "task payload must be a JSON object", task_id=str(row["id"]))
+                continue
+
+            task_id = str(payload.get("id") or row["id"] or "")
+            key = str(payload.get("key") or row["key"] or "").strip()
+            title = str(payload.get("title") or row["title"] or "")
+            raw_tasks.append({"id": task_id, "key": key, "title": title, "payload": payload})
+
+            if not title.strip():
+                add_issue("error", "missing_title", "task title is required", task_id=task_id, key=key)
+            if not str(payload.get("description") or "").strip():
+                add_issue("error", "missing_description", "task description is required", task_id=task_id, key=key, title=title)
+            if title != title.strip():
+                add_issue("warning", "title_whitespace", "task title has leading or trailing whitespace", task_id=task_id, key=key, title=title)
+            if "\n" in title or "\r" in title:
+                add_issue("warning", "title_multiline", "task title should be a single line", task_id=task_id, key=key, title=title)
+            if len(title.strip()) > 120:
+                add_issue("warning", "title_too_long", "task title should be 120 characters or fewer", task_id=task_id, key=key, title=title)
+
+            try:
+                parsed_tasks.append(Task.from_dict(payload))
+            except ValueError as exc:
+                add_issue("error", "invalid_task", str(exc), task_id=task_id, key=key, title=title)
+
+        keys: dict[str, list[dict]] = {}
+        for item in raw_tasks:
+            if item["key"]:
+                keys.setdefault(item["key"], []).append(item)
+        for key, matches in keys.items():
+            if len(matches) > 1:
+                for item in matches:
+                    add_issue(
+                        "error",
+                        "duplicate_key",
+                        f"task key is duplicated: {key}",
+                        task_id=item["id"],
+                        key=key,
+                        title=item["title"],
+                    )
+
+        task_by_id = {task.id: task for task in parsed_tasks}
+        for task in parsed_tasks:
+            for dep in task.depends_on:
+                if dep.task_id == task.id:
+                    add_issue("error", "self_dependency", "task cannot depend on itself", task_id=task.id, key=task.key, title=task.title)
+                elif not dep.task_id or dep.task_id not in task_by_id:
+                    add_issue(
+                        "error",
+                        "unresolved_dependency",
+                        f"dependsOn references unknown task: {dep.task_id or '(empty)'}",
+                        task_id=task.id,
+                        key=task.key,
+                        title=task.title,
+                    )
+
+        issues.extend(self._dependency_cycle_issues(parsed_tasks))
+        issues.extend(self._ready_state_issues(parsed_tasks))
+        return ValidationResult(issues)
 
     # ── Public write API ──────────────────────────────────────────────────────
 
@@ -422,6 +554,83 @@ class TaskStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    def _dependency_cycle_issues(self, tasks: list[Task]) -> list[ValidationIssue]:
+        task_by_id = {task.id: task for task in tasks}
+        graph = {
+            task.id: [
+                dep.task_id
+                for dep in task.depends_on
+                if dep.task_id in task_by_id
+            ]
+            for task in tasks
+        }
+        issues: list[ValidationIssue] = []
+        visited: set[str] = set()
+        visiting: list[str] = []
+        reported: set[tuple[str, ...]] = set()
+
+        def dfs(task_id: str) -> None:
+            if task_id in visiting:
+                cycle = visiting[visiting.index(task_id):] + [task_id]
+                canonical = tuple(sorted(set(cycle)))
+                if canonical not in reported:
+                    reported.add(canonical)
+                    labels = [task_by_id[item].title or item for item in cycle]
+                    task = task_by_id[task_id]
+                    issues.append(ValidationIssue(
+                        "error",
+                        "dependency_cycle",
+                        "dependency cycle: " + " -> ".join(labels),
+                        task.id,
+                        task.key,
+                        task.title,
+                    ))
+                return
+            if task_id in visited:
+                return
+            visiting.append(task_id)
+            for dep_id in graph.get(task_id, []):
+                dfs(dep_id)
+            visiting.pop()
+            visited.add(task_id)
+
+        for task in tasks:
+            dfs(task.id)
+        return issues
+
+    def _ready_state_issues(self, tasks: list[Task]) -> list[ValidationIssue]:
+        task_by_id = {task.id: task for task in tasks}
+        active_statuses = {
+            TaskStatus.PENDING,
+            TaskStatus.ANNOTATING,
+            TaskStatus.NEGOTIATING,
+            TaskStatus.EXECUTING,
+        }
+        issues: list[ValidationIssue] = []
+
+        for task in tasks:
+            if task.status not in active_statuses or not task.blocked_reason:
+                continue
+            blocking_deps = [
+                task_by_id.get(dep.task_id)
+                for dep in task.depends_on
+                if dep.type == DependencyType.BLOCKS
+            ]
+            is_blocked_by_dependency = any(
+                dep_task is None or dep_task.status != TaskStatus.COMPLETE
+                for dep_task in blocking_deps
+            )
+            if not is_blocked_by_dependency:
+                issues.append(ValidationIssue(
+                    "error",
+                    "ready_with_blocked_reason",
+                    "task has blockedReason but no incomplete blocking dependency",
+                    task.id,
+                    task.key,
+                    task.title,
+                ))
+        return issues
 
     # ── Input helpers ─────────────────────────────────────────────────────────
 

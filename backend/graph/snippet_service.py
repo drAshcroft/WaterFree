@@ -22,6 +22,11 @@ from backend.graph.store import GraphStore
 log = logging.getLogger(__name__)
 
 _RISK = {0: "CRITICAL", 1: "HIGH", 2: "MEDIUM", 3: "LOW"}
+_CONFIDENCE_LABEL_SCORES = {
+    "EXTRACTED": 1.0,
+    "INFERRED": 0.75,
+    "AMBIGUOUS": 0.25,
+}
 
 
 class SnippetService:
@@ -144,13 +149,15 @@ class SnippetService:
                     else store.get_inbound_edges(project, cur_id, "CALLS")
                 )
                 for edge in edges:
-                    try:
-                        confidence = json.loads(edge.get("properties") or "{}").get(
-                            "confidence", 1.0
-                        )
-                    except Exception:
-                        confidence = 1.0
-                    if confidence < min_confidence:
+                    properties = self._edge_properties(edge)
+                    confidence = properties.get(
+                        "confidence",
+                        properties.get("confidence_score", 1.0),
+                    )
+                    confidence_score = self._confidence_score(
+                        properties.get("confidence_score", confidence)
+                    )
+                    if confidence_score < min_confidence:
                         continue
                     next_id = edge["target_id"] if outbound else edge["source_id"]
                     path_edges.append(
@@ -159,6 +166,7 @@ class SnippetService:
                             "target": next_id,
                             "type": "CALLS",
                             "confidence": confidence,
+                            "confidenceScore": confidence_score,
                         }
                     )
                     if next_id not in visited:
@@ -239,6 +247,24 @@ class SnippetService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _edge_properties(self, edge: dict) -> dict:
+        try:
+            properties = json.loads(edge.get("properties") or "{}")
+        except Exception:
+            return {}
+        return properties if isinstance(properties, dict) else {}
+
+    def _confidence_score(self, value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip()
+        if not text:
+            return 1.0
+        try:
+            return float(text)
+        except ValueError:
+            return _CONFIDENCE_LABEL_SCORES.get(text.upper(), 1.0)
 
     def _find_enclosing_class(
         self, store: GraphStore, project: str, node: dict

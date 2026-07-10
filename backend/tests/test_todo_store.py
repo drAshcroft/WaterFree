@@ -295,6 +295,25 @@ class TaskStoreTests(unittest.TestCase):
 
         self.assertEqual(matches[0].id, created.id)
 
+    def test_validate_reports_duplicate_payload_keys(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+        first = store.add_task({"title": "First", "description": "d", "key": "DUP"})
+        second = store.add_task({"title": "Second", "description": "d", "key": "TEMP"})
+
+        payload = second.to_dict()
+        payload["key"] = "DUP"
+        store._conn.execute(
+            "UPDATE tasks SET payload = ? WHERE id = ?",
+            (json.dumps(payload), second.id),
+        )
+
+        result = store.validate()
+
+        self.assertFalse(result.ok)
+        duplicate_issues = [issue for issue in result.issues if issue.code == "duplicate_key"]
+        self.assertEqual({issue.task_id for issue in duplicate_issues}, {first.id, second.id})
+
     def test_import_tasks_creates_batch(self) -> None:
         workspace = self.make_workspace()
         store = TaskStore(str(workspace))

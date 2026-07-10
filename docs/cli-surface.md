@@ -15,7 +15,8 @@ waterfree <area> <action> [--workspace <path>] [flags] [positional]
 - **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
-  every `todos`, `index`, and `testing` action (knowledge is global).
+  every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
+  `--workspace` as an ignored compatibility flag.
 - **--json** — implied for tools that return data; CLI always prints JSON to
   stdout unless `--text` is passed for a specific tool.
 
@@ -45,15 +46,33 @@ Mirrors `backend/mcp_todos.py`. Backed by `.waterfree/tasks.db` via
 | `search`     | `<query>` (positional), `--limit N`, `--full`                                      | `search_tasks` |
 | `get-next`   | `--owner NAME`, `--full`                                                           | `get_next_task` |
 | `get-ready`  | `--limit N`, `--full`                                                              | `get_ready_tasks` |
-| `add`        | `--title T`, `--description D`, `--key`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--full` | `add_task` |
-| `update`     | `<task-id>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--full` | `update_task` |
+| `schema`     | `--workspace`                                                                      | - (task schema) |
+| `task-types` | `--workspace`                                                                      | - (enum discovery) |
+| `validate`   | `--workspace`                                                                      | - (backlog validation) |
+| `add`        | `--title T`, `--description D`, `--key`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--json-file <path\|->`, `--full` | `add_task` |
+| `update`     | `<task-id>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--patch-file <path\|->`, `--full` | `update_task` |
 | `delete`     | `<task-id>`                                                                        | `delete_task` |
 | `import`     | `--file <path\|->`, `--upsert`, `--dry-run`, `--full`                             | — (bulk `add_task`/`update_task`) |
 
 All actions accept `--workspace` (default: CWD). Read/write actions emit
 **compact** JSON (null/empty/default fields omitted) unless `--full` is passed.
-On `update`, discrete flags cover the common edits without JSON; `--patch` is for
-fields without a flag and discrete flags win on conflict.
+`list`, `search`, and `get-ready` all return `{ "tasks": [...], "total": N }`
+envelopes; `list` also includes `phases`. On `update`, discrete flags cover the
+common edits without JSON; `--patch` is for fields without a flag and discrete
+flags win on conflict. `add --json-file` reads one complete task object, while
+`update --patch-file` reads one JSON patch object; both accept `-` for stdin.
+All JSON file and stdin inputs use UTF-8 (with an optional UTF-8 BOM); malformed
+UTF-8 and invalid Unicode return a usage error before any task is persisted.
+When combined, file data is applied first, then inline JSON and discrete flags
+override it. File paths are resolved relative to CWD.
+`schema` prints the complete task JSON schema, including valid enum values.
+`task-types` prints the accepted `taskType` values. Invalid enum values reported
+by task writes include the accepted values inline.
+`validate` checks the persisted backlog for missing required fields, duplicate
+keys, unresolved dependencies, dependency cycles, title-convention warnings, and
+tasks that carry a `blockedReason` but would otherwise appear ready. It returns
+`{ "ok": bool, "issueCount": N, "errorCount": N, "warningCount": N, "issues": [...] }`
+and exits `2` when errors are present.
 
 Tasks have an optional stable `key` (e.g. `GOV-001`), settable via `add --key`
 or `update --patch '{"key": "..."}'`. It must be unique across the workspace
@@ -78,19 +97,21 @@ non-empty.
 ## Area: knowledge
 
 Mirrors `backend/mcp_knowledge.py`. Backed by the global store at
-`~/.waterfree/global/knowledge.db` — no `--workspace`.
+`~/.waterfree/global/knowledge.db`; `--workspace` is accepted for agent
+muscle-memory compatibility but does not change the global store location.
 
 | Action          | Flags / args |
 |-----------------|--------------|
-| `search`        | `<query>`, `--limit N` |
-| `browse`        | `--path P`, `--depth N`, `--include-entries`, `--entry-limit N` |
-| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin), `--snippet-type`, `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context`, `--source-repo-url`, `--hierarchy-path` |
-| `delete`        | `<entry-id>` |
-| `list-sources`  | — |
-| `stats`         | — |
+| `search`        | `<query>`, `--limit N`, `--workspace`, `--full` |
+| `browse`        | `--path P`, `--depth N`, `--include-entries`, `--entry-limit N`, `--workspace`, `--full` |
+| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin), `--snippet-type`, `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context`, `--source-repo-url`, `--hierarchy-path`, `--workspace` |
+| `delete`        | `<entry-id>`, `--workspace` |
+| `list-sources`  | `--workspace`, `--full` |
+| `stats`         | `--workspace`, `--full` |
 
 Note: `--code-file` is the preferred way to pass a snippet body; shell-escaping
 multi-line code through argv is painful. `--code -` reads from stdin.
+`knowledge search` returns `{ "entries": [...], "total": N }`.
 
 ## Area: index
 
@@ -117,9 +138,9 @@ Mirrors `backend/mcp_testing.py`. Auto-detects unittest/pytest/jest/vitest.
 
 | Action       | Flags / args |
 |--------------|--------------|
-| `run`        | — (runs all) |
-| `run-one`    | `<name-substring>` |
-| `list`       | — |
+| `run`        | `--workspace`, `--full` |
+| `run-one`    | `<name-substring>`, `--workspace`, `--full` |
+| `list`       | `--workspace`, `--full` |
 | `logs`       | — |
 
 ## Area: qa-summary
