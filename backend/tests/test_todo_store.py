@@ -4,7 +4,7 @@ from pathlib import Path
 
 from backend.session.models import PlanDocument, Task, TaskDependency, TaskStatus
 from backend.test_support import make_temp_dir as make_test_dir
-from backend.todo.store import TaskStore
+from backend.todo.store import DuplicateKeyError, TaskStore
 
 
 class TaskStoreTests(unittest.TestCase):
@@ -254,6 +254,142 @@ class TaskStoreTests(unittest.TestCase):
 
         self.assertEqual(data.tasks[0].id, created.id)
         self.assertEqual(data.tasks[0].context_coords[0].anchor_type.value, "read-only-context")
+
+    def test_add_task_rejects_duplicate_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        store.add_task({"title": "First", "key": "GOV-001"})
+        with self.assertRaises(DuplicateKeyError):
+            store.add_task({"title": "Second", "key": "GOV-001"})
+
+    def test_update_task_rejects_duplicate_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        store.add_task({"title": "First", "key": "GOV-001"})
+        second = store.add_task({"title": "Second"})
+        with self.assertRaises(DuplicateKeyError):
+            store.update_task(second.id, {"key": "GOV-001"})
+
+    def test_add_task_resolves_dependency_by_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        store.add_task({"title": "Blocker", "key": "GOV-001"})
+        blocked = store.add_task({
+            "title": "Blocked",
+            "dependsOn": [{"key": "GOV-001", "type": "blocks"}],
+        })
+
+        self.assertEqual(blocked.depends_on[0].task_id, store.search_tasks("Blocker")[0].id)
+        ready_ids = {task.id for task in store.get_ready_tasks()}
+        self.assertNotIn(blocked.id, ready_ids)
+
+    def test_search_finds_task_by_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        created = store.add_task({"title": "Something", "key": "GOV-001"})
+        matches = store.search_tasks("gov-001")
+
+        self.assertEqual(matches[0].id, created.id)
+
+    def test_import_tasks_creates_batch(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        result = store.import_tasks(
+            [
+                {"key": "GOV-001", "title": "First", "description": "d1"},
+                {"key": "GOV-002", "title": "Second", "description": "d2",
+                 "dependsOn": [{"key": "GOV-001", "type": "blocks"}]},
+            ],
+            upsert=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(len(result.created), 2)
+        self.assertEqual(result.errors, [])
+        data = store.load()
+        self.assertEqual(len(data.tasks), 2)
+        second = next(t for t in data.tasks if t.key == "GOV-002")
+        first = next(t for t in data.tasks if t.key == "GOV-001")
+        self.assertEqual(second.depends_on[0].task_id, first.id)
+
+    def test_import_tasks_upsert_updates_existing_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+        original = store.add_task({"key": "GOV-001", "title": "Original"})
+
+        result = store.import_tasks(
+            [{"key": "GOV-001", "title": "Updated"}],
+            upsert=True,
+            dry_run=False,
+        )
+
+        self.assertEqual(result.updated[0].id, original.id)
+        self.assertEqual(result.updated[0].title, "Updated")
+        self.assertEqual(len(store.load().tasks), 1)
+
+    def test_import_tasks_without_upsert_rejects_existing_key(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+        store.add_task({"key": "GOV-001", "title": "Original"})
+
+        result = store.import_tasks(
+            [{"key": "GOV-001", "title": "Updated"}],
+            upsert=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(result.created, [])
+        self.assertEqual(result.updated, [])
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(store.load().tasks[0].title, "Original")
+
+    def test_import_tasks_rejects_duplicate_key_within_file_and_writes_nothing(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        result = store.import_tasks(
+            [
+                {"key": "GOV-001", "title": "First"},
+                {"key": "GOV-001", "title": "Also first"},
+            ],
+            upsert=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(store.load().tasks, [])
+
+    def test_import_tasks_rejects_unresolved_dependency_and_writes_nothing(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        result = store.import_tasks(
+            [{"key": "GOV-002", "title": "Blocked",
+              "dependsOn": [{"key": "GOV-999", "type": "blocks"}]}],
+            upsert=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(store.load().tasks, [])
+
+    def test_import_tasks_dry_run_writes_nothing(self) -> None:
+        workspace = self.make_workspace()
+        store = TaskStore(str(workspace))
+
+        result = store.import_tasks(
+            [{"key": "GOV-001", "title": "First"}],
+            upsert=False,
+            dry_run=True,
+        )
+
+        self.assertEqual(len(result.created), 1)
+        self.assertEqual(store.load().tasks, [])
 
 
 if __name__ == "__main__":

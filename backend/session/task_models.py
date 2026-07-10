@@ -114,6 +114,7 @@ class TaskStatus(str, Enum):
 @dataclass
 class Task:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    key: str = ""
     title: str = ""
     description: str = ""
     rationale: str = ""
@@ -184,6 +185,7 @@ class Task:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "key": self.key,
             "title": self.title,
             "description": self.description,
             "rationale": self.rationale,
@@ -213,6 +215,7 @@ class Task:
         from backend.session.annotation_models import IntentAnnotation  # avoid circular import
         return cls(
             id=d.get("id", str(uuid.uuid4())),
+            key=d.get("key", ""),
             title=d.get("title", ""),
             description=d.get("description", ""),
             rationale=d.get("rationale", ""),

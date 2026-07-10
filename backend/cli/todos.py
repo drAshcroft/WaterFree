@@ -5,7 +5,10 @@ Backed by backend.todo.store.TaskStore; mirrors the former waterfree-todos MCP.
 
 from __future__ import annotations
 
+import json
+import sys
 from argparse import Namespace, _SubParsersAction
+from pathlib import Path
 from typing import Any
 
 from backend.cli._common import (
@@ -18,7 +21,7 @@ from backend.cli._common import (
     parse_json_arg,
     resolve_workspace,
 )
-from backend.todo.store import TaskStore
+from backend.todo.store import DuplicateKeyError, TaskNotFoundError, TaskStore
 
 # Statuses/priorities accepted by the discrete `update` flags. Kept in sync with
 # backend.session.task_models.TaskStatus / TaskPriority.
@@ -127,6 +130,7 @@ def register(sub: _SubParsersAction) -> None:
     add_workspace_arg(p_add)
     p_add.add_argument("--title", required=True)
     p_add.add_argument("--description", required=True)
+    p_add.add_argument("--key", default="", help="Stable identifier (e.g. GOV-001) for cross-task references.")
     p_add.add_argument("--priority", default="P2")
     p_add.add_argument("--phase", default="")
     p_add.add_argument("--owner-name", default="")
@@ -161,6 +165,26 @@ def register(sub: _SubParsersAction) -> None:
     p_delete = actions.add_parser("delete", help="Remove a task by id")
     add_workspace_arg(p_delete)
     p_delete.add_argument("task_id")
+
+    p_import = actions.add_parser(
+        "import",
+        help="Bulk create/update tasks from a JSON file. Validates the whole "
+             "batch before writing anything.",
+    )
+    add_workspace_arg(p_import)
+    p_import.add_argument(
+        "--file", required=True,
+        help="Path to a JSON file: an array of tasks, or {\"tasks\": [...]}. Use '-' for stdin.",
+    )
+    p_import.add_argument(
+        "--upsert", action="store_true",
+        help="Update existing tasks matched by key instead of erroring on collision.",
+    )
+    p_import.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate only; write nothing.",
+    )
+    _add_full_flag(p_import)
 
     p.set_defaults(_runner=run)
 
@@ -207,6 +231,8 @@ def run(args: Namespace) -> int:
             "priority": args.priority,
             "owner": {"type": args.owner_type, "name": args.owner_name},
         }
+        if args.key:
+            payload["key"] = args.key
         if args.phase:
             payload["phase"] = args.phase
         if args.target_file:
@@ -214,7 +240,10 @@ def run(args: Namespace) -> int:
             if args.target_line is not None:
                 coord["line"] = args.target_line
             payload["targetCoord"] = coord
-        task = store.add_task(payload)
+        try:
+            task = store.add_task(payload)
+        except DuplicateKeyError as exc:
+            return emit_error(str(exc), exit_code=EXIT_USAGE)
         emit_json(_present(task.to_dict(), args.full))
         return EXIT_OK
 
@@ -251,8 +280,10 @@ def run(args: Namespace) -> int:
             )
         try:
             task = store.update_task(task_id=args.task_id, patch=patch)
-        except ValueError as exc:
+        except TaskNotFoundError as exc:
             return emit_error(str(exc), exit_code=EXIT_NOT_FOUND)
+        except DuplicateKeyError as exc:
+            return emit_error(str(exc), exit_code=EXIT_USAGE)
         emit_json(_present(task.to_dict(), args.full))
         return EXIT_OK
 
@@ -260,5 +291,29 @@ def run(args: Namespace) -> int:
         deleted = store.delete_task(args.task_id)
         emit_json({"deleted": deleted, "task_id": args.task_id})
         return EXIT_OK if deleted else EXIT_NOT_FOUND
+
+    if action == "import":
+        if args.file == "-":
+            raw = sys.stdin.read()
+        else:
+            raw = Path(args.file).read_text(encoding="utf-8")
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return emit_error(f"--file must be valid JSON: {exc}", exit_code=EXIT_USAGE)
+        items = parsed.get("tasks", parsed) if isinstance(parsed, dict) else parsed
+        if not isinstance(items, list):
+            return emit_error(
+                "--file must contain a JSON array of tasks, or an object with a 'tasks' array",
+                exit_code=EXIT_USAGE,
+            )
+        result = store.import_tasks(items, upsert=args.upsert, dry_run=args.dry_run)
+        emit_json({
+            "created": [_present(t.to_dict(), args.full) for t in result.created],
+            "updated": [_present(t.to_dict(), args.full) for t in result.updated],
+            "errors": result.errors,
+            "dryRun": args.dry_run,
+        })
+        return EXIT_OK if not result.errors else EXIT_USAGE
 
     return emit_error(f"unknown action: {action}", exit_code=EXIT_USAGE)

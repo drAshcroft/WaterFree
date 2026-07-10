@@ -45,14 +45,35 @@ Mirrors `backend/mcp_todos.py`. Backed by `.waterfree/tasks.db` via
 | `search`     | `<query>` (positional), `--limit N`, `--full`                                      | `search_tasks` |
 | `get-next`   | `--owner NAME`, `--full`                                                           | `get_next_task` |
 | `get-ready`  | `--limit N`, `--full`                                                              | `get_ready_tasks` |
-| `add`        | `--title T`, `--description D`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--full` | `add_task` |
+| `add`        | `--title T`, `--description D`, `--key`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--full` | `add_task` |
 | `update`     | `<task-id>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--full` | `update_task` |
 | `delete`     | `<task-id>`                                                                        | `delete_task` |
+| `import`     | `--file <path\|->`, `--upsert`, `--dry-run`, `--full`                             | — (bulk `add_task`/`update_task`) |
 
 All actions accept `--workspace` (default: CWD). Read/write actions emit
 **compact** JSON (null/empty/default fields omitted) unless `--full` is passed.
 On `update`, discrete flags cover the common edits without JSON; `--patch` is for
 fields without a flag and discrete flags win on conflict.
+
+Tasks have an optional stable `key` (e.g. `GOV-001`), settable via `add --key`
+or `update --patch '{"key": "..."}'`. It must be unique across the workspace
+(`add`/`update` reject a collision with exit code 2). Entries in `dependsOn`
+accept `{"key": "GOV-001", "type": "blocks"}` as an alternative to
+`{"taskId": "<uuid>", "type": "blocks"}` — resolved to the real id at write
+time, so tasks can reference each other by a name you chose instead of a
+generated UUID. `search`/`list`/`get-*` include `key` in their output when set.
+
+`import` reads a JSON file (`--file backlog.json`, or `--file -` for stdin —
+same convention as `knowledge add --code -`) containing either a bare array of
+task objects or `{"tasks": [...]}` (so `todos list --full` output round-trips
+straight back into `import`). Items are matched to existing tasks by `key`:
+an unseen key is created, a key that already exists is only updated when
+`--upsert` is passed (otherwise it's a validation error), and an item with no
+`key` is always created. The whole batch is validated up front — duplicate
+keys within the file, unresolved `dependsOn` references, and self-dependencies
+are all reported as `errors` — and nothing is written if any item fails,
+whether or not `--dry-run` was passed. Exit code is `2` when `errors` is
+non-empty.
 
 ## Area: knowledge
 

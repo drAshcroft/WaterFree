@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from backend.session.models import (
     CodeCoord,
     CoordAnchorType,
+    DependencyType,
     OwnerType,
     Task,
     TaskDependency,
@@ -34,6 +37,25 @@ from backend.todo.utils import (
 _PAIRS_DIR = ".waterfree"
 _DB_FILE = "tasks.db"
 _LEGACY_JSON_FILE = "tasks.json"
+
+
+class TaskNotFoundError(ValueError):
+    """Raised when a task id does not exist in the store."""
+
+
+class DuplicateKeyError(ValueError):
+    """Raised when a task's stable `key` collides with another task's key."""
+
+
+class TaskValidationError(ValueError):
+    """Raised when a single task input fails validation (bad enum, unresolved dependency, ...)."""
+
+
+@dataclass
+class ImportResult:
+    created: list[Task] = field(default_factory=list)
+    updated: list[Task] = field(default_factory=list)
+    errors: list[dict] = field(default_factory=list)  # [{"index": i, "key": "...", "error": "..."}]
 
 
 class TaskStore:
@@ -113,7 +135,8 @@ class TaskStore:
             """
             SELECT payload
             FROM tasks
-            WHERE lower(title) LIKE ?
+            WHERE lower(key) LIKE ?
+               OR lower(title) LIKE ?
                OR lower(description) LIKE ?
                OR lower(rationale) LIKE ?
                OR lower(target_file) LIKE ?
@@ -126,7 +149,7 @@ class TaskStore:
             ORDER BY sort_index ASC, id ASC
             LIMIT ?
             """,
-            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
+            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
         ).fetchall()
         return [Task.from_dict(json.loads(row["payload"])) for row in rows]
 
@@ -174,7 +197,8 @@ class TaskStore:
 
     def add_task(self, task_input: dict) -> Task:
         data = self.load()
-        task = self._task_from_input(task_input)
+        task = self._task_from_input(task_input, key_to_id=self._key_to_id(data.tasks))
+        self._check_key_unique(data.tasks, task)
         data.tasks.append(task)
         if task.phase and task.phase not in data.phases:
             data.phases.append(task.phase)
@@ -185,9 +209,10 @@ class TaskStore:
         data = self.load()
         task = next((candidate for candidate in data.tasks if candidate.id == task_id), None)
         if not task:
-            raise ValueError(f"Task not found: {task_id}")
+            raise TaskNotFoundError(f"Task not found: {task_id}")
 
-        self._apply_patch(task, patch)
+        self._apply_patch(task, patch, key_to_id=self._key_to_id(data.tasks))
+        self._check_key_unique(data.tasks, task)
         if task.status == TaskStatus.COMPLETE and task.timing == TaskTiming.RECURRING:
             task.status = TaskStatus.PENDING
             task.completed_at = None
@@ -195,6 +220,85 @@ class TaskStore:
             data.phases.append(task.phase)
         self.save(data)
         return task
+
+    def import_tasks(self, items: list[dict], *, upsert: bool, dry_run: bool) -> ImportResult:
+        """Validate and write a whole batch of task inputs in one transaction.
+
+        Matches items with an existing task by `key` (create if unseen, update
+        only when `upsert` is set). Nothing is written if any item fails
+        validation, even on a clean (non-dry-run) call — this is intentionally
+        all-or-nothing so a typo deep in a large file can't leave a half
+        applied backlog behind.
+        """
+        data = self.load()
+        key_to_id = self._key_to_id(data.tasks)
+        tasks_by_id = {task.id: task for task in data.tasks}
+
+        errors: list[dict] = []
+        seen_keys: set[str] = set()
+        # (original index, action, key, task id, raw item)
+        plan: list[tuple[int, str, str, str, dict]] = []
+
+        for index, item in enumerate(items):
+            key = str(item.get("key", "")).strip()
+            if not key:
+                plan.append((index, "create", "", str(uuid.uuid4()), item))
+                continue
+            if key in seen_keys:
+                errors.append({"index": index, "key": key, "error": f"duplicate key in file: {key}"})
+                continue
+            seen_keys.add(key)
+            existing_id = key_to_id.get(key)
+            if existing_id is None:
+                new_id = str(uuid.uuid4())
+                key_to_id[key] = new_id
+                plan.append((index, "create", key, new_id, item))
+            elif upsert:
+                plan.append((index, "update", key, existing_id, item))
+            else:
+                errors.append({
+                    "index": index, "key": key,
+                    "error": f"key already exists: {key} (pass --upsert to update)",
+                })
+
+        # Pass 1 errors (bad/duplicate keys) don't block pass 2 (field/dependency
+        # validation on the remaining valid items) — a --dry-run report should
+        # surface everything wrong with the file in one call, not one category
+        # at a time.
+        valid_ids = set(tasks_by_id) | {task_id for _, _, _, task_id, _ in plan}
+        created: list[Task] = []
+        updated: list[Task] = []
+        for index, action, key, task_id, item in plan:
+            try:
+                if action == "create":
+                    task = self._task_from_input(item, key_to_id=key_to_id)
+                    task.id = task_id
+                else:
+                    task = tasks_by_id[task_id]
+                    self._apply_patch(task, item, key_to_id=key_to_id)
+                for dep in task.depends_on:
+                    if dep.task_id == task.id:
+                        raise TaskValidationError("task cannot depend on itself")
+                    if not dep.task_id or dep.task_id not in valid_ids:
+                        raise TaskValidationError(
+                            f"dependsOn references unknown task: {dep.task_id or '(empty)'}"
+                        )
+            except ValueError as exc:
+                errors.append({"index": index, "key": key, "error": str(exc)})
+                continue
+            (created if action == "create" else updated).append(task)
+
+        if errors:
+            return ImportResult(errors=errors)
+        if dry_run:
+            return ImportResult(created=created, updated=updated)
+
+        data.tasks.extend(created)
+        for task in (*created, *updated):
+            if task.phase and task.phase not in data.phases:
+                data.phases.append(task.phase)
+        self.save(data)
+        return ImportResult(created=created, updated=updated)
 
     def delete_task(self, task_id: str) -> bool:
         data = self.load()
@@ -248,7 +352,7 @@ class TaskStore:
     def promote_to_session(self, task_id: str, session_id: str) -> Task:
         task = self._fetch_task(task_id)
         if not task:
-            raise ValueError(f"Task not found: {task_id}")
+            raise TaskNotFoundError(f"Task not found: {task_id}")
         if task.status == TaskStatus.PENDING:
             task.status = TaskStatus.EXECUTING
         self._upsert_task_record(task, self._sort_index_for_task(task_id), session_id=session_id)
@@ -257,7 +361,7 @@ class TaskStore:
     def demote_to_backlog(self, task_id: str) -> Task:
         task = self._fetch_task(task_id)
         if not task:
-            raise ValueError(f"Task not found: {task_id}")
+            raise TaskNotFoundError(f"Task not found: {task_id}")
         if task.status == TaskStatus.EXECUTING:
             task.status = TaskStatus.PENDING
         self._upsert_task_record(task, self._sort_index_for_task(task_id), session_id=None)
@@ -321,7 +425,31 @@ class TaskStore:
 
     # ── Input helpers ─────────────────────────────────────────────────────────
 
-    def _task_from_input(self, task_input: dict) -> Task:
+    def _key_to_id(self, tasks: list[Task]) -> dict[str, str]:
+        return {task.key: task.id for task in tasks if task.key}
+
+    def _check_key_unique(self, tasks: list[Task], task: Task) -> None:
+        if not task.key:
+            return
+        for other in tasks:
+            if other.id != task.id and other.key == task.key:
+                raise DuplicateKeyError(f"key already in use by another task: {task.key}")
+
+    def _resolve_dependency_refs(self, items: list[dict], key_to_id: dict[str, str]) -> list[TaskDependency]:
+        resolved: list[TaskDependency] = []
+        for item in items:
+            dep_type = DependencyType(item.get("type", "blocks"))
+            ref_key = item.get("key")
+            if ref_key:
+                task_id = key_to_id.get(str(ref_key))
+                if task_id is None:
+                    raise TaskValidationError(f"dependsOn references unknown key: {ref_key}")
+                resolved.append(TaskDependency(task_id=task_id, type=dep_type))
+            else:
+                resolved.append(TaskDependency(task_id=item.get("taskId", ""), type=dep_type))
+        return resolved
+
+    def _task_from_input(self, task_input: dict, key_to_id: Optional[dict[str, str]] = None) -> Task:
         payload = dict(task_input)
         if "targetCoord" in payload:
             coord = CodeCoord.from_dict(payload["targetCoord"])
@@ -332,6 +460,7 @@ class TaskStore:
         owner_payload = payload.get("owner", {})
         owner = TaskOwner.from_dict(owner_payload) if owner_payload else TaskOwner()
         return Task(
+            key=str(payload.get("key", "")).strip(),
             title=str(payload.get("title", "")).strip(),
             description=str(payload.get("description", "")).strip(),
             rationale=str(payload.get("rationale", "")).strip(),
@@ -339,7 +468,7 @@ class TaskStore:
             context_coords=[CodeCoord.from_dict(item) for item in payload.get("contextCoords", [])],
             priority=TaskPriority(payload.get("priority", TaskPriority.P2.value)),
             phase=payload.get("phase"),
-            depends_on=[TaskDependency.from_dict(item) for item in payload.get("dependsOn", [])],
+            depends_on=self._resolve_dependency_refs(payload.get("dependsOn", []), key_to_id or {}),
             blocked_reason=payload.get("blockedReason"),
             owner=owner,
             task_type=TaskType(payload.get("taskType", TaskType.IMPL.value)),
@@ -356,7 +485,9 @@ class TaskStore:
             timing=TaskTiming(payload.get("timing", TaskTiming.ONE_TIME.value)),
         )
 
-    def _apply_patch(self, task: Task, patch: dict) -> None:
+    def _apply_patch(self, task: Task, patch: dict, key_to_id: Optional[dict[str, str]] = None) -> None:
+        if "key" in patch:
+            task.key = str(patch["key"]).strip()
         if "title" in patch:
             task.title = str(patch["title"]).strip()
         if "description" in patch:
@@ -392,7 +523,7 @@ class TaskStore:
             coord.file = to_workspace_relative(self._workspace, coord.file)
             task.target_coord = coord
         if "dependsOn" in patch:
-            task.depends_on = [TaskDependency.from_dict(item) for item in patch["dependsOn"] or []]
+            task.depends_on = self._resolve_dependency_refs(patch["dependsOn"] or [], key_to_id or {})
         if "contextCoords" in patch:
             task.context_coords = [CodeCoord.from_dict(item) for item in patch["contextCoords"] or []]
         if "acceptanceCriteria" in patch:
@@ -453,6 +584,9 @@ class TaskStore:
                     PRIMARY KEY (task_id, depends_on_task_id, dep_type)
                 )
                 """
+            )
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_key ON tasks(key) WHERE key != ''"
             )
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase)")
@@ -541,6 +675,7 @@ class TaskStore:
     def _ensure_task_columns(self) -> None:
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
         expected = {
+            "key": "TEXT NOT NULL DEFAULT ''",
             "title": "TEXT NOT NULL DEFAULT ''",
             "description": "TEXT NOT NULL DEFAULT ''",
             "rationale": "TEXT NOT NULL DEFAULT ''",
@@ -589,7 +724,7 @@ class TaskStore:
             return int(row["sort_index"])
         if allow_append:
             return self._next_sort_index()
-        raise ValueError(f"Task not found: {task_id}")
+        raise TaskNotFoundError(f"Task not found: {task_id}")
 
     def _session_id_for_task(self, task_id: str) -> Optional[str]:
         row = self._conn.execute(
@@ -637,14 +772,15 @@ class TaskStore:
         self._conn.execute(
             """
             INSERT INTO tasks(
-                id, sort_index, payload, title, description, rationale, target_file,
+                id, sort_index, payload, key, title, description, rationale, target_file,
                 target_class, target_method, target_line, priority, phase,
                 owner_name, owner_type, status, started_at, session_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 sort_index = excluded.sort_index,
                 payload = excluded.payload,
+                key = excluded.key,
                 title = excluded.title,
                 description = excluded.description,
                 rationale = excluded.rationale,
@@ -664,6 +800,7 @@ class TaskStore:
                 task.id,
                 sort_index,
                 payload,
+                task.key,
                 task.title,
                 task.description,
                 task.rationale,
