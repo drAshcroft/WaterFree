@@ -21,12 +21,23 @@
 
 * { box-sizing: border-box; }
 
+/* The board owns the full viewport and never scrolls as a page: the tree and
+   the editor each scroll inside their own pane instead. Without this, a long
+   backlog pushes the editor off the bottom of the webview. */
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   padding: 12px;
   font: 12px/1.5 var(--vscode-font-family);
   color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 button,
@@ -47,6 +58,16 @@ p {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Header, toolbar and summary keep their natural height; the workspace absorbs
+   whatever is left over. */
+.page-header,
+.toolbar,
+.summary-grid {
+  flex: 0 0 auto;
 }
 
 .page-header,
@@ -183,11 +204,22 @@ p {
   font-size: 10px;
 }
 
+/* Single column, always: the task list on top, the edit form underneath it.
+   The list gets 80% of the workspace and scrolls internally; the editor takes
+   the remaining 20% and scrolls internally too. */
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(340px, 0.95fr) minmax(420px, 1.2fr);
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+
+.tree-panel {
+  flex: 0 0 80%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .tree-panel-body,
@@ -196,10 +228,23 @@ p {
   flex-direction: column;
 }
 
+.tree-panel-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.panel-header {
+  flex: 0 0 auto;
+}
+
 .tree {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .tree-group {
@@ -471,6 +516,10 @@ p {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .editor-card {
@@ -692,12 +741,6 @@ button.primary:hover:enabled {
   font-family: var(--vscode-editor-font-family, monospace);
 }
 
-@media (max-width: 1080px) {
-  .workspace {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 720px) {
   body {
     padding: 10px;
@@ -722,20 +765,8 @@ body.compact-mode .tree-task-meta {
   display: none;
 }
 
-body.compact-mode .workspace {
-  grid-template-columns: 1fr;
-}
-
-body.compact-mode .editor-panel {
-  position: sticky;
-  bottom: 0;
-}
-
-body.compact-mode .editor-card-body {
-  max-height: 42vh;
-  overflow: auto;
-}
-
+/* Compact mode only trims chrome now — the layout is already single-column at
+   every width, so it must not re-position the editor. */
 body.compact-mode .tree-task-row {
   min-height: 22px;
   padding: 1px 4px;

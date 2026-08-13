@@ -16,25 +16,31 @@ import subprocess
 import sys
 import unittest
 from io import StringIO
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from backend.testing.godot import GodotRunner, is_godot_project
 
-@dataclass
-class TestResult:
-    name: str
-    passed: bool
-    error: str | None = None
-    duration_ms: float | None = None
+# Re-exported: these used to be defined here, and callers import them from this
+# module. They now live in `results` so framework adapters can share them
+# without importing each other.
+from backend.testing.results import TestResult, TestRunResult
 
-
-@dataclass
-class TestRunResult:
-    passed: int
-    failed: int
-    results: list[TestResult] = field(default_factory=list)
-    raw_output: str = ""
+__all__ = [
+    "TestResult",
+    "TestRunResult",
+    "TestRunner",
+    "UnittestRunner",
+    "PytestRunner",
+    "JestRunner",
+    "VitestRunner",
+    "GodotRunner",
+    "RUNNERS",
+    "detect_runner",
+    "log_dir",
+    "write_log",
+    "read_log",
+]
 
 
 class TestRunner(Protocol):
@@ -547,15 +553,23 @@ RUNNERS: dict[str, type] = {
     "pytest": PytestRunner,
     "jest": JestRunner,
     "vitest": VitestRunner,
+    "godot": GodotRunner,
 }
 
 
 def detect_runner(workspace_path: str) -> TestRunner:
     """Auto-detect the appropriate test runner.
 
-    Detection order: pytest → jest → vitest → unittest (fallback).
+    Detection order: godot → pytest → jest → vitest → unittest (fallback).
+
+    Godot goes first because it is the most specific signal — it requires both
+    a project.godot and an installed test-framework addon, so it never fires on
+    a project that merely happens to sit next to one.
     """
     root = Path(workspace_path)
+
+    if is_godot_project(workspace_path):
+        return GodotRunner()
 
     for marker in ("pytest.ini", "conftest.py"):
         if (root / marker).exists():

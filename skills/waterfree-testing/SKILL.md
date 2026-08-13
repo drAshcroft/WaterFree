@@ -7,7 +7,7 @@ description: Use the `waterfree testing` CLI to run tests, inspect failures, and
 
 Provides a clean interface for running tests in any supported framework via the
 `waterfree` CLI. Auto-detects the framework from the project
-(pytest → jest → vitest → unittest).
+(godot → pytest → jest → vitest → unittest).
 
 Each invocation is a short shell command — run it in whatever shell you have
 (Bash or PowerShell). `waterfree` is on PATH, so the command text is identical
@@ -25,6 +25,12 @@ output).
 
 All commands accept `--workspace <path>` (defaults to CWD). JSON-producing
 commands also accept `--full` for cross-area CLI compatibility.
+
+`run`, `run-one` and `list` additionally accept:
+
+- `--runner {godot,jest,pytest,unittest,vitest}` — skip auto-detection and force
+  a framework. Useful in a polyglot repo where detection picks the wrong one.
+- `--godot-path <exe>` — the Godot executable to use. See *Godot* below.
 
 ### Run all tests
 ```bash
@@ -76,10 +82,52 @@ waterfree testing run --workspace .                  # Verify nothing else broke
 
 | Framework | Auto-detected by |
 |-----------|-----------------|
+| Godot     | `project.godot` **and** `addons/gdUnit4/` or `addons/gut/` |
 | pytest    | `pytest.ini`, `conftest.py`, `[tool.pytest]` in pyproject.toml |
 | Jest      | `jest.config.*`, `"jest"` in package.json |
 | Vitest    | `vitest.config.*`, `"vitest"` in package.json |
 | unittest  | fallback (default for WaterFree itself) |
+
+Godot is checked first because it needs two signals at once, so it never fires
+on a project that merely sits next to a Godot install.
+
+## Godot
+
+Both mainstream Godot test frameworks are supported, picked by which addon the
+project installs — **gdUnit4** (`addons/gdUnit4/`) is preferred over **GUT**
+(`addons/gut/`) when both are present. Tests are expected in `res://test` or
+`res://tests`.
+
+The project does not have to sit at the workspace root: `project.godot` is
+looked for at the root and then one level down, which covers the common layout
+of keeping the engine build and the game project as siblings.
+
+`list` and a non-matching `run-one` read the `.gd` sources directly and never
+boot the engine, so they are fast.
+
+### Finding the engine
+
+Godot ships many differently named builds (`godot.windows.editor.double.x86_64.exe`,
+`Godot_v4.3-stable`, …), so WaterFree never guesses by globbing. Resolution
+order:
+
+1. `--godot-path <exe>`
+2. the `waterfree.godotPath` VS Code setting (mirrored to `.waterfree/config.json`)
+3. `$WATERFREE_GODOT`, `$GODOT_BIN`, `$GODOT`
+4. `godot`, `godot4`, or `Godot` on PATH
+
+A configured path that does not exist is a hard error — it never quietly falls
+through to PATH, because running a different engine build than intended is
+worse than failing loudly.
+
+Godot 4 is the target. A Godot 3 binary is detected via `--version` and driven
+with `--no-window` instead of `--headless`, but neither modern GUT nor gdUnit4
+supports Godot 3, so this is a courtesy rather than a supported path.
+
+Slow suites: raise the 600s default with `WATERFREE_GODOT_TIMEOUT=<seconds>`.
+
+Setup problems (no engine, no `project.godot`, no test addon) exit **4**, so
+they stay distinguishable from "your tests are red" (exit 1).
 
 ## Workspace
 
@@ -94,3 +142,4 @@ command from the project root. Test logs are stored at
 | 0    | All tests passed |
 | 1    | One or more tests failed |
 | 2    | Usage / validation error |
+| 4    | Runner setup problem (e.g. Godot engine, project, or test addon not found) |

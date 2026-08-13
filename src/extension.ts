@@ -59,6 +59,7 @@ import {
 } from "./ui/PersonaStudioPanel.js";
 import { FileWatcher } from "./watchers/FileWatcher.js";
 import { TodoWatcher, type WfTodo } from "./watchers/TodoWatcher.js";
+import { syncWorkspaceConfig, watchWorkspaceConfig } from "./utils/workspaceConfig.js";
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
 
 import { CommandRegistry } from "./commands/CommandRegistry.js";
@@ -98,6 +99,11 @@ export function activate(context: vscode.ExtensionContext): void {
   if (!workspaceRoot) {
     return; // No workspace open — nothing to do
   }
+
+  // Mirror CLI-visible settings to disk before anything can shell out to
+  // `waterfree`, and keep the mirror current afterwards.
+  syncWorkspaceConfig(workspaceRoot);
+  context.subscriptions.push(watchWorkspaceConfig(workspaceRoot));
 
   controller = new WaterFreeController(workspaceRoot, context);
   context.subscriptions.push(controller);

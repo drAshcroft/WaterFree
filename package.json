@@ -263,6 +263,11 @@
           "default": "codebase-memory-mcp",
           "description": "Path to the codebase-memory-mcp binary. Defaults to 'codebase-memory-mcp' (must be on PATH)."
         },
+        "waterfree.godotPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Godot executable used to run Godot tests (GUT / gdUnit4). Leave blank to fall back to the WATERFREE_GODOT, GODOT_BIN or GODOT environment variables, then 'godot' on PATH. Godot ships many differently named builds, so WaterFree never guesses — point this at the exact binary you want, e.g. C:\\\\Godot\\\\godot.windows.editor.x86_64.exe."
+        },
         "waterfree.publicDocsPath": {
           "type": "string",
           "default": "docs",
