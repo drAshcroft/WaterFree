@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from backend.session.enum_coercion import coerce_enum, register_enum_aliases
+
 
 class CoordAnchorType(str, Enum):
     CREATE_AT = "create-at"
@@ -15,28 +17,14 @@ class CoordAnchorType(str, Enum):
     READ_ONLY_CONTEXT = "read-only-context"
 
 
-_ANCHOR_TYPE_ALIASES = {
+register_enum_aliases(CoordAnchorType, {
     "inspect": CoordAnchorType.READ_ONLY_CONTEXT,
     "read": CoordAnchorType.READ_ONLY_CONTEXT,
     "readonly": CoordAnchorType.READ_ONLY_CONTEXT,
     "read-only": CoordAnchorType.READ_ONLY_CONTEXT,
     "context": CoordAnchorType.READ_ONLY_CONTEXT,
     "create": CoordAnchorType.CREATE_AT,
-}
-
-
-def _coerce_anchor_type(value: object) -> CoordAnchorType:
-    if isinstance(value, CoordAnchorType):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if not normalized:
-            return CoordAnchorType.MODIFY
-        try:
-            return CoordAnchorType(normalized)
-        except ValueError:
-            return _ANCHOR_TYPE_ALIASES.get(normalized, CoordAnchorType.MODIFY)
-    return CoordAnchorType.MODIFY
+})
 
 
 @dataclass
@@ -59,11 +47,14 @@ class CodeCoord:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> CodeCoord:
+    def from_dict(cls, d: dict, warnings: Optional[list[str]] = None) -> CodeCoord:
         return cls(
             file=d.get("file", ""),
             class_name=d.get("class"),
             method=d.get("method"),
             line=d.get("line"),
-            anchor_type=_coerce_anchor_type(d.get("anchorType", "modify")),
+            anchor_type=coerce_enum(
+                CoordAnchorType, d.get("anchorType"), CoordAnchorType.MODIFY,
+                field="anchorType", warnings=warnings,
+            ),
         )

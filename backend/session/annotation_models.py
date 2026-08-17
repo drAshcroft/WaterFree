@@ -9,6 +9,7 @@ from typing import Optional
 import uuid
 
 from backend.session.coord_models import CodeCoord
+from backend.session.enum_coercion import coerce_enum, register_enum_aliases
 
 
 class AnnotationStatus(str, Enum):
@@ -16,6 +17,16 @@ class AnnotationStatus(str, Enum):
     APPROVED = "approved"
     ALTERED = "altered"
     REDIRECTED = "redirected"
+
+
+register_enum_aliases(AnnotationStatus, {
+    "accepted": AnnotationStatus.APPROVED,
+    "approve": AnnotationStatus.APPROVED,
+    "modified": AnnotationStatus.ALTERED,
+    "changed": AnnotationStatus.ALTERED,
+    "open": AnnotationStatus.PENDING,
+    "unreviewed": AnnotationStatus.PENDING,
+})
 
 
 @dataclass
@@ -93,12 +104,17 @@ class IntentAnnotation:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> IntentAnnotation:
+    def from_dict(cls, d: dict, warnings: Optional[list[str]] = None) -> IntentAnnotation:
+        """Tolerant read — reached from `Task.from_dict`, so it must not raise.
+
+        An annotation with an unreadable status would otherwise take down the
+        whole store the same way a bad task status does.
+        """
         return cls(
             id=d.get("id", str(uuid.uuid4())),
             task_id=d.get("taskId", ""),
-            target_coord=CodeCoord.from_dict(d["targetCoord"]) if "targetCoord" in d else CodeCoord(),
-            context_coords=[CodeCoord.from_dict(c) for c in d.get("contextCoords", [])],
+            target_coord=CodeCoord.from_dict(d["targetCoord"], warnings) if "targetCoord" in d else CodeCoord(),
+            context_coords=[CodeCoord.from_dict(c, warnings) for c in d.get("contextCoords", [])],
             summary=d.get("summary", ""),
             detail=d.get("detail", ""),
             approach=d.get("approach", ""),
@@ -108,7 +124,10 @@ class IntentAnnotation:
             side_effect_warnings=d.get("sideEffectWarnings", []),
             assumptions_made=d.get("assumptionsMade", []),
             questions_before_proceeding=d.get("questionsBeforeProceeding", []),
-            status=AnnotationStatus(d.get("status", "pending")),
+            status=coerce_enum(
+                AnnotationStatus, d.get("status"), AnnotationStatus.PENDING,
+                field="annotations[].status", warnings=warnings,
+            ),
             human_response=d.get("humanResponse"),
             created_at=d.get("createdAt"),
             reviewed_at=d.get("reviewedAt"),

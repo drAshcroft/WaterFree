@@ -295,7 +295,8 @@ class TodosSchemaCliTests(unittest.TestCase):
             ])
 
         self.assertEqual(exit_code, EXIT_USAGE)
-        self.assertIn("valid taskType values", stderr.getvalue())
+        self.assertIn("invalid taskType", stderr.getvalue())
+        self.assertIn("'documentation'", stderr.getvalue())
         self.assertIn("impl, test, spike, review, refactor, protocol, bug_fix, feature, task", stderr.getvalue())
 
 

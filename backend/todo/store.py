@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from backend.session.enum_coercion import parse_enum
 from backend.session.models import (
     CodeCoord,
     CoordAnchorType,
@@ -37,6 +38,12 @@ from backend.todo.utils import (
 _PAIRS_DIR = ".waterfree"
 _DB_FILE = "tasks.db"
 _LEGACY_JSON_FILE = "tasks.json"
+
+# Bumped whenever the denormalized `tasks` columns, or the way a payload maps
+# onto them, changes. `_init_db` replays every payload into its columns exactly
+# once per bump instead of on every single connection — see `_init_db`.
+_COLUMN_SCHEMA_VERSION = "2"
+_COLUMN_SCHEMA_KEY = "column_schema_version"
 
 
 class TaskNotFoundError(ValueError):
@@ -265,9 +272,16 @@ class TaskStore:
                 add_issue("warning", "title_too_long", "task title should be 120 characters or fewer", task_id=task_id, key=key, title=title)
 
             try:
-                parsed_tasks.append(Task.from_dict(payload))
+                task = Task.from_dict(payload)
             except ValueError as exc:
                 add_issue("error", "invalid_task", str(exc), task_id=task_id, key=key, title=title)
+            else:
+                parsed_tasks.append(task)
+                # `from_dict` repaired something to read this row at all — most
+                # often a foreign status vocabulary written straight into the
+                # database. Report it; the next save persists the canonical form.
+                for warning in task.parse_warnings:
+                    add_issue("warning", "coerced_value", warning, task_id=task_id, key=key, title=title)
 
         keys: dict[str, list[dict]] = {}
         for item in raw_tasks:
@@ -467,7 +481,7 @@ class TaskStore:
                 task.phase = self._normalize_phase(item.get("phase"))
 
             if "priority" in item:
-                task.priority = TaskPriority(str(item.get("priority")))
+                task.priority = parse_enum(TaskPriority, item.get("priority"), field="priority")
 
             ordered.append(task)
             seen.add(task_id)
@@ -644,10 +658,29 @@ class TaskStore:
             if other.id != task.id and other.key == task.key:
                 raise DuplicateKeyError(f"key already in use by another task: {task.key}")
 
+    def _owner_from_input(self, owner_payload: object) -> TaskOwner:
+        """Strict owner parse for the write path.
+
+        `TaskOwner.from_dict` is the tolerant reader and would quietly downgrade
+        an unrecognized type to `unassigned`; an owner typo arriving through the
+        API or CLI should be rejected, not silently unassign the task.
+        """
+        if not isinstance(owner_payload, dict) or not owner_payload:
+            return TaskOwner()
+        raw_type = owner_payload.get("type") or OwnerType.UNASSIGNED.value
+        return TaskOwner(
+            type=parse_enum(OwnerType, raw_type, field="owner.type"),
+            name=owner_payload.get("name", ""),
+            assigned_at=owner_payload.get("assignedAt"),
+        )
+
     def _resolve_dependency_refs(self, items: list[dict], key_to_id: dict[str, str]) -> list[TaskDependency]:
         resolved: list[TaskDependency] = []
         for item in items:
-            dep_type = DependencyType(item.get("type", "blocks"))
+            dep_type = parse_enum(
+                DependencyType, item.get("type") or DependencyType.BLOCKS.value,
+                field="dependsOn[].type",
+            )
             ref_key = item.get("key")
             if ref_key:
                 task_id = key_to_id.get(str(ref_key))
@@ -666,8 +699,7 @@ class TaskStore:
             coord = CodeCoord()
         coord.file = to_workspace_relative(self._workspace, coord.file)
 
-        owner_payload = payload.get("owner", {})
-        owner = TaskOwner.from_dict(owner_payload) if owner_payload else TaskOwner()
+        owner = self._owner_from_input(payload.get("owner", {}))
         return Task(
             key=str(payload.get("key", "")).strip(),
             title=str(payload.get("title", "")).strip(),
@@ -675,15 +707,15 @@ class TaskStore:
             rationale=str(payload.get("rationale", "")).strip(),
             target_coord=coord,
             context_coords=[CodeCoord.from_dict(item) for item in payload.get("contextCoords", [])],
-            priority=TaskPriority(payload.get("priority", TaskPriority.P2.value)),
+            priority=parse_enum(TaskPriority, payload.get("priority", TaskPriority.P2.value), field="priority"),
             phase=payload.get("phase"),
             depends_on=self._resolve_dependency_refs(payload.get("dependsOn", []), key_to_id or {}),
             blocked_reason=payload.get("blockedReason"),
             owner=owner,
-            task_type=TaskType(payload.get("taskType", TaskType.IMPL.value)),
+            task_type=parse_enum(TaskType, payload.get("taskType", TaskType.IMPL.value), field="taskType"),
             estimated_minutes=payload.get("estimatedMinutes"),
             actual_minutes=payload.get("actualMinutes"),
-            status=TaskStatus(payload.get("status", TaskStatus.PENDING.value)),
+            status=parse_enum(TaskStatus, payload.get("status", TaskStatus.PENDING.value), field="status"),
             human_notes=payload.get("humanNotes"),
             ai_notes=payload.get("aiNotes"),
             annotations=[],
@@ -691,7 +723,7 @@ class TaskStore:
             completed_at=payload.get("completedAt"),
             acceptance_criteria=payload.get("acceptanceCriteria") or None,
             trigger=payload.get("trigger") or None,
-            timing=TaskTiming(payload.get("timing", TaskTiming.ONE_TIME.value)),
+            timing=parse_enum(TaskTiming, payload.get("timing", TaskTiming.ONE_TIME.value), field="timing"),
         )
 
     def _apply_patch(self, task: Task, patch: dict, key_to_id: Optional[dict[str, str]] = None) -> None:
@@ -704,21 +736,21 @@ class TaskStore:
         if "rationale" in patch:
             task.rationale = str(patch["rationale"]).strip()
         if "priority" in patch:
-            task.priority = TaskPriority(str(patch["priority"]))
+            task.priority = parse_enum(TaskPriority, patch["priority"], field="priority")
         if "phase" in patch:
             task.phase = str(patch["phase"]).strip() or None
         if "blockedReason" in patch:
             task.blocked_reason = str(patch["blockedReason"]).strip() or None
         if "owner" in patch:
-            task.owner = TaskOwner.from_dict(patch["owner"] or {})
+            task.owner = self._owner_from_input(patch["owner"] or {})
         if "taskType" in patch:
-            task.task_type = TaskType(str(patch["taskType"]))
+            task.task_type = parse_enum(TaskType, patch["taskType"], field="taskType")
         if "estimatedMinutes" in patch:
             task.estimated_minutes = patch["estimatedMinutes"]
         if "actualMinutes" in patch:
             task.actual_minutes = patch["actualMinutes"]
         if "status" in patch:
-            task.status = TaskStatus(str(patch["status"]))
+            task.status = parse_enum(TaskStatus, patch["status"], field="status")
         if "humanNotes" in patch:
             task.human_notes = patch["humanNotes"]
         if "aiNotes" in patch:
@@ -740,7 +772,7 @@ class TaskStore:
         if "trigger" in patch:
             task.trigger = patch["trigger"] or None
         if "timing" in patch:
-            task.timing = TaskTiming(str(patch["timing"]))
+            task.timing = parse_enum(TaskTiming, patch["timing"], field="timing")
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
@@ -769,7 +801,7 @@ class TaskStore:
                 )
                 """
             )
-            self._ensure_task_columns()
+            added_columns = self._ensure_task_columns()
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS metadata (
@@ -808,7 +840,17 @@ class TaskStore:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_task_dependencies_target ON task_dependencies(depends_on_task_id, dep_type)"
             )
-            self._backfill_task_columns_from_payload()
+
+            # Replaying every payload into its columns is a full table rewrite,
+            # so do it only when the column layout actually moved — on a fresh
+            # ALTER, or on a store last written before the current schema
+            # version. Steady-state connections skip it entirely.
+            stored_version = self._conn.execute(
+                "SELECT value FROM metadata WHERE key = ?", (_COLUMN_SCHEMA_KEY,)
+            ).fetchone()
+            if added_columns or (stored_version or [None])[0] != _COLUMN_SCHEMA_VERSION:
+                self._backfill_task_columns_from_payload()
+                self._set_metadata(_COLUMN_SCHEMA_KEY, _COLUMN_SCHEMA_VERSION)
 
     def _load_metadata(self) -> dict[str, str]:
         rows = self._conn.execute("SELECT key, value FROM metadata").fetchall()
@@ -881,7 +923,8 @@ class TaskStore:
             id ASC
         """
 
-    def _ensure_task_columns(self) -> None:
+    def _ensure_task_columns(self) -> bool:
+        """Add any missing denormalized columns. Returns True if the table changed."""
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()}
         expected = {
             "key": "TEXT NOT NULL DEFAULT ''",
@@ -900,22 +943,50 @@ class TaskStore:
             "started_at": "TEXT NOT NULL DEFAULT ''",
             "session_id": "TEXT",
         }
+        added = False
         for name, ddl in expected.items():
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+                added = True
+        return added
 
     def _backfill_task_columns_from_payload(self) -> None:
-        rows = self._conn.execute(
-            """
-            SELECT id, sort_index, payload, title, description, rationale, target_file,
-                   target_class, target_method, target_line, priority, phase,
-                   owner_name, owner_type, status, started_at, session_id
-            FROM tasks
-            """
-        ).fetchall()
-        for row in rows:
-            task = Task.from_dict(json.loads(row["payload"]))
+        """Rewrite every row's denormalized columns from its payload.
+
+        Also the repair pass for payloads written by something other than this
+        store: `Task.from_dict` normalizes what it can (see
+        `backend.session.enum_coercion`) and `_write_task_row` persists the
+        canonical spelling, so a foreign `"completed"` becomes `"complete"` on
+        disk here rather than lingering to surprise a later reader.
+
+        `task_dependencies` is rebuilt from the same payloads for the same
+        reason. An outside writer that edits a payload leaves that table stale,
+        and `ready_only` queries read the table rather than the payload — so a
+        blocked task would otherwise be handed out as ready work.
+        """
+        rows = self._conn.execute("SELECT sort_index, payload, session_id FROM tasks").fetchall()
+        loaded = [(row, Task.from_dict(json.loads(row["payload"]))) for row in rows]
+        self._repair_dependency_refs([task for _, task in loaded])
+        self._conn.execute("DELETE FROM task_dependencies")
+        for row, task in loaded:
             self._write_task_row(task, sort_index=int(row["sort_index"]), session_id=row["session_id"])
+            self._replace_dependencies(task)
+
+    def _repair_dependency_refs(self, tasks: list[Task]) -> None:
+        """Point stored dependencies that name a task *key* at that task's id.
+
+        A stored `dependsOn` entry holds an id; an outside writer that only knew
+        the human-facing keys ("BAL-012") leaves a reference resolving to
+        nothing. Every task is in hand during the backfill, so translate the
+        unambiguous ones and leave the rest for `validate` to report as
+        unresolved — which is the honest answer when a key matches nothing.
+        """
+        ids = {task.id for task in tasks}
+        id_by_key = {task.key: task.id for task in tasks if task.key}
+        for task in tasks:
+            for dep in task.depends_on:
+                if dep.task_id and dep.task_id not in ids and dep.task_id in id_by_key:
+                    dep.task_id = id_by_key[dep.task_id]
 
     def _fetch_task(self, task_id: str) -> Optional[Task]:
         row = self._conn.execute(
