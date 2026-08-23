@@ -64,6 +64,10 @@
         "icon": "$(gear)"
       },
       {
+        "command": "waterfree.delegateToAcpSubagent",
+        "title": "WaterFree: Delegate to ACP Subagent"
+      },
+      {
         "command": "waterfree.generateAnnotation",
         "title": "WaterFree: Generate Annotation"
       },
@@ -268,6 +272,24 @@
           "default": "",
           "description": "Absolute path to the Godot executable used to run Godot tests (GUT / gdUnit4). Leave blank to fall back to the WATERFREE_GODOT, GODOT_BIN or GODOT environment variables, then 'godot' on PATH. Godot ships many differently named builds, so WaterFree never guesses — point this at the exact binary you want, e.g. C:\\\\Godot\\\\godot.windows.editor.x86_64.exe."
         },
+        "waterfree.acpAgents": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "External agents WaterFree can drive over the [Agent Client Protocol](https://agentclientprotocol.com). Entries merge over the built-ins (`hermes`); reusing a built-in `id` patches it, so you can override just `model` without restating `command`.",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string", "description": "Stable id, e.g. \"hermes\"." },
+              "label": { "type": "string", "description": "Display name." },
+              "command": { "type": "string", "description": "Executable that speaks ACP over stdio." },
+              "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments placing the agent in ACP mode, e.g. [\"acp\"]." },
+              "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra environment variables for the agent process." },
+              "model": { "type": "string", "description": "Agent-specific model id pinned per session, e.g. \"openrouter:anthropic/claude-sonnet-4.5\"." },
+              "enabled": { "type": "boolean", "default": true }
+            }
+          }
+        },
         "waterfree.publicDocsPath": {
           "type": "string",
           "default": "docs",
@@ -279,6 +301,7 @@
   "scripts": {
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
+    "test:acp": "node scripts/acp-smoke/run.js",
     "vscode:prepublish": "node esbuild.config.js --minify",
     "package": "node esbuild.config.js --minify && npx @vscode/vsce package --no-dependencies --out waterfree.vsix --baseContentUrl https://localhost"
   },

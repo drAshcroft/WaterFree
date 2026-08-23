@@ -8,6 +8,7 @@ from backend.llm.adapters.gemini_adapter import GeminiAdapter
 from backend.llm.adapters.groq_adapter import GroqAdapter
 from backend.llm.adapters.ollama_adapter import OllamaAdapter
 from backend.llm.adapters.openai_adapter import OpenAIAdapter
+from backend.llm.adapters.openrouter_adapter import OpenRouterAdapter
 from backend.llm.adapters.qwen_adapter import QwenAdapter
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 ADAPTERS: dict[str, "ProviderAdapter"] = {
     "anthropic": AnthropicAdapter(),
     "openai": OpenAIAdapter(),
+    "openrouter": OpenRouterAdapter(),
     "groq": GroqAdapter(),
     "ollama": OllamaAdapter(),
     "gemini": GeminiAdapter(),
@@ -32,6 +34,7 @@ __all__ = [
     "get_adapter",
     "AnthropicAdapter",
     "OpenAIAdapter",
+    "OpenRouterAdapter",
     "GroqAdapter",
     "OllamaAdapter",
     "GeminiAdapter",

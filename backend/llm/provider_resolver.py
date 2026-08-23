@@ -83,6 +83,10 @@ def ordered_providers(document: ProviderProfileDocument) -> list[ProviderProfile
 def runtime_name_for_provider(profile: ProviderProfile) -> str:
     if profile.type == "openai":
         return "openai"
+    if profile.type == "openrouter":
+        # OpenRouter speaks the OpenAI dialect, so it runs on the OpenAI runtime.
+        # The adapter is still selected by provider_kind(), not by this name.
+        return "openai"
     if profile.type == "ollama":
         return "ollama"
     if profile.type == "huggingface":

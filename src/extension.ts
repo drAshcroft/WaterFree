@@ -63,6 +63,12 @@ import { syncWorkspaceConfig, watchWorkspaceConfig } from "./utils/workspaceConf
 import { isWizardDoc, isWizardDocPath, parseWizardDocContextFromDocument } from "./wizard/WizardDocState.js";
 
 import { CommandRegistry } from "./commands/CommandRegistry.js";
+import { AcpAgentRegistry } from "./acp/AcpAgentRegistry.js";
+import { AcpSubagentDriver } from "./acp/AcpSubagentDriver.js";
+import {
+  WorkspaceAcpClientHost,
+  createQuickPickPermissionResolver,
+} from "./acp/AcpClientHost.js";
 
 // ------------------------------------------------------------------
 // Extension state (singleton per extension host)
@@ -142,6 +148,8 @@ export class WaterFreeController implements vscode.Disposable {
   private readonly _disposables: vscode.Disposable[] = [];
   private _providerWatcher: vscode.Disposable | null = null;
 
+  private readonly _acpAgents: AcpAgentRegistry;
+  private readonly _acpDriver: AcpSubagentDriver;
   private _sessionId: string | null = null;
   private _plan: PlanData | null = null;
 
@@ -175,6 +183,23 @@ export class WaterFreeController implements vscode.Disposable {
     this._fileWatcher = new FileWatcher(this._bridge, _workspacePath);
     this._todoWatcher = new TodoWatcher();
     this._liveDebug = new LiveDebugCapture();
+
+    // ACP subagents: WaterFree is the client, driving external agent
+    // processes (Hermes by default). Every file write and permission the
+    // agent wants comes back through WorkspaceAcpClientHost.
+    this._acpAgents = new AcpAgentRegistry(_workspacePath);
+    this._acpDriver = new AcpSubagentDriver({
+      registry: this._acpAgents,
+      log: (message) => this._log("acp", message),
+      createHost: ({ spec, workspacePath }) =>
+        new WorkspaceAcpClientHost({
+          workspacePath,
+          agentLabel: spec.label,
+          resolvePermission: createQuickPickPermissionResolver(),
+          log: (message) => this._log("acp", message),
+        }),
+    });
+    this._disposables.push({ dispose: () => this._acpDriver.dispose() });
     this._disposables.push(
       this._bridge,
       this._statusBar,
@@ -357,6 +382,133 @@ export class WaterFreeController implements vscode.Disposable {
 
   cmdOpenMonitorPanel(): void {
     this._monitorPanel.show();
+  }
+
+  /**
+   * Delegate a task to an external ACP agent process.
+   *
+   * The agent runs in its own process with its own context; its file writes and
+   * tool permissions come back through WorkspaceAcpClientHost, so nothing lands
+   * in the tree without passing this side first.
+   */
+  async cmdDelegateToAcpSubagent(): Promise<void> {
+    const agents = this._acpDriver.listAgents();
+    if (agents.length === 0) {
+      void vscode.window.showWarningMessage(
+        "WaterFree: no ACP agents configured. Add one under waterfree.acpAgents.",
+      );
+      return;
+    }
+
+    const chosen = agents.length === 1
+      ? agents[0]
+      : (await vscode.window.showQuickPick(
+          agents.map((agent) => ({ label: agent.label, description: agent.id, agent })),
+          { title: "Delegate to which ACP agent?", ignoreFocusOut: true },
+        ))?.agent;
+    if (!chosen) {
+      return;
+    }
+
+    const prompt = await vscode.window.showInputBox({
+      prompt: `What should ${chosen.label} do?`,
+      placeHolder: "e.g. add a regression test for the chunk reducer",
+      ignoreFocusOut: true,
+    });
+    if (!prompt?.trim()) {
+      return;
+    }
+
+    // Asked explicitly rather than guessed from the wording: the two modes fail
+    // in different directions, and an agent told to write files when the caller
+    // wanted prose burns the whole delegation before saying so.
+    const deliverable = (await vscode.window.showQuickPick(
+      [
+        {
+          label: "Change files in the workspace",
+          detail: "The agent works in the repo with its own tools.",
+          value: "files" as const,
+        },
+        {
+          label: "Write something back to me",
+          detail: "The agent answers without touching the workspace. Faster and more reliable for prose.",
+          value: "text" as const,
+        },
+      ],
+      { title: "What should come back?", ignoreFocusOut: true },
+    ))?.value;
+    if (!deliverable) {
+      return;
+    }
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `WaterFree: ${chosen.label} working…`,
+        cancellable: true,
+      },
+      async (progress, token) => {
+        const taskId = `acp-${Date.now()}`;
+        token.onCancellationRequested(() => this._acpDriver.cancel(taskId));
+        try {
+          const result = await this._acpDriver.delegate({
+            agentId: chosen.id,
+            prompt: prompt.trim(),
+            workspacePath: this._workspacePath,
+            taskId,
+            deliverable,
+            // A transient upstream empty response should not cost the operator
+            // the whole delegation; terminal failures still fail on the first try.
+            maxAttempts: 3,
+            onToolCall: (update) => {
+              const title = (update as { title?: string }).title;
+              if (title) {
+                progress.report({ message: title });
+              }
+            },
+          });
+
+          this._log("acp", `${result.agentLabel} finished in ${result.durationMs}ms (ok=${result.ok})`);
+          if (!result.ok) {
+            // Surface the agent's own words — a delegation that "completed"
+            // with a provider error is a failure, not a result.
+            this._handleError(`${result.agentLabel} delegation failed`, new Error(result.failureReason ?? "unknown"));
+            return;
+          }
+
+          const showDocument = async (): Promise<void> => {
+            const doc = await vscode.workspace.openTextDocument({
+              content: result.text,
+              language: "markdown",
+            });
+            await vscode.window.showTextDocument(doc, { preview: true });
+          };
+
+          const retried = result.attempts > 1 ? ` after ${result.attempts} attempts` : "";
+          if (deliverable === "text") {
+            // The turn is the whole point here; putting it behind a button would
+            // make the operator click to see what they asked for.
+            await showDocument();
+            void vscode.window.showInformationMessage(
+              `WaterFree: ${result.agentLabel} finished${retried}`
+                + (result.modelId ? ` (${result.modelId})` : ""),
+            );
+            return;
+          }
+
+          const wrote = result.touchedFiles.length;
+          const summary = `WaterFree: ${result.agentLabel} finished${retried}`
+            + (wrote ? ` — changed ${wrote} file${wrote === 1 ? "" : "s"}` : " — no files changed")
+            + (result.modelId ? ` (${result.modelId})` : "");
+          const action = await vscode.window.showInformationMessage(summary, "Show Output");
+          if (action === "Show Output") {
+            await showDocument();
+          }
+        } catch (err) {
+          this._handleError("ACP delegation failed", err);
+        }
+      },
+    );
   }
 
   // ------------------------------------------------------------------

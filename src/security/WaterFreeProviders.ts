@@ -1,7 +1,16 @@
 import * as path from "path";
 import * as vscode from "vscode";
 
-export type ProviderType = "claude" | "openai" | "groq" | "ollama" | "huggingface" | "gemini" | "qwen" | "mock";
+export type ProviderType =
+  | "claude"
+  | "openai"
+  | "openrouter"
+  | "groq"
+  | "ollama"
+  | "huggingface"
+  | "gemini"
+  | "qwen"
+  | "mock";
 export type ProviderConnectionStyle = "native" | "compatible" | "local" | "none";
 export type ProviderStage =
   | "planning"
@@ -11,7 +20,10 @@ export type ProviderStage =
   | "question_answer"
   | "ripple_detection"
   | "alter_annotation"
-  | "knowledge";
+  | "knowledge"
+  // Reader stages -- see READER_STAGES below.
+  | "qa_summary"
+  | "tutorial";
 export type ProviderReloadMode = "manual" | "on_change";
 
 // ── Model abstraction types ───────────────────────────────────────────────
@@ -68,6 +80,17 @@ export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
   "alter_annotation",
   "knowledge",
 ];
+/**
+ * Map/reduce reader stages: `waterfree qa-summary` over a large file or URL,
+ * and tutorial generation.
+ *
+ * Deliberately NOT part of DEFAULT_PROVIDER_STAGES. That list is the "this
+ * provider serves everything" default, so including them would silently hand
+ * every existing workspace's bulk summarization to whichever provider happens
+ * to sit first in the fallback order. A provider must name a reader stage in
+ * routing.useForStages to claim it; otherwise readers stay on local Ollama.
+ */
+export const READER_STAGES: ProviderStage[] = ["qa_summary", "tutorial"];
 
 export interface ProviderConfig {
   id: string;
@@ -289,6 +312,7 @@ const DEFAULT_PROVIDER_URLS: Partial<Record<ProviderType, string>> = {
   openai: "https://api.openai.com/v1",
   groq: "https://api.groq.com/openai/v1",
   ollama: "http://localhost:11434",
+  openrouter: "https://openrouter.ai/api/v1",
   huggingface: "https://router.huggingface.co/v1",
   gemini: "https://generativelanguage.googleapis.com",
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -298,6 +322,8 @@ const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
   openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
   groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
   ollama: ["freehuntx/qwen3-coder:14b"],
+  // OpenRouter ids are always vendor/model; its catalog is too large to enumerate.
+  openrouter: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder"],
   huggingface: [],
   gemini: ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
   qwen: ["qwen-max", "qwen-plus", "qwen-turbo"],
@@ -330,6 +356,15 @@ const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string,
     annotation: "freehuntx/qwen3-coder:14b",
     execution: "freehuntx/qwen3-coder:14b",
     debug: "freehuntx/qwen3-coder:14b",
+  },
+  openrouter: {
+    default: "anthropic/claude-sonnet-4.5",
+    planning: "anthropic/claude-sonnet-4.5",
+    annotation: "anthropic/claude-haiku-4.5",
+    execution: "anthropic/claude-sonnet-4.5",
+    debug: "anthropic/claude-haiku-4.5",
+    qa_summary: "qwen/qwen3-coder",
+    tutorial: "qwen/qwen3-coder",
   },
   huggingface: {
     default: "",
@@ -370,6 +405,8 @@ const DEFAULT_POLICIES: ProviderProfilePolicies = {
     LIVE_DEBUG: 20000,
     RIPPLE_DETECTION: 15000,
     QUESTION_ANSWER: 15000,
+    QA_SUMMARY: 20000,
+    TUTORIAL: 20000,
   },
 };
 
@@ -1074,6 +1111,18 @@ function normalizeProviderType(value: unknown): ProviderType | null {
     case "chatgpt":
     case "codex":
       return "openai";
+    case "openrouter":
+    case "open-router":
+    case "open_router":
+      return "openrouter";
+    // gemini/qwen have working adapters and default models but were never
+    // accepted here, so a profile of either type normalized to null.
+    case "gemini":
+    case "google":
+      return "gemini";
+    case "qwen":
+    case "dashscope":
+      return "qwen";
     case "groq":
       return "groq";
     case "ollama":
@@ -1099,10 +1148,16 @@ function normalizeName(value: unknown, type: ProviderType): string {
       return "OpenAI / ChatGPT";
     case "groq":
       return "Groq";
+    case "openrouter":
+      return "OpenRouter";
     case "ollama":
       return "Ollama";
     case "huggingface":
       return "Hugging Face";
+    case "gemini":
+      return "Gemini";
+    case "qwen":
+      return "Qwen";
     case "mock":
       return "Mock";
   }
@@ -1263,6 +1318,8 @@ function normalizeStage(value: unknown): ProviderStage | null {
     case "ripple_detection":
     case "alter_annotation":
     case "knowledge":
+    case "qa_summary":
+    case "tutorial":
       return normalized;
     default:
       return null;

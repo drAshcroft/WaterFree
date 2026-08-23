@@ -13,16 +13,29 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Callable, Optional
 
 from backend.knowledge.models import KnowledgeEntry
 from backend.knowledge.store import KnowledgeStore
-from backend.tutorializer import ollama as _ollama
+from backend.llm.chat_client import (
+    ChatTarget,
+    ChatUnavailable,
+    chat as _chat_provider,
+    local_ollama_target,
+    resolve_chat_target,
+)
 from backend.tutorializer import scanner
 
 log = logging.getLogger(__name__)
+
+# Output budget per generation call. The local Ollama path previously sent no
+# cap and relied on the daemon's default; OpenAI-compatible gateways require an
+# explicit max_tokens, so one budget now covers both. Tutorials target 350-600
+# words, and repo analysis returns a JSON block -- 4096 leaves generous headroom.
+_MAX_OUTPUT_TOKENS = int(os.environ.get("WATERFREE_TUTORIAL_MAX_TOKENS", "4096"))
 
 _MAX_FILE_CHARS = 6000    # chars per source file fed to the LLM
 _MAX_FILES_PER_AREA = 5   # source files included per tutorial
@@ -57,12 +70,21 @@ class TutorialGenerator:
 
     Args:
         repo_path:    Absolute path to the repository being tutorialized.
-        model:        Ollama model name (e.g. "llama3.2", "mistral").
+        model:        Model name used when falling back to local Ollama
+                      (e.g. "llama3.2", "mistral").
         store:        Open KnowledgeStore to write tutorials into.
         progress_cb:  Optional callback(message: str) called at each step.
-        ollama_base:  Base URL of the Ollama daemon.
+        ollama_base:  Base URL of the Ollama daemon (local fallback only).
         ollama_timeout: Per-request timeout in seconds.
+        workspace_path: Project root whose `.waterfree/providers.json` may route
+                      the `tutorial` stage to a remote provider such as
+                      OpenRouter. Omit to stay on local Ollama.
+        document:     Pre-loaded provider profile. The extension host passes one
+                      because it carries API keys from VS Code SecretStorage;
+                      CLI callers leave it None and the profile is read from disk.
     """
+
+    STAGE = "tutorial"
 
     def __init__(
         self,
@@ -72,6 +94,8 @@ class TutorialGenerator:
         progress_cb: Optional[Callable[[str], None]] = None,
         ollama_base: str = "http://localhost:11434",
         ollama_timeout: int = 180,
+        workspace_path: str = "",
+        document: object | None = None,
     ):
         self.repo_path = repo_path
         self.repo_name = repo_path.name
@@ -80,17 +104,42 @@ class TutorialGenerator:
         self.progress_cb = progress_cb or (lambda _: None)
         self._base = ollama_base
         self._timeout = ollama_timeout
+        self.target: ChatTarget = self._resolve_target(workspace_path, document)
+
+    def _resolve_target(self, workspace_path: str, document: object | None) -> ChatTarget:
+        """Honour an explicit local base URL, otherwise consult the profile.
+
+        `__main__.py` exposes --base/--model for driving a specific daemon, so a
+        non-default `ollama_base` is treated as a deliberate pin and skips
+        provider resolution entirely.
+        """
+        if self._base != "http://localhost:11434":
+            return ChatTarget(
+                provider_type="ollama",
+                provider_label="Ollama (local)",
+                model=self.model,
+                base_url=self._base,
+                api_key="",
+            )
+        if not workspace_path and document is None:
+            return local_ollama_target(self.model)
+        return resolve_chat_target(
+            stage=self.STAGE,
+            workspace_path=workspace_path,
+            document=document,
+            fallback_model=self.model,
+        )
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
     def _chat(self, system: str, user: str) -> str:
-        return _ollama.chat(
-            model=self.model,
-            messages=[
+        return _chat_provider(
+            [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            base=self._base,
+            target=self.target,
+            max_tokens=_MAX_OUTPUT_TOKENS,
             timeout=self._timeout,
         )
 
@@ -241,7 +290,7 @@ Be specific — reference actual code from the provided files. Aim for 350-600 w
         self.progress_cb(f"Generating tutorial: {area_name}...")
         try:
             tutorial_md = self._chat(system, user)
-        except _ollama.OllamaError:
+        except ChatUnavailable:
             raise
         except Exception as exc:
             log.error("Tutorial generation failed for '%s': %s", area_name, exc)
@@ -353,7 +402,7 @@ Be specific — reference actual code from the provided files. Aim for 350-600 w
                     self.progress_cb(f"  Stored: {entry.title}")
                 else:
                     self.progress_cb(f"  Already in store (duplicate content): {entry.title}")
-            except _ollama.OllamaError:
+            except ChatUnavailable:
                 raise
             except Exception as exc:
                 log.error("Skipping area '%s': %s", area.get("name"), exc)

@@ -62,5 +62,6 @@ export class CommandRegistry {
     register("waterfree.refineWizardIdea", (ctx?: unknown) => c.cmdRefineWizardIdea(ctx));
     register("waterfree.openSettings", () => c.cmdOpenSettings());
     register("waterfree.openMonitorPanel", () => c.cmdOpenMonitorPanel());
+    register("waterfree.delegateToAcpSubagent", () => c.cmdDelegateToAcpSubagent());
   }
 }

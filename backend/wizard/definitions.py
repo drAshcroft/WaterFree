@@ -179,6 +179,31 @@ def stage_template_for_stage_id(stage_id: str, subsystem_name: str = "") -> Stag
     raise ValueError(f"Unknown stage id: {stage_id}")
 
 
+def external_market_research_prompt(goal: str) -> str:
+    """
+    The memo prompt handed to the user when web tools are unavailable, for pasting
+    into an external web-enabled model.
+
+    Lives here, beside MARKET_RESEARCH_TEMPLATE, because its section headings must
+    match that template's chunk titles — the pasted memo is split back into those
+    chunks, and a heading that drifts from the template lands in the wrong one.
+    Two copies of this text previously drifted apart; keep it single-sourced.
+    """
+    similar = MARKET_RESEARCH_TEMPLATE.chunks[1]
+    audience = MARKET_RESEARCH_TEMPLATE.chunks[2]
+    return (
+        "Research this software idea on the live web and return a concise market memo.\n\n"
+        f"Idea: {goal}\n\n"
+        "Populate these sections:\n"
+        f"- {similar.title}: comparable products, adjacent niches, what looks strong, weak, or differentiated\n"
+        f"- {audience.title}: likely audiences, pains, urgency, and why they would care\n"
+        "\nAlso cover:\n"
+        "- realistic MVP\n"
+        "- pricing or monetization signals if visible\n"
+        "- risks or reasons the idea may fail\n"
+    )
+
+
 def wizard_root(workspace_path: str, run_id: str) -> Path:
     return Path(workspace_path).resolve() / ".waterfree" / "wizards" / run_id
 

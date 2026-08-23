@@ -403,17 +403,11 @@ class WizardStageRunner:
 
         external_prompt = ""
         if stage_kind == "market_research" and not metadata.get("webToolsEnabled"):
-            external_prompt = (
-                "Research this software idea on the live web and return a concise market memo.\n\n"
-                f"Idea: {goal}\n\n"
-                "Cover:\n"
-                "- comparable products and niches\n"
-                "- what feels differentiated or weak\n"
-                "- likely target audiences\n"
-                "- realistic MVP\n"
-                "- pricing or monetization signals if visible\n"
-                "- risks or reasons the idea may fail\n"
-            )
+            # Previously a drifted copy whose flat bullets did not match the
+            # template's chunk titles, so pasted memos mapped back poorly.
+            from backend.wizard.definitions import external_market_research_prompt
+
+            external_prompt = external_market_research_prompt(goal)
 
         return {
             "stageSummary": f"{stage_title} drafted for {goal}.",

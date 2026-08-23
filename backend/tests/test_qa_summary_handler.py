@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,12 @@ class QaSummaryHandlerTests(unittest.TestCase):
                     },
                 )
 
-            qa_summary_mock.assert_called_once_with(expected_source, "What changed?")
+            qa_summary_mock.assert_called_once_with(
+                expected_source,
+                "What changed?",
+                workspace_path=os.path.abspath(str(workspace)),
+                document=None,
+            )
             self.assertEqual(result["source"], expected_source)
             self.assertEqual(result["response"], "Summary response")
 
@@ -55,7 +61,12 @@ class QaSummaryHandlerTests(unittest.TestCase):
                 },
             )
 
-        qa_summary_mock.assert_called_once_with("https://example.com/doc", "Summarize this")
+        qa_summary_mock.assert_called_once_with(
+            "https://example.com/doc",
+            "Summarize this",
+            workspace_path=os.path.abspath("C:/Projects/WaterFree"),
+            document=None,
+        )
         self.assertEqual(result["response"], "Remote response")
 
 

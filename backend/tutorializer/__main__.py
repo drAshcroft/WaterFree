@@ -19,7 +19,8 @@ import sys
 from pathlib import Path
 
 from backend.knowledge.store import KnowledgeStore
-from backend.tutorializer import ollama as _ollama
+from backend.llm import ollama_client as _ollama
+from backend.llm.chat_client import ChatUnavailable
 from backend.tutorializer.generator import TutorialGenerator
 
 
@@ -189,8 +190,10 @@ def main() -> None:
 
     try:
         count = generator.run(focus=focus, areas_override=areas_override)
-    except _ollama.OllamaError as exc:
-        print(f"\nOllama error: {exc}")
+    except ChatUnavailable as exc:
+        # The pipeline may now be routed to a remote gateway, so the failure
+        # type is provider-neutral. Model discovery below stays Ollama-specific.
+        print(f"\nProvider error: {exc}")
         sys.exit(1)
     except KeyboardInterrupt:
         print("\n\nAborted.")

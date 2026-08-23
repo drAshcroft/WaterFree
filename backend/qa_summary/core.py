@@ -1,8 +1,13 @@
 """
-Large-file / URL QA + summarization powered by local Ollama.
+Large-file / URL QA + summarization.
 
 Reads a file or URL, splits into chunks, fans out one analysis per chunk,
 reduces them into a single synthesis, then renders a final answer.
+
+The model is chosen by `backend.llm.chat_client` from the `qa_summary` stage in
+`.waterfree/providers.json`, so this runs against either the local Ollama GPU
+(the default) or a remote gateway such as OpenRouter. Every request in one run
+uses the same target, resolved once up front.
 
 Previously lived in `backend/mcp_qa_summary.py`; extracted so the logic
 remains after the MCP server scaffolding is removed.
@@ -17,14 +22,15 @@ import urllib.parse
 import urllib.request
 from html import unescape
 from html.parser import HTMLParser
+from typing import Any
 
-from backend.tutorializer import ollama as ollama_client
+from backend.llm.chat_client import ChatTarget, ChatUnavailable, chat, preflight, resolve_chat_target
 
+_STAGE = "qa_summary"
+# Used only when no provider claims the qa_summary stage, i.e. the local default.
 _DEFAULT_MODEL = os.environ.get("WATERFREE_QA_SUMMARY_MODEL", "freehuntx/qwen3-coder:14b")
-_DEFAULT_OLLAMA_BASE = os.environ.get("WATERFREE_OLLAMA_BASE", "http://localhost:11434")
-_OLLAMA_KEEP_ALIVE = os.environ.get("WATERFREE_QA_SUMMARY_KEEP_ALIVE", "30m")
 _READ_TIMEOUT_SECONDS = 45
-_OLLAMA_TIMEOUT_SECONDS = 240
+_CHAT_TIMEOUT_SECONDS = 240
 _CHUNK_SIZE_CHARS = 12000
 _REDUCTION_BATCH_SIZE = 6
 _ANALYSIS_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_ANALYSIS_TOKENS", "512"))
@@ -32,8 +38,13 @@ _FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_FINAL_TOKENS", "256
 _DETAILED_FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_DETAILED_TOKENS", "1024"))
 
 
-class OllamaUnavailable(RuntimeError):
-    """Raised when Ollama is not reachable or the requested model is missing."""
+class OllamaUnavailable(ChatUnavailable):
+    """Backwards-compatible alias for :class:`ChatUnavailable`.
+
+    Kept so existing callers that catch `OllamaUnavailable` keep working now
+    that the provider is not necessarily Ollama. Catch `ChatUnavailable` in new
+    code -- it is the type actually raised.
+    """
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -144,39 +155,14 @@ def _split_into_chunks(text: str, max_chars: int = _CHUNK_SIZE_CHARS) -> list[st
     return chunks
 
 
-def _ensure_ollama_ready(model: str) -> None:
-    if not ollama_client.ensure_daemon(base=_DEFAULT_OLLAMA_BASE):
-        raise OllamaUnavailable(
-            f"Ollama is not reachable at {_DEFAULT_OLLAMA_BASE}. Start it with `ollama serve`."
-        )
-
-    models = [name.lower() for name in ollama_client.list_models(base=_DEFAULT_OLLAMA_BASE)]
-    model_lower = model.lower()
-    if ":" in model_lower:
-        installed = model_lower in models or f"{model_lower}:latest" in models
-    else:
-        installed = any(name.split(":", 1)[0] == model_lower for name in models)
-    if not installed:
-        available = ", ".join(models[:12]) or "<none>"
-        raise OllamaUnavailable(
-            f"Ollama model '{model}' is not available. Installed models: {available}"
-        )
-
-
-def _ollama_chat(messages: list[dict[str, str]], *, num_predict: int) -> str:
-    return ollama_client.chat(
-        model=_DEFAULT_MODEL,
-        messages=messages,
-        base=_DEFAULT_OLLAMA_BASE,
-        timeout=_OLLAMA_TIMEOUT_SECONDS,
-        keep_alive=_OLLAMA_KEEP_ALIVE,
-        options={
-            "num_predict": num_predict,
-        },
-    ).strip()
-
-
-def _analyze_chunk(chunk: str, *, chunk_index: int, chunk_total: int, question: str) -> str:
+def _analyze_chunk(
+    chunk: str,
+    *,
+    target: ChatTarget,
+    chunk_index: int,
+    chunk_total: int,
+    question: str,
+) -> str:
     system_prompt = (
         "You are a careful technical analyst. Analyze only the provided chunk. "
         "Extract only facts relevant to the question. Be concise."
@@ -189,16 +175,17 @@ def _analyze_chunk(chunk: str, *, chunk_index: int, chunk_total: int, question: 
         "----- END CHUNK -----\n\n"
         "Return concise notes focused on this question. Do not answer unrelated points."
     )
-    return _ollama_chat(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        num_predict=_ANALYSIS_MAX_TOKENS,
-    )
+    return _chat(target, system_prompt, user_prompt, max_tokens=_ANALYSIS_MAX_TOKENS)
 
 
-def _merge_note_batch(batch: list[str], *, question: str, round_index: int, batch_index: int) -> str:
+def _merge_note_batch(
+    batch: list[str],
+    *,
+    target: ChatTarget,
+    question: str,
+    round_index: int,
+    batch_index: int,
+) -> str:
     system_prompt = (
         "Combine multiple partial analyses into one concise synthesis. "
         "Preserve only details needed to answer the question. Remove duplicates."
@@ -210,16 +197,10 @@ def _merge_note_batch(batch: list[str], *, question: str, round_index: int, batc
         "Merge these analyses into concise answer notes:\n\n"
         f"{joined}"
     )
-    return _ollama_chat(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        num_predict=_ANALYSIS_MAX_TOKENS,
-    )
+    return _chat(target, system_prompt, user_prompt, max_tokens=_ANALYSIS_MAX_TOKENS)
 
 
-def _reduce_chunk_notes(notes: list[str], question: str) -> str:
+def _reduce_chunk_notes(notes: list[str], question: str, *, target: ChatTarget) -> str:
     if not notes:
         return ""
     if len(notes) == 1:
@@ -238,6 +219,7 @@ def _reduce_chunk_notes(notes: list[str], question: str) -> str:
             merged_round.append(
                 _merge_note_batch(
                     batch,
+                    target=target,
                     question=question,
                     round_index=round_index,
                     batch_index=batch_index,
@@ -248,7 +230,13 @@ def _reduce_chunk_notes(notes: list[str], question: str) -> str:
     return current[0]
 
 
-def _render_final_answer(synthesis: str, *, question: str, file_or_url: str) -> str:
+def _render_final_answer(
+    synthesis: str,
+    *,
+    target: ChatTarget,
+    question: str,
+    file_or_url: str,
+) -> str:
     system_prompt = (
         "You answer questions using synthesized notes. Answer directly and stop. "
         "Do not add sections, caveats, suggested checks, or extra explanation unless the question asks for them."
@@ -260,12 +248,18 @@ def _render_final_answer(synthesis: str, *, question: str, file_or_url: str) -> 
         f"{synthesis}\n\n"
         "Answer the question directly. Use the shortest complete answer that satisfies the question."
     )
-    return _ollama_chat(
+    return _chat(target, system_prompt, user_prompt, max_tokens=_final_token_budget(question))
+
+
+def _chat(target: ChatTarget, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str:
+    return chat(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        num_predict=_final_token_budget(question),
+        target=target,
+        max_tokens=max_tokens,
+        timeout=_CHAT_TIMEOUT_SECONDS,
     )
 
 
@@ -287,18 +281,38 @@ def _final_token_budget(question: str) -> int:
     return _FINAL_MAX_TOKENS
 
 
-def run_qa_summary(file_or_url: str, question: str) -> dict:
-    """Read a file or URL, chunk it, summarize with Ollama, answer the question.
+def run_qa_summary(
+    file_or_url: str,
+    question: str,
+    *,
+    workspace_path: str = "",
+    document: Any | None = None,
+) -> dict:
+    """Read a file or URL, chunk it, summarize it, answer the question.
 
-    Returns a dict suitable for JSON serialization. Raises OllamaUnavailable if
-    the daemon is down or the model isn't installed.
+    The provider comes from the `qa_summary` stage in the workspace's
+    `.waterfree/providers.json`; with nothing routed there it falls back to
+    local Ollama. `document` is an already-loaded profile (the extension host
+    passes one because it carries API keys from SecretStorage); the CLI leaves
+    it None and the profile is read from disk.
+
+    Returns a dict suitable for JSON serialization. Raises ChatUnavailable when
+    the target cannot serve the request.
     """
     if not file_or_url.strip():
         raise ValueError("file_or_url is required.")
     if not question.strip():
         raise ValueError("question is required.")
 
-    _ensure_ollama_ready(_DEFAULT_MODEL)
+    target = resolve_chat_target(
+        stage=_STAGE,
+        workspace_path=workspace_path,
+        document=document,
+        fallback_model=_DEFAULT_MODEL,
+    )
+    # One preflight per run rather than a failure on chunk 1 of N.
+    preflight(target)
+
     source_text = _read_source_text(file_or_url)
     if not source_text.strip():
         raise RuntimeError("Source content is empty.")
@@ -313,15 +327,17 @@ def run_qa_summary(file_or_url: str, question: str) -> dict:
         chunk_notes.append(
             _analyze_chunk(
                 chunk,
+                target=target,
                 chunk_index=idx,
                 chunk_total=total_chunks,
                 question=question,
             )
         )
 
-    merged_notes = _reduce_chunk_notes(chunk_notes, question)
+    merged_notes = _reduce_chunk_notes(chunk_notes, question, target=target)
     final_answer = _render_final_answer(
         merged_notes,
+        target=target,
         question=question,
         file_or_url=file_or_url,
     )
@@ -329,7 +345,8 @@ def run_qa_summary(file_or_url: str, question: str) -> dict:
     return {
         "source": file_or_url,
         "question": question,
-        "model": _DEFAULT_MODEL,
+        "model": target.model,
+        "provider": target.provider_type,
         "source_characters": len(source_text),
         "chunks_processed": total_chunks,
         "response": final_answer,

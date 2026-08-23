@@ -145,13 +145,17 @@ Mirrors `backend/mcp_testing.py`. Auto-detects unittest/pytest/jest/vitest.
 
 ## Area: qa-summary
 
-Mirrors `backend/mcp_qa_summary.py`. Requires local Ollama.
+Implemented in `backend/qa_summary/core.py`. Runs on local Ollama by default;
+route the `qa_summary` stage in `.waterfree/providers.json` to an `openrouter`
+provider to run it remotely instead (key from `$OPENROUTER_API_KEY`, since the
+CLI cannot read VS Code SecretStorage).
 
 | Action       | Flags / args |
 |--------------|--------------|
-| `ask`        | `<file-or-url>`, `--question Q` (or `-q`) |
+| `ask`        | `<file-or-url>`, `--question Q` (or `-q`), `--workspace PATH` |
 
-Exit code `4` if Ollama isn't running or the configured model is missing.
+Exit code `4` if the resolved provider is unavailable — Ollama not running, the
+model not installed, or no API key for a remote provider.
 
 ## Out of scope (deliberately)
 

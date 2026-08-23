@@ -43,17 +43,10 @@ def _normalize_goal_text(raw: str) -> str:
 
 
 def _external_market_research_prompt(goal: str) -> str:
-    return (
-        "Research this software idea on the live web and return a concise market memo.\n\n"
-        f"Idea: {goal}\n\n"
-        "Populate these sections:\n"
-        "- Similar Ideas and Niches: comparable products, adjacent niches, what looks strong, weak, or differentiated\n"
-        "- Who Wants This?: likely audiences, pains, urgency, and why they would care\n"
-        "\nAlso cover:\n"
-        "- realistic MVP\n"
-        "- pricing or monetization signals if visible\n"
-        "- risks or reasons the idea may fail\n"
-    )
+    # Single-sourced beside the template whose chunk titles it must match.
+    from backend.wizard.definitions import external_market_research_prompt
+
+    return external_market_research_prompt(goal)
 
 
 def _parse_who_for(extra_context: str) -> tuple[str, str]:

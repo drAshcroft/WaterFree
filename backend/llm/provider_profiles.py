@@ -10,6 +10,12 @@ from typing import Any
 
 DEFAULT_PROFILE_PATH = (".waterfree", "providers.json")
 
+# OpenRouter speaks the OpenAI Chat Completions dialect at a fixed gateway URL.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# Fallback for entry points that cannot reach VS Code SecretStorage — notably
+# the standalone `waterfree` CLI, which runs outside the extension host.
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+
 DEFAULT_SUMMARIZATION_THRESHOLDS: dict[str, int] = {
     "EXECUTION": 60_000,
     "PLANNING": 30_000,
@@ -18,6 +24,10 @@ DEFAULT_SUMMARIZATION_THRESHOLDS: dict[str, int] = {
     "LIVE_DEBUG": 20_000,
     "RIPPLE_DETECTION": 15_000,
     "QUESTION_ANSWER": 15_000,
+    # Map/reduce readers feed one chunk at a time, so their working context is
+    # already bounded by the chunker; summarization only needs to catch runaways.
+    "QA_SUMMARY": 20_000,
+    "TUTORIAL": 20_000,
 }
 DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
     "planning",
@@ -29,6 +39,17 @@ DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
     "alter_annotation",
     "knowledge",
 )
+# Map/reduce readers: `waterfree qa-summary` over a large file/URL, and tutorial
+# generation. Deliberately EXCLUDED from DEFAULT_PROVIDER_STAGES: that tuple is
+# the "this provider serves everything" default, so including them would silently
+# hand every existing install's bulk summarization to whatever expensive provider
+# happens to be first in the fallback order. A provider must name a reader stage
+# in routing.useForStages to claim it; otherwise readers stay on local Ollama.
+READER_STAGES: tuple[str, ...] = (
+    "qa_summary",
+    "tutorial",
+)
+ALL_PROVIDER_STAGES: tuple[str, ...] = DEFAULT_PROVIDER_STAGES + READER_STAGES
 DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
     "claude": {
         "default": "claude-sonnet-4-6",
@@ -64,6 +85,17 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "annotation": "gemini-2.0-flash",
         "execution": "gemini-2.0-flash",
         "debug": "gemini-2.0-flash-lite",
+    },
+    "openrouter": {
+        # OpenRouter model ids are always "vendor/model". These are defaults only —
+        # the catalog is far too large to enumerate, so any id is accepted.
+        "default": "anthropic/claude-sonnet-4.5",
+        "planning": "anthropic/claude-sonnet-4.5",
+        "annotation": "anthropic/claude-haiku-4.5",
+        "execution": "anthropic/claude-sonnet-4.5",
+        "debug": "anthropic/claude-haiku-4.5",
+        "qa_summary": "qwen/qwen3-coder",
+        "tutorial": "qwen/qwen3-coder",
     },
     "qwen": {
         "default": "qwen-plus",
@@ -265,6 +297,9 @@ def default_provider_profile_document(provider_type: str) -> ProviderProfileDocu
         "groq": "groq-default",
         "ollama": "ollama-default",
         "huggingface": "huggingface-default",
+        "openrouter": "openrouter-default",
+        "gemini": "gemini-default",
+        "qwen": "qwen-default",
         "mock": "mock-default",
     }[normalized_type]
     return normalize_provider_profile({
@@ -467,6 +502,15 @@ def normalize_provider_type(raw: Any) -> str:
         return "ollama"
     if value in {"huggingface", "hf"}:
         return "huggingface"
+    if value in {"openrouter", "open-router", "open_router"}:
+        return "openrouter"
+    # gemini/qwen are declared in DEFAULT_STAGE_MODELS and have working adapters,
+    # but were never accepted here — a profile of either type normalized to "" and
+    # silently lost its identity.
+    if value in {"gemini", "google"}:
+        return "gemini"
+    if value in {"qwen", "dashscope"}:
+        return "qwen"
     if value == "mock":
         return "mock"
     return ""
@@ -478,6 +522,8 @@ def normalize_connection_style(provider_type: str, raw: Any, base_url: str) -> s
         return "none"
     if provider_type == "ollama":
         return "local"
+    if provider_type == "openrouter":
+        return "compatible"
     if value in {"native", "compatible", "local", "none"}:
         return value
     if base_url:
@@ -489,6 +535,8 @@ def normalize_base_url(provider_type: str, raw: Any) -> str:
     url = str(raw or "").strip().rstrip("/")
     if provider_type == "ollama":
         return url or "http://localhost:11434"
+    if provider_type == "openrouter":
+        return url or OPENROUTER_BASE_URL
     return url
 
 
@@ -677,5 +725,8 @@ def default_provider_label(provider_type: str) -> str:
         "groq": "Groq",
         "ollama": "Ollama",
         "huggingface": "Hugging Face",
+        "openrouter": "OpenRouter",
+        "gemini": "Gemini",
+        "qwen": "Qwen",
         "mock": "Mock",
     }.get(provider_type, provider_type.title())

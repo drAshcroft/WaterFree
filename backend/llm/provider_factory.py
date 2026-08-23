@@ -7,7 +7,11 @@ from typing import Any
 
 from backend.llm.adapters import get_adapter
 from backend.llm.adapters.openai_adapter import OpenAIAdapter
-from backend.llm.provider_profiles import ProviderPolicies, ProviderProfile
+from backend.llm.provider_profiles import (
+    OPENROUTER_BASE_URL,
+    ProviderPolicies,
+    ProviderProfile,
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,11 @@ def build_runtime_spec(
         elif provider_type == "openai":
             metadata = OpenAIAdapter.build_metadata(profile, stage_key, persona, session_key)
             config.update(metadata)
+        elif provider_type == "openrouter":
+            # Deliberately no OpenAIAdapter.build_metadata here: its
+            # responses-API and prompt_cache_key fields are rejected by the
+            # OpenRouter gateway. See adapters/openrouter_adapter.py.
+            config["base_url"] = profile.connection.base_url or OPENROUTER_BASE_URL
         elif provider_type == "gemini":
             gemini_opts = profile.optimizations.gemini
             config["enable_implicit_caching"] = bool(gemini_opts.get("enableImplicitCaching", True))

@@ -55,6 +55,8 @@ def handle_analyze_tutorialize_repo(server, params: dict) -> dict:
         repo_path=repo_dir,
         model=_resolve_tutorialize_model(server, workspace_path),
         store=store,
+        workspace_path=workspace_path,
+        document=_synced_profile(server, workspace_path),
     )
 
     # Phase 1: repo analysis
@@ -136,6 +138,8 @@ def handle_generate_tutorials(server, params: dict) -> dict:
         model=_resolve_tutorialize_model(server, workspace_path),
         store=store,
         progress_cb=lambda msg: progress_messages.append(msg),
+        workspace_path=workspace_path,
+        document=_synced_profile(server, workspace_path),
     )
 
     added = 0
@@ -265,3 +269,19 @@ def _resolve_tutorialize_model(server, workspace_path: str) -> str:
     except Exception:
         pass
     return os.environ.get("WATERFREE_TUTORIALIZE_MODEL", "freehuntx/qwen3-coder:14b")
+
+
+def _synced_profile(server, workspace_path: str):
+    """The in-memory provider profile, which carries SecretStorage API keys.
+
+    The copy on disk never holds keys, so hand the resolver this one when the
+    extension host has synced it. Returns None on any failure -- the resolver
+    falls back to local Ollama.
+    """
+    getter = getattr(server, "_get_provider_profile", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(workspace_path)
+    except Exception:
+        return None
