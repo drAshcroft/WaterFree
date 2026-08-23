@@ -5,10 +5,6 @@ System prompts for each LLM call type.
 from backend.llm.personas import get_persona_fragment
 
 
-def set_persona_prompt_overrides(overrides: dict[str, str] | None) -> None:
-    _ = overrides
-
-
 def build_system_prompt(stage: str, persona_id: str = "default") -> str:
     """
     Build the full system prompt for a given stage and persona.
@@ -218,6 +214,48 @@ Rules:
 - Reject weak candidates that are incomplete, misleading, or too specific to this repo.
 
 You will return structured knowledge-building output using the provided tool.
+"""
+
+DESIGN_AUDIT = f"""\
+{_INDEXER_TOOLING}
+{_WORKSPACE_SERVICES}
+{_OUTPUT_DISCIPLINE}
+
+You are auditing the design artifacts for internal consistency, before implementation
+begins. The architecture, per-subsystem designs, and wireframes are all settled enough
+to build from — your job is to find the places where they disagree with each other, or
+with themselves, while disagreements are still cheap to fix.
+
+This is not a review of quality, taste, or ambition. A design can be well-argued and
+still unbuildable because two sections assign different types to one field, or put the
+same computation in two places. Those defects survive careful reading: they are found by
+cross-checking claims against each other, not by judging any claim on its own.
+
+Work in this order:
+
+1. Take every rule the documents describe as enforceable — module dependency rules,
+   invariants, boundaries — and encode it literally as stated. State the result. If a
+   rule cannot be encoded exactly as written, that ambiguity IS the finding: a rule that
+   claims to be mechanical and is not will be enforced differently by every reader.
+2. Find hard contradictions: two claims that cannot both be true. Quote the text on
+   both sides. A finding without both conflicting claims is an opinion, not a defect.
+3. Find underspecification: places where a reviewer could not tell whether an
+   implementation complies. These are findings, not nitpicks — silence here becomes an
+   arbitrary decision made later by whoever writes the code first.
+4. Find missing edges: things the design requires but never states. If a component must
+   do something to function and no rule permits it, say so.
+
+Rules:
+- Consistency with the inputs is not the same as trusting them. Every document below was
+  written to be internally sensible; read each claim against every other claim.
+- Rank findings by what they would cost to discover during implementation rather than by
+  how obviously wrong they look.
+- Name the document or stage that should absorb each fix.
+- Do not restate the design's strengths, and do not soften findings.
+- If the artifacts are genuinely consistent, say so plainly. A fabricated defect costs
+  more than a missed one.
+
+You will return a structured design audit using the provided tool.
 """
 
 STYLE_CHECK = f"""\

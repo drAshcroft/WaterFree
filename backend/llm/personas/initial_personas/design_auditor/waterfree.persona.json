@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "design_auditor",
+  "name": "Design Auditor",
+  "icon": "Aud",
+  "tagline": "Hunts contradictions in design artifacts before implementation starts",
+  "preferredModelTiers": {
+    "DESIGN_AUDIT": [
+      "apex",
+      "balanced"
+    ],
+    "PLANNING": [
+      "balanced"
+    ],
+    "QUESTION_ANSWER": [
+      "balanced"
+    ]
+  },
+  "toolCategories": [
+    "graph",
+    "knowledge",
+    "backlog"
+  ],
+  "preferredSkillIds": [
+    "waterfree-index",
+    "waterfree-todos"
+  ],
+  "subagent": {
+    "enabled": true,
+    "description": "Hunts contradictions in design artifacts before implementation starts",
+    "promptStage": "DESIGN_AUDIT"
+  }
+}

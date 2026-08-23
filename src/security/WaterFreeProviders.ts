@@ -192,14 +192,7 @@ export interface ProviderProfilePolicies {
   reloadMode: ProviderReloadMode;
   modelTierRoutes: Record<string, ProviderModelTierRoute>;
   personaAssignments: ProviderPersonaAssignment[];
-  personaPromptOverrides: Record<string, string>;
   summarizationThresholds: Partial<Record<string, number>>;
-}
-
-export interface ProviderPersonaCustomization {
-  personaId: string;
-  prompt: string;
-  assignments: Array<Omit<ProviderPersonaAssignment, "personaId">>;
 }
 
 export interface ProviderProfileDocument {
@@ -396,7 +389,6 @@ const DEFAULT_POLICIES: ProviderProfilePolicies = {
   reloadMode: "on_change",
   modelTierRoutes: {},
   personaAssignments: [],
-  personaPromptOverrides: {},
   summarizationThresholds: {
     EXECUTION: 60000,
     PLANNING: 30000,
@@ -576,36 +568,6 @@ export class WaterFreeProviders {
     await this._persistProfile();
   }
 
-  async setPersonaCustomizations(customizations: ProviderPersonaCustomization[]): Promise<void> {
-    const personaAssignments: ProviderPersonaAssignment[] = [];
-    const personaPromptOverrides: Record<string, string> = {};
-    for (const item of customizations) {
-      const personaId = String(item.personaId || "").trim().toLowerCase();
-      if (!personaId) { continue; }
-      const prompt = String(item.prompt || "").trim();
-      if (prompt) {
-        personaPromptOverrides[personaId] = prompt;
-      }
-      for (const assignment of item.assignments || []) {
-        personaAssignments.push({
-          personaId,
-          providerId: assignment.providerId,
-          model: assignment.model || "",
-          stages: Array.isArray(assignment.stages) ? assignment.stages.slice() : [],
-        });
-      }
-    }
-    this._profile = normalizeProfileDocument({
-      ...this._profile,
-      policies: {
-        ...this._profile.policies,
-        personaAssignments,
-        personaPromptOverrides,
-      },
-    });
-    await this._persistProfile();
-  }
-
   async toggle(id: string): Promise<void> {
     const entry = this._profile.catalog.find((item) => item.id === id);
     if (!entry) { return; }
@@ -727,13 +689,11 @@ function normalizeProfileDocument(raw: unknown): ProviderProfileDocument {
         reloadMode: source.policies.reloadMode === "manual" ? "manual" : "on_change",
         modelTierRoutes: normalizeModelTierRoutes(source.policies.modelTierRoutes, catalog),
         personaAssignments: normalizePersonaAssignments(source.policies.personaAssignments, catalog),
-        personaPromptOverrides: normalizePersonaPromptOverrides(source.policies.personaPromptOverrides),
         summarizationThresholds: normalizeSummarizationThresholds(source.policies.summarizationThresholds),
       } : {
         fallbackProviderOrder,
         modelTierRoutes: normalizeModelTierRoutes(undefined, catalog),
         personaAssignments: normalizePersonaAssignments(undefined, catalog),
-        personaPromptOverrides: normalizePersonaPromptOverrides(undefined),
       }),
     },
   };
@@ -943,21 +903,6 @@ function normalizePersonaAssignment(
     model: String(raw.model ?? "").trim(),
     stages: stages.length > 0 ? Array.from(new Set(stages)) : [...DEFAULT_PROVIDER_STAGES],
   };
-}
-
-function normalizePersonaPromptOverrides(raw: unknown): Record<string, string> {
-  if (!isRecord(raw)) {
-    return {};
-  }
-  const normalized: Record<string, string> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    const personaId = String(key || "").trim().toLowerCase();
-    const prompt = String(value || "").trim();
-    if (personaId && prompt) {
-      normalized[personaId] = prompt;
-    }
-  }
-  return normalized;
 }
 
 function normalizeFeatures(raw: unknown): ProviderProfileFeatures {

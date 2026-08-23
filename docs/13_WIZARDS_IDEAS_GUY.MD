@@ -36,6 +36,7 @@ Design has chunks: `Similar Subsystems`, `3rd party APIs`,`Subsystem Overview`, 
 - `Architect Review` uses `architect` and produces requirements, stack recommendations, roadmap, high-level design, open questions, and macro todos.
 - `Design Pattern Agent` uses `pattern_expert` and turns the architecture into subsystem boundaries, interfaces, data-flow policy, pattern choices, anti-pattern warnings, and subsystem todos.
 - `Wireframe Agents` uses `stub_wireframer` and turns subsystem todos into file/interface skeleton plans, pseudocode, stubs, and accepted micro prompts.
+- `Design Audit` uses the `design_auditor` persona/subagent and cross-checks the accepted architecture, subsystem designs, and wireframes against each other for contradictions, unencodable "enforceable" rules, underspecified points, and requirements the design needs but never states. It gates `BDD AI Tests`: this is the last step where a disagreement between design documents is a document edit rather than a defect found during implementation. Distinct from `Review`, which looks backwards at executed work.
 - `BDD AI Tests` uses a new `bdd_test_designer` persona/subagent and generates human-language acceptance scenarios plus test-oriented tasks tied to the micro prompts.
 - `Coding Agents` uses a new `coding_agent` persona/subagent only to convert accepted micro prompts and BDD tasks into executable session tasks. It does not re-plan from the raw idea.
 - `Review` uses a new `reviewer` persona/subagent and aggregates unresolved issues, blocked procedures, skipped items, diagnostics, and follow-up design work back into backlog tasks for the earlier agents.
@@ -46,7 +47,7 @@ Design has chunks: `Similar Subsystems`, `3rd party APIs`,`Subsystem Overview`, 
 - Add extension commands for wizard lifecycle: `openWizard`, `runWizardStep`, `acceptWizardStep`, `reviseWizardStep`, `promoteWizardTodos`, `startWizardCoding`, and `runWizardReview`.
 - Add bridge/server RPCs: `createWizardSession`, `getWizardSession`, `runWizardStep`, `acceptWizardStep`, `startWizardCoding`, and `runWizardReview`.
 - Add new backend types for `WizardRun`, `WizardStepState`, `WizardStepResult`, and `WizardTodoExport`.
-- Extend persona/subagent registries with `market_researcher`, `bdd_test_designer`, `coding_agent`, and `reviewer`.
+- Extend persona/subagent registries with `market_researcher`, `bdd_test_designer`, `coding_agent`, `design_auditor`, and `reviewer`.
 - Keep existing `createSession`, `generateAnnotation`, `executeTask`, `listTasks`, and `queueTodoInstruction` contracts intact.
 
 ## Test Plan

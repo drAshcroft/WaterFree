@@ -220,7 +220,14 @@ class ProviderProfileTests(unittest.TestCase):
 
         self.assertIsNot(first, second)
 
-    def test_server_sync_profile_ignores_persona_prompt_overrides(self) -> None:
+    def test_legacy_persona_prompt_overrides_are_dropped_not_honoured(self) -> None:
+        """
+        `personaPromptOverrides` was removed from the profile schema: personas are
+        edited as files, and a workspace-local profile able to rewrite the agent's
+        system prompt is a prompt-injection surface. A stored profile still
+        carrying the key must load cleanly, drop it on normalize, and leave the
+        persona's own fragment intact.
+        """
         workspace = str(make_test_dir(self, prefix="persona-prompt-"))
         server = Server()
         self.addCleanup(server.close)
@@ -242,6 +249,10 @@ class ProviderProfileTests(unittest.TestCase):
                 },
             },
         })
+
+        # The retired key survives neither the dataclass nor the round-trip.
+        self.assertFalse(hasattr(profile.policies, "persona_prompt_overrides"))
+        self.assertNotIn("personaPromptOverrides", profile.to_dict()["policies"])
 
         server._set_provider_profile(workspace, profile)
         prompt = build_system_prompt("PLANNING", "architect")

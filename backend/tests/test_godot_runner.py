@@ -110,6 +110,24 @@ class BinaryResolutionTests(unittest.TestCase):
             )
             self.assertEqual(resolve_godot_binary(tmp), str(exe))
 
+    def test_bom_prefixed_config_file_is_used(self) -> None:
+        """
+        Windows PowerShell 5.1's Out-File/Set-Content emit a UTF-8 BOM by default,
+        so a config written with `@{godotPath=...} | ConvertTo-Json | Out-File`
+        starts with EF BB BF. Reading it as plain utf-8 raises, the error is
+        swallowed, and the user is told Godot cannot be found while looking at
+        the setting they just wrote. Found running the real-project validation.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "godot.windows.editor.x86_64.exe"
+            exe.write_text("", encoding="utf-8")
+            config = Path(tmp) / ".waterfree"
+            config.mkdir()
+            (config / "config.json").write_text(
+                json.dumps({"godotPath": str(exe)}), encoding="utf-8-sig"
+            )
+            self.assertEqual(resolve_godot_binary(tmp), str(exe))
+
     def test_env_var_is_used_when_no_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / "godot.exe"

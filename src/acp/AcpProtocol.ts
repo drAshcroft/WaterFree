@@ -275,6 +275,41 @@ export interface RequestPermissionResult {
   outcome: { outcome: "selected"; optionId: string } | { outcome: "cancelled" };
 }
 
+// ── terminal ───────────────────────────────────────────────────────────────
+
+export interface TerminalCreateParams {
+  sessionId: string;
+  command: string;
+  args?: string[];
+  env?: Array<{ name: string; value: string }>;
+  cwd?: string;
+  /** Bytes of output to retain; older output is truncated from the front. */
+  outputByteLimit?: number;
+}
+
+export interface TerminalCreateResult {
+  terminalId: string;
+}
+
+/**
+ * `exitStatus` is null while the process is still running, which is how the
+ * agent distinguishes "no output yet" from "finished with no output".
+ */
+export interface TerminalOutputResult {
+  output: string;
+  truncated: boolean;
+  exitStatus: TerminalExitStatus | null;
+}
+
+export interface TerminalExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
+
+export interface TerminalWaitForExitResult {
+  exitStatus: TerminalExitStatus;
+}
+
 // ── method name constants ──────────────────────────────────────────────────
 
 export const AcpMethod = {
@@ -287,6 +322,11 @@ export const AcpMethod = {
   fsReadTextFile: "fs/read_text_file",
   fsWriteTextFile: "fs/write_text_file",
   requestPermission: "session/request_permission",
+  terminalCreate: "terminal/create",
+  terminalOutput: "terminal/output",
+  terminalWaitForExit: "terminal/wait_for_exit",
+  terminalKill: "terminal/kill",
+  terminalRelease: "terminal/release",
 } as const;
 
 // ── narrowing helpers ──────────────────────────────────────────────────────

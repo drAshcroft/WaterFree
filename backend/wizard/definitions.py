@@ -104,6 +104,45 @@ CODING_TEMPLATE = StageTemplate(
     ),
 )
 
+# Runs after the design artifacts exist and before BDD/coding consume them: the last
+# point where a contradiction between architecture, subsystem designs, and wireframes is
+# still a document edit rather than a defect discovered halfway through implementation.
+# Distinct from REVIEW_TEMPLATE, which looks backwards at work already executed.
+DESIGN_AUDIT_TEMPLATE = StageTemplate(
+    id="design_audit",
+    kind="design_audit",
+    title="Design Audit",
+    persona="design_auditor",
+    relative_doc_path="design-audit.md",
+    chunks=(
+        ChunkDef(
+            "enforceable_rules",
+            "Enforceable Rules",
+            "Encode every rule the design calls enforceable exactly as written, and state where it cannot be.",
+        ),
+        ChunkDef(
+            "contradictions",
+            "Contradictions",
+            "Pairs of claims that cannot both be true, quoting the text on both sides.",
+        ),
+        ChunkDef(
+            "underspecified",
+            "Underspecified",
+            "Points where a reviewer could not tell whether an implementation complies.",
+        ),
+        ChunkDef(
+            "missing_edges",
+            "Missing Requirements",
+            "Things the design needs in order to function but never states.",
+        ),
+        ChunkDef(
+            "audit_todos",
+            "Audit Todos",
+            "Route each confirmed finding to the document or stage that should absorb the fix.",
+        ),
+    ),
+)
+
 REVIEW_TEMPLATE = StageTemplate(
     id="review",
     kind="review",
@@ -166,6 +205,8 @@ def stage_template_for_stage_id(stage_id: str, subsystem_name: str = "") -> Stag
         return MARKET_RESEARCH_TEMPLATE
     if stage_id == ARCHITECT_TEMPLATE.id:
         return ARCHITECT_TEMPLATE
+    if stage_id == DESIGN_AUDIT_TEMPLATE.id:
+        return DESIGN_AUDIT_TEMPLATE
     if stage_id == BDD_TEMPLATE.id:
         return BDD_TEMPLATE
     if stage_id == CODING_TEMPLATE.id:

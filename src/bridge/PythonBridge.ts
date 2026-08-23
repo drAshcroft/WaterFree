@@ -442,16 +442,6 @@ export class PythonBridge implements vscode.Disposable {
     return this.request("listSubagents", {});
   }
 
-  delegateToSubagent(params: {
-    sessionId: string;
-    subagentId: string;
-    taskId: string;
-    prompt: string;
-    workspacePath?: string;
-  }): Promise<{ checkpointId?: string; result?: object | null }> {
-    return this.request("delegateToSubagent", params);
-  }
-
   createWizardSession(params: {
     goal: string;
     wizardId: string;

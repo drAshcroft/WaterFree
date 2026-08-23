@@ -15,6 +15,7 @@
  *   STUB_MODE=flaky         empty-content failure until STUB_FLAKY_FILE exists
  *   STUB_MODE=broke         end_turn whose content is an exhausted-account error
  *   STUB_MODE=echo          stream back the prompt text it received, nothing else
+ *   STUB_MODE=terminal      drive the terminal/* family and report what happened
  *
  * `flaky` coordinates across processes through a marker file because each
  * delegation attempt is a fresh process: in-process state cannot express
@@ -105,6 +106,38 @@ rl.on("line", async (line) => {
         const blocks = Array.isArray(msg.params.prompt) ? msg.params.prompt : [];
         const received = blocks.map((b) => (b && b.type === "text" ? b.text : "")).join("");
         update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: received } });
+        respond(msg.id, { stopReason: "end_turn" });
+        return;
+      }
+
+      if (MODE === "terminal") {
+        // Run a command, wait for it, read output, then release it — the full
+        // lifecycle an agent uses to run the tests it just wrote.
+        const created = await callClient("terminal/create", {
+          sessionId: SESSION_ID,
+          command: process.execPath,
+          args: ["-e", "console.log('hello from terminal'); process.exit(3)"],
+        });
+        const terminalId = created && created.terminalId;
+        const waited = await callClient("terminal/wait_for_exit", { sessionId: SESSION_ID, terminalId });
+        const out = await callClient("terminal/output", { sessionId: SESSION_ID, terminalId });
+
+        // Escaping the workspace must be refused the same way fs/* is.
+        const escaped = await callClient("terminal/create", {
+          sessionId: SESSION_ID,
+          command: process.execPath,
+          args: ["-e", "0"],
+          cwd: "../../..",
+        });
+
+        await callClient("terminal/release", { sessionId: SESSION_ID, terminalId });
+        const afterRelease = await callClient("terminal/output", { sessionId: SESSION_ID, terminalId });
+
+        update({ sessionUpdate: "agent_message_chunk", content: { type: "text",
+          text: `exit=${waited && waited.exitStatus ? waited.exitStatus.exitCode : "?"}; `
+            + `saw=${out && /hello from terminal/.test(out.output || "") ? "yes" : "no"}; `
+            + `escape_refused=${escaped && escaped.__error ? "yes" : "no"}; `
+            + `released=${afterRelease && afterRelease.__error ? "yes" : "no"}` } });
         respond(msg.id, { stopReason: "end_turn" });
         return;
       }

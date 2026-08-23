@@ -272,6 +272,11 @@
           "default": "",
           "description": "Absolute path to the Godot executable used to run Godot tests (GUT / gdUnit4). Leave blank to fall back to the WATERFREE_GODOT, GODOT_BIN or GODOT environment variables, then 'godot' on PATH. Godot ships many differently named builds, so WaterFree never guesses — point this at the exact binary you want, e.g. C:\\\\Godot\\\\godot.windows.editor.x86_64.exe."
         },
+        "waterfree.acpAllowTerminal": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let ACP subagents run shell commands through WaterFree, so an agent can run the tests it just wrote. Each command still requires explicit approval and runs inside the workspace, but this is a larger grant than file editing — leave it off unless you want it. When off, WaterFree advertises no terminal support and agents degrade to file edits."
+        },
         "waterfree.acpAgents": {
           "type": "array",
           "default": [],

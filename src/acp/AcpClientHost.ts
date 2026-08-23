@@ -9,6 +9,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { AcpClientHost } from "./AcpConnection";
+import { AcpTerminalHost } from "./AcpTerminalHost";
 
 export interface PermissionRequest {
   sessionId: string;
@@ -28,12 +29,35 @@ export interface WorkspaceClientHostOptions {
   resolvePermission: PermissionResolver;
   log?: (message: string) => void;
   onFileWritten?: (absolutePath: string) => void;
+  /**
+   * Let the agent run shell commands. Off by default and opt-in per delegation:
+   * running arbitrary commands is a strictly larger grant than editing files,
+   * so the caller states it rather than inheriting it.
+   */
+  allowTerminal?: boolean;
+  /** Asks the user to approve one command. Required when allowTerminal is set. */
+  confirmCommand?: (command: string, args: string[], cwd: string) => Promise<boolean>;
 }
 
 export class WorkspaceAcpClientHost implements AcpClientHost {
   private readonly _touchedFiles = new Set<string>();
+  /** Present only when the caller opted in; its presence is what advertises
+   * `terminal: true` during the initialize handshake. */
+  readonly terminal?: AcpTerminalHost;
 
-  constructor(private readonly _options: WorkspaceClientHostOptions) {}
+  constructor(private readonly _options: WorkspaceClientHostOptions) {
+    if (_options.allowTerminal) {
+      const confirm = _options.confirmCommand;
+      if (!confirm) {
+        throw new Error("allowTerminal requires confirmCommand: commands must be approvable.");
+      }
+      this.terminal = new AcpTerminalHost({
+        workspacePath: _options.workspacePath,
+        confirm,
+        log: _options.log,
+      });
+    }
+  }
 
   /** Absolute paths the agent wrote during this session, in write order. */
   get touchedFiles(): string[] {
@@ -114,27 +138,73 @@ export class WorkspaceAcpClientHost implements AcpClientHost {
 }
 
 /**
- * Default resolver: a modal quick-pick built from the agent's own options.
+ * Default resolver: a modal in the same language as WaterFree's annotation
+ * gesture, built from the agent's own options.
  *
- * Options come from the agent, so labels are rendered as data. The mapping to
- * WaterFree's approve/alter/redirect gesture is left to callers that have an
- * annotation in flight; this is the standalone fallback.
+ * Deliberately not a full approve/alter/redirect mapping. That gesture offers
+ * "alter" — send the agent different instructions — and ACP's permission
+ * response has no such outcome: the reply is one of the agent's own options, or
+ * cancelled. Offering an Alter button that silently degraded to a cancel would
+ * misrepresent what happened to the turn. Redirecting a delegation means
+ * cancelling it and delegating again, which the caller already controls.
+ *
+ * What is shared with that gesture: a modal rather than a dismissible list (a
+ * permission prompt clicked away by accident should not read as a decision),
+ * the ✓/✗ glyph language, and the tool call shown as detail.
+ *
+ * Agent-supplied labels are rendered as data, never interpreted as instructions.
  */
 export function createQuickPickPermissionResolver(): PermissionResolver {
   return async (request) => {
     const title = request.toolCall?.title || request.toolCall?.kind || "run a tool";
-    const items = request.options.map((option) => ({
-      label: option.name || option.optionId,
-      description: option.kind ?? "",
-      optionId: option.optionId,
-    }));
-    const picked = await vscode.window.showQuickPick(items, {
-      title: `${request.agentLabel} wants to ${title}`,
-      placeHolder: "Choose how to respond",
-      ignoreFocusOut: true,
-    });
-    return picked ? { optionId: picked.optionId } : "cancelled";
+    // Modal buttons are order-sensitive and limited, so lead with the allow and
+    // reject the agent actually offered rather than listing every variant.
+    const allow = pickOption(request.options, ["allow", "approve", "accept", "yes"]);
+    const reject = pickOption(request.options, ["reject", "deny", "no"]);
+
+    const buttons: string[] = [];
+    if (allow) { buttons.push(`✓ ${allow.name || "Approve"}`); }
+    if (reject) { buttons.push(`✗ ${reject.name || "Reject"}`); }
+    // An agent whose options match neither vocabulary still has to be answerable.
+    const extras = request.options.filter((o) => o !== allow && o !== reject);
+    for (const option of extras.slice(0, 4 - buttons.length)) {
+      buttons.push(option.name || option.optionId);
+    }
+
+    const choice = await vscode.window.showWarningMessage(
+      `${request.agentLabel} wants to ${title}.`,
+      { modal: true, detail: describeToolCall(request) },
+      ...buttons,
+    );
+    if (!choice) {
+      // Dismissal is a refusal, not a default-allow.
+      return "cancelled";
+    }
+    if (allow && choice === `✓ ${allow.name || "Approve"}`) {
+      return { optionId: allow.optionId };
+    }
+    if (reject && choice === `✗ ${reject.name || "Reject"}`) {
+      return { optionId: reject.optionId };
+    }
+    const matched = extras.find((o) => (o.name || o.optionId) === choice);
+    return matched ? { optionId: matched.optionId } : "cancelled";
   };
+}
+
+/** First option whose kind or id contains any of `tokens`. */
+function pickOption(
+  options: Array<{ optionId: string; name?: string; kind?: string }>,
+  tokens: string[],
+): { optionId: string; name?: string; kind?: string } | undefined {
+  return options.find((option) => {
+    const haystack = `${option.kind ?? ""} ${option.optionId}`.toLowerCase();
+    return tokens.some((token) => haystack.includes(token));
+  });
+}
+
+function describeToolCall(request: PermissionRequest): string {
+  const parts = [request.toolCall?.title, request.toolCall?.kind].filter(Boolean);
+  return parts.length ? parts.join("\n") : "The agent did not describe this tool call.";
 }
 
 /**

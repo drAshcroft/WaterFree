@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from backend.cli.dispatcher import dispatch
 from backend.cli._common import EXIT_OK, EXIT_USAGE
+from backend.cli.todos import _PRIORITIES, _STATUSES
+from backend.session.models import TaskPriority, TaskStatus
 from backend.test_support import make_temp_dir as make_test_dir
 from backend.todo.store import TaskStore
 
@@ -267,6 +269,37 @@ class TodosSchemaCliTests(unittest.TestCase):
         self.assertIn("status", schema["properties"])
         self.assertEqual(schema["properties"]["priority"]["enum"], ["P0", "P1", "P2", "P3", "spike"])
         self.assertIn("read-only-context", schema["$defs"]["codeCoord"]["properties"]["anchorType"]["enum"])
+
+    def test_update_flag_choices_track_the_enums(self) -> None:
+        """
+        The --status/--priority choices are derived, not hand-listed. Adding an
+        enum member must widen the CLI automatically; a literal tuple silently
+        rejects the new value at argparse before the store ever sees it.
+        """
+        self.assertEqual(set(_STATUSES), {member.value for member in TaskStatus})
+        self.assertEqual(set(_PRIORITIES), {member.value for member in TaskPriority})
+
+    def test_status_alias_is_accepted_by_patch_but_not_by_flag(self) -> None:
+        """
+        Lenient JSON API, strict flag surface — a deliberate asymmetry. Pinned so
+        that if the flags ever start accepting aliases it is a decision, not drift.
+        """
+        workspace = self.make_workspace()
+        exit_code, created = _run([
+            "todos", "add", "--workspace", str(workspace),
+            "--title", "Alias check", "--description", "d",
+        ])
+        self.assertEqual(exit_code, EXIT_OK)
+        task_id = created["id"]
+
+        patched_code, patched = _run([
+            "todos", "update", task_id, "--workspace", str(workspace),
+            "--patch", json.dumps({"status": "completed"}),
+        ])
+        self.assertEqual(patched_code, EXIT_OK)
+        self.assertEqual(patched["status"], "complete")
+
+        self.assertNotIn("completed", _STATUSES)
 
     def test_task_types_lists_model_values(self) -> None:
         exit_code, result = _run(["todos", "task-types"])

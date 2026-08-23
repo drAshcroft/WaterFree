@@ -33,10 +33,18 @@ from backend.session.models import (
 )
 from backend.todo.store import DuplicateKeyError, TaskNotFoundError, TaskStore
 
-# Statuses/priorities accepted by the discrete `update` flags. Kept in sync with
-# backend.session.task_models.TaskStatus / TaskPriority.
-_STATUSES = ("pending", "annotating", "negotiating", "executing", "complete", "skipped")
-_PRIORITIES = ("P0", "P1", "P2", "P3", "spike")
+# Statuses/priorities accepted by the discrete `update` flags, derived from the
+# enums so a new member widens the CLI automatically rather than silently failing
+# argparse validation until someone notices the literal list is stale.
+#
+# Canonical values only: `parse_enum` additionally accepts the aliases in
+# backend.session.enum_coercion (so `--patch '{"status":"completed"}'` works while
+# `--status completed` does not). That asymmetry is deliberate — the JSON API is
+# lenient about what it ingests, while the flag surface advertises exactly one
+# spelling per value, because argparse renders these choices in `--help` and a
+# list containing both "complete" and "completed" reads like two distinct states.
+_STATUSES = tuple(member.value for member in TaskStatus)
+_PRIORITIES = tuple(member.value for member in TaskPriority)
 _ENUM_TYPES: dict[str, type[Enum]] = {
     "priority": TaskPriority,
     "status": TaskStatus,

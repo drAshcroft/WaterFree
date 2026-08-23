@@ -20,6 +20,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
@@ -33,6 +34,10 @@ _READ_TIMEOUT_SECONDS = 45
 _CHAT_TIMEOUT_SECONDS = 240
 _CHUNK_SIZE_CHARS = 12000
 _REDUCTION_BATCH_SIZE = 6
+# Concurrent chunk analyses against a hosted gateway. Deliberately small: the
+# ceiling here is the provider's per-minute limit, not local CPU, and a run that
+# trips rate limiting is slower than the serial version it replaced.
+_REMOTE_ANALYSIS_WORKERS = int(os.environ.get("WATERFREE_QA_SUMMARY_WORKERS", "4"))
 _ANALYSIS_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_ANALYSIS_TOKENS", "512"))
 _FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_FINAL_TOKENS", "256"))
 _DETAILED_FINAL_MAX_TOKENS = int(os.environ.get("WATERFREE_QA_SUMMARY_DETAILED_TOKENS", "1024"))
@@ -178,6 +183,45 @@ def _analyze_chunk(
     return _chat(target, system_prompt, user_prompt, max_tokens=_ANALYSIS_MAX_TOKENS)
 
 
+def _analyze_chunks(
+    chunks: list[str],
+    *,
+    target: ChatTarget,
+    question: str,
+) -> list[str]:
+    """
+    Map the analysis prompt over every chunk, returning notes in source order.
+
+    Serial against a local model: Ollama serves one request at a time per loaded
+    model, so concurrency there buys nothing and only competes for the same GPU.
+    Against a hosted gateway the requests are independent and the wall-clock is
+    dominated by round-trips, so a small pool is most of the win.
+
+    The pool is capped rather than sized to the chunk count: a large document
+    would otherwise open dozens of simultaneous connections and trip per-minute
+    gateway limits, turning a latency win into a run of 429s.
+    """
+    total = len(chunks)
+
+    def analyze(index: int, chunk: str) -> str:
+        return _analyze_chunk(
+            chunk,
+            target=target,
+            chunk_index=index,
+            chunk_total=total,
+            question=question,
+        )
+
+    if target.is_local or total < 2:
+        return [analyze(idx, chunk) for idx, chunk in enumerate(chunks, start=1)]
+
+    workers = min(_REMOTE_ANALYSIS_WORKERS, total)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qa-chunk") as pool:
+        # map() preserves input order, which the reduction tree depends on —
+        # notes must stay in source order or the merge reads out of sequence.
+        return list(pool.map(lambda pair: analyze(*pair), enumerate(chunks, start=1)))
+
+
 def _merge_note_batch(
     batch: list[str],
     *,
@@ -321,18 +365,8 @@ def run_qa_summary(
     if not chunks:
         raise RuntimeError("No readable text content found.")
 
-    chunk_notes: list[str] = []
     total_chunks = len(chunks)
-    for idx, chunk in enumerate(chunks, start=1):
-        chunk_notes.append(
-            _analyze_chunk(
-                chunk,
-                target=target,
-                chunk_index=idx,
-                chunk_total=total_chunks,
-                question=question,
-            )
-        )
+    chunk_notes = _analyze_chunks(chunks, target=target, question=question)
 
     merged_notes = _reduce_chunk_notes(chunk_notes, question, target=target)
     final_answer = _render_final_answer(

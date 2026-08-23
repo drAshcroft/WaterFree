@@ -94,7 +94,6 @@ from backend.llm.provider_profiles import (
     load_provider_profile,
     normalize_provider_profile,
 )
-from backend.llm.prompt_templates import set_persona_prompt_overrides
 from backend.llm.provider_resolver import resolve_provider
 from backend.llm.runtime import AgentRuntime
 from backend.llm.runtime_registry import (
@@ -170,7 +169,6 @@ from backend.handlers.runtime_handler import (
     handle_resume_checkpoint,
     handle_discard_checkpoint,
     handle_list_subagents,
-    handle_delegate_to_subagent,
     handle_get_usage_stats,
     handle_get_provider_capabilities,
 )
@@ -368,7 +366,6 @@ class Server:
                 default_type = "openai" if runtime_name == "openai" else "ollama" if runtime_name == "ollama" else "claude"
                 profile = default_provider_profile_document(default_type)
             self._provider_profiles[path] = profile
-            set_persona_prompt_overrides(profile.policies.persona_prompt_overrides)
         return profile
 
     def _set_provider_profile(self, workspace_path: str, profile: ProviderProfileDocument) -> str:
@@ -377,7 +374,6 @@ class Server:
             self._provider_profiles = {}
         normalized = normalize_provider_profile(profile.to_dict())
         self._provider_profiles[path] = normalized
-        set_persona_prompt_overrides(normalized.policies.persona_prompt_overrides)
         self._clear_runtime_cache(workspace_path=path)
         return normalized.profile_hash
 
@@ -472,7 +468,6 @@ class Server:
         "getUsageStats":           handle_get_usage_stats,
         "getProviderCapabilities": handle_get_provider_capabilities,
         "listSubagents":           handle_list_subagents,
-        "delegateToSubagent":      handle_delegate_to_subagent,
         # ADR management
         "getADR":               handle_get_adr,
         "storeADR":             handle_store_adr,

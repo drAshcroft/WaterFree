@@ -206,22 +206,3 @@ def handle_get_usage_stats(server, params: dict) -> dict:
     return {"providers": result, "byPersona": [], "byStage": []}
 
 
-def handle_delegate_to_subagent(server, params: dict) -> dict:
-    workspace_path = os.path.abspath(params.get("workspacePath", "."))
-    session_id = str(params.get("sessionId", "")).strip()
-    subagent_id = str(params.get("subagentId", "")).strip()
-    task_id = str(params.get("taskId", "")).strip()
-    prompt = str(params.get("prompt", "")).strip()
-    if not session_id or not subagent_id or not task_id:
-        raise ValueError("sessionId, subagentId, and taskId are required")
-    runtime = server._get_runtime(workspace_path)
-    delegate = getattr(runtime, "delegate_to_subagent", None)
-    if not callable(delegate):
-        raise ValueError("Runtime does not support subagent delegation.")
-    return delegate(
-        session_id=session_id,
-        subagent_id=subagent_id,
-        task_id=task_id,
-        prompt=prompt,
-        workspace_path=workspace_path,
-    )

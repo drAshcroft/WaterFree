@@ -4,6 +4,7 @@ from backend.wizard.definitions import (
     ARCHITECT_TEMPLATE,
     BDD_TEMPLATE,
     CODING_TEMPLATE,
+    DESIGN_AUDIT_TEMPLATE,
     REVIEW_TEMPLATE,
     StageTemplate,
     make_design_template,
@@ -62,7 +63,13 @@ def on_stage_accepted(
         _ensure_wireframe_stages(run, subsystem_names, ensure_stage_doc_fn, stage_from_template_fn)
         return
 
+    # Design artifacts are complete here and nothing has been built from them yet —
+    # the last point where a contradiction is a document edit, not a code change.
     if stage.id.startswith("wireframe:") and all_accepted(run, prefix="wireframe:"):
+        ensure_static_stage(run, DESIGN_AUDIT_TEMPLATE, ensure_stage_doc_fn, stage_from_template_fn)
+        return
+
+    if stage.id == DESIGN_AUDIT_TEMPLATE.id:
         ensure_static_stage(run, BDD_TEMPLATE, ensure_stage_doc_fn, stage_from_template_fn)
         return
 

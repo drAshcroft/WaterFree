@@ -29,12 +29,21 @@ import {
   SessionNewResult,
   SessionPromptResult,
   SessionUpdateParams,
+  TerminalCreateParams,
+  TerminalExitStatus,
+  TerminalOutputResult,
   isJsonRpcNotification,
   isJsonRpcRequest,
   isJsonRpcResponse,
 } from "./AcpProtocol";
 
-/** Everything the agent may ask of us during a session. */
+/**
+ * Everything the agent may ask of us during a session.
+ *
+ * The `terminal` half is optional: a host that omits it advertises
+ * `terminal: false` and the agent degrades to file edits, which is exactly what
+ * we want when the caller does not intend to let a subagent run commands.
+ */
 export interface AcpClientHost {
   readTextFile(params: { sessionId: string; path: string; line?: number; limit?: number }): Promise<string>;
   writeTextFile(params: { sessionId: string; path: string; content: string }): Promise<void>;
@@ -43,6 +52,17 @@ export interface AcpClientHost {
     toolCall?: { toolCallId?: string; title?: string; kind?: string };
     options: Array<{ optionId: string; name?: string; kind?: string }>;
   }): Promise<{ optionId: string } | "cancelled">;
+  terminal?: AcpTerminalService;
+}
+
+/** The terminal surface a host may provide; mirrors the ACP terminal methods. */
+export interface AcpTerminalService {
+  create(params: TerminalCreateParams): Promise<string>;
+  output(terminalId: string): TerminalOutputResult;
+  waitForExit(terminalId: string): Promise<TerminalExitStatus>;
+  kill(terminalId: string): Promise<void>;
+  release(terminalId: string): Promise<void>;
+  disposeAll(): void;
 }
 
 export interface AcpAgentSpec {
@@ -104,13 +124,19 @@ interface Pending {
  */
 const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** What we advertise unless a caller narrows it. */
-const DEFAULT_CLIENT_CAPABILITIES: ClientCapabilities = {
-  fs: { readTextFile: true, writeTextFile: true },
-  // Terminal support is a separate method family we do not serve yet; claiming
-  // it would strand the agent waiting on terminal/create.
-  terminal: false,
-};
+/**
+ * What we advertise unless a caller narrows it.
+ *
+ * `terminal` is derived from the host rather than hard-coded: claiming a
+ * capability we do not serve strands the agent waiting on terminal/create, and
+ * denying one we do serve silently costs it the ability to run what it wrote.
+ */
+function defaultClientCapabilities(host: AcpClientHost): ClientCapabilities {
+  return {
+    fs: { readTextFile: true, writeTextFile: true },
+    terminal: host.terminal !== undefined,
+  };
+}
 
 export class AcpConnectionError extends Error {}
 
@@ -183,7 +209,8 @@ export class AcpConnection {
 
     const result = await this.request<InitializeResult>(AcpMethod.initialize, {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: this._options.clientCapabilities ?? DEFAULT_CLIENT_CAPABILITIES,
+      clientCapabilities:
+        this._options.clientCapabilities ?? defaultClientCapabilities(this._options.host),
       clientInfo: { name: "waterfree", title: "WaterFree", version: "0.1.0" },
     });
 
@@ -204,6 +231,14 @@ export class AcpConnection {
       return;
     }
     this._disposed = true;
+    // Before the agent process goes away: it owns terminal ids and releases them
+    // on a clean turn, but a crashed agent releases nothing and its build or test
+    // processes would outlive the session that spawned them.
+    try {
+      this._options.host.terminal?.disposeAll();
+    } catch (err) {
+      this._log(`terminal cleanup failed: ${(err as Error).message}`);
+    }
     this._failAll(new AcpConnectionError(`Agent '${this.spec.id}' connection disposed.`));
     const proc = this._proc;
     this._proc = null;
@@ -410,6 +445,23 @@ export class AcpConnection {
             : { outcome: { outcome: "selected", optionId: outcome.optionId } };
           break;
         }
+        case AcpMethod.terminalCreate:
+          result = { terminalId: await this._terminal().create(params) };
+          break;
+        case AcpMethod.terminalOutput:
+          result = this._terminal().output(String(params.terminalId ?? ""));
+          break;
+        case AcpMethod.terminalWaitForExit:
+          result = { exitStatus: await this._terminal().waitForExit(String(params.terminalId ?? "")) };
+          break;
+        case AcpMethod.terminalKill:
+          await this._terminal().kill(String(params.terminalId ?? ""));
+          result = null;
+          break;
+        case AcpMethod.terminalRelease:
+          await this._terminal().release(String(params.terminalId ?? ""));
+          result = null;
+          break;
         default:
           this._log(`refusing unsupported client method ${request.method}`);
           this._write({
@@ -428,6 +480,23 @@ export class AcpConnection {
         error: { code: JSON_RPC_INTERNAL_ERROR, message: (err as Error).message },
       });
     }
+  }
+
+  /**
+   * The host's terminal service, or a clear error.
+   *
+   * Reachable only if an agent calls terminal/* after we advertised
+   * `terminal: false` — a protocol violation on its side, but it must get an
+   * error rather than a hang.
+   */
+  private _terminal(): AcpTerminalService {
+    const terminal = this._options.host.terminal;
+    if (!terminal) {
+      throw new AcpConnectionError(
+        `Agent '${this.spec.id}' called a terminal method, but this client did not advertise terminal support.`,
+      );
+    }
+    return terminal;
   }
 
   private _failAll(error: Error): void {

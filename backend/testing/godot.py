@@ -62,7 +62,12 @@ def _config_godot_path(workspace_path: str) -> str | None:
     if not config_file.exists():
         return None
     try:
-        data = json.loads(config_file.read_text(encoding="utf-8"))
+        # utf-8-sig, not utf-8: this file is routinely written by PowerShell,
+        # whose Out-File/Set-Content emit a UTF-8 BOM by default on Windows
+        # PowerShell 5.1. Plain utf-8 raises on the BOM, the JSONDecodeError is
+        # swallowed below, and the user gets "could not find Godot" while
+        # looking at the setting they just configured.
+        data = json.loads(config_file.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         return None
     value = data.get("godotPath") if isinstance(data, dict) else None

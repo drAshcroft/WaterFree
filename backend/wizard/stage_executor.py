@@ -66,6 +66,7 @@ def _phase_for_stage(stage_id: str) -> int:
         ARCHITECT_TEMPLATE,
         BDD_TEMPLATE,
         CODING_TEMPLATE,
+        DESIGN_AUDIT_TEMPLATE,
         MARKET_RESEARCH_TEMPLATE,
         REVIEW_TEMPLATE,
     )
@@ -77,12 +78,16 @@ def _phase_for_stage(stage_id: str) -> int:
         return 3
     if stage_id.startswith("wireframe:"):
         return 4
-    if stage_id == BDD_TEMPLATE.id:
+    # Gates BDD and everything after it: audit findings are cheapest to absorb
+    # while the design is still only documents.
+    if stage_id == DESIGN_AUDIT_TEMPLATE.id:
         return 5
-    if stage_id == CODING_TEMPLATE.id:
+    if stage_id == BDD_TEMPLATE.id:
         return 6
-    if stage_id == REVIEW_TEMPLATE.id:
+    if stage_id == CODING_TEMPLATE.id:
         return 7
+    if stage_id == REVIEW_TEMPLATE.id:
+        return 8
     return 99
 
 

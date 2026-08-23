@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 DEFAULT_PERSONA = "architect"
 PERSONA_METADATA_FILENAME = "waterfree.persona.json"
 _INITIAL_PERSONAS_ROOT = Path(__file__).resolve().parent / "initial_personas"
+# Records which bundled persona ids have ever been offered to this catalog.
+_SEEDED_MARKER_FILENAME = ".seeded.json"
 
 
 @dataclass(frozen=True)
@@ -128,9 +130,14 @@ def get_persona(persona_id: str) -> PersonaDef | None:
     return PERSONAS.get((persona_id or "").strip().lower())
 
 
-def get_persona_fragment(persona_id: str, stage: str = "", prompt_override: str = "") -> str:
-    """Return the persona fragment for a stage, or empty string for unknown ids."""
-    _ = prompt_override
+def get_persona_fragment(persona_id: str, stage: str = "") -> str:
+    """Return the persona fragment for a stage, or empty string for unknown ids.
+
+    Personas are edited as files under the persona catalog, not overridden through
+    provider-profile config. An earlier `prompt_override` parameter was retired
+    along with the config field that fed it: letting a workspace-local profile
+    rewrite the agent's system prompt is a prompt-injection surface.
+    """
     persona = get_persona(persona_id)
     if not persona:
         return _NO_OP_FRAGMENT
@@ -206,23 +213,75 @@ def _ensure_loaded() -> None:
 
 
 def _seed_catalog_if_needed(root: Path, *, force_seed: bool = False) -> None:
+    """
+    Copy bundled personas into the user's editable catalog.
+
+    Seeding is tracked per persona id in `.seeded.json` rather than gated on the
+    catalog being empty. The empty-catalog rule shipped a persona added after a
+    user's first run to nobody: their catalog was non-empty, so the loop never
+    ran. Recording what has been offered lets a newly bundled persona reach an
+    existing install exactly once, while a persona the user later deletes stays
+    deleted.
+
+    One deliberate exception, on the single migration run for a catalog that
+    predates the marker: a missing persona is indistinguishable from a deleted
+    one, because both are simply absent. That run re-seeds whatever is missing
+    and writes the marker. A user who had deleted a bundled persona gets it back
+    once and can delete it again permanently. The alternative — assuming every
+    absence was a deletion — would mean personas bundled in this same release
+    never arrive at all, which is the bug being fixed.
+    """
     if not _INITIAL_PERSONAS_ROOT.exists():
         return
     root.mkdir(parents=True, exist_ok=True)
+
+    already_seeded: set[str] = set() if force_seed else _read_seeded_ids(root)
     existing = {child.name for child in root.iterdir() if child.is_dir()}
-    if not existing or force_seed:
-        for initial_persona in sorted(_INITIAL_PERSONAS_ROOT.iterdir()):
-            if not initial_persona.is_dir():
-                continue
-            target = root / initial_persona.name
-            if target.exists():
-                continue
+
+    newly_seeded: set[str] = set()
+    for initial_persona in sorted(_INITIAL_PERSONAS_ROOT.iterdir()):
+        if not initial_persona.is_dir():
+            continue
+        persona_id = initial_persona.name
+        if persona_id in already_seeded:
+            continue
+        target = root / persona_id
+        if not target.exists():
             shutil.copytree(initial_persona, target)
-        return
+        newly_seeded.add(persona_id)
+
+    # The default persona is load-bearing: restore it even if deleted.
     if DEFAULT_PERSONA not in existing:
         architect_default = _INITIAL_PERSONAS_ROOT / DEFAULT_PERSONA
         if architect_default.exists() and not (root / DEFAULT_PERSONA).exists():
             shutil.copytree(architect_default, root / DEFAULT_PERSONA)
+            newly_seeded.add(DEFAULT_PERSONA)
+
+    if newly_seeded or not (root / _SEEDED_MARKER_FILENAME).exists():
+        _write_seeded_ids(root, already_seeded | newly_seeded)
+
+
+def _read_seeded_ids(root: Path) -> set[str]:
+    marker = root / _SEEDED_MARKER_FILENAME
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return set()
+    seeded = data.get("seeded") if isinstance(data, dict) else None
+    return {str(item) for item in seeded} if isinstance(seeded, list) else set()
+
+
+def _write_seeded_ids(root: Path, ids: set[str]) -> None:
+    marker = root / _SEEDED_MARKER_FILENAME
+    try:
+        marker.write_text(
+            json.dumps({"version": 1, "seeded": sorted(ids)}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        # Non-fatal: a catalog that cannot record its marker still works, it just
+        # re-offers bundled personas next run.
+        log.warning("Could not write persona seed marker at %s: %s", marker, exc)
 
 
 def _load_persona_dir(persona_dir: Path) -> PersonaDef:
@@ -233,8 +292,10 @@ def _load_persona_dir(persona_dir: Path) -> PersonaDef:
     if not metadata_path.exists():
         raise ValueError(f"missing {PERSONA_METADATA_FILENAME}")
 
-    skill_markdown = skill_path.read_text(encoding="utf-8")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    # utf-8-sig throughout: both files are meant to be hand-edited, and an editor
+    # that saves with a BOM would otherwise make the whole persona fail to load.
+    skill_markdown = skill_path.read_text(encoding="utf-8-sig")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be a JSON object")
 

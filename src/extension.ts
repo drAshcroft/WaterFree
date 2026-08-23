@@ -197,6 +197,13 @@ export class WaterFreeController implements vscode.Disposable {
           agentLabel: spec.label,
           resolvePermission: createQuickPickPermissionResolver(),
           log: (message) => this._log("acp", message),
+          // Off unless the workspace opts in: letting a subagent run commands is
+          // a strictly larger grant than letting it edit files.
+          allowTerminal: vscode.workspace
+            .getConfiguration("waterfree")
+            .get<boolean>("acpAllowTerminal", false),
+          confirmCommand: (command, args, cwd) =>
+            this._confirmAgentCommand(spec.label, command, args, cwd),
         }),
     });
     this._disposables.push({ dispose: () => this._acpDriver.dispose() });
@@ -391,6 +398,31 @@ export class WaterFreeController implements vscode.Disposable {
    * tool permissions come back through WorkspaceAcpClientHost, so nothing lands
    * in the tree without passing this side first.
    */
+  /**
+   * Approve one command an ACP subagent wants to run.
+   *
+   * Shows the command verbatim rather than a summary: the operator is being
+   * asked to authorise this exact argv, and a paraphrase is not something they
+   * can meaningfully consent to. Modal because a command can be destructive and
+   * a toast is too easy to dismiss without reading.
+   */
+  private async _confirmAgentCommand(
+    agentLabel: string,
+    command: string,
+    args: string[],
+    cwd: string,
+  ): Promise<boolean> {
+    const rendered = [command, ...args].join(" ");
+    const choice = await vscode.window.showWarningMessage(
+      `${agentLabel} wants to run a command.`,
+      { modal: true, detail: `${rendered}\n\nin ${cwd}` },
+      "Run",
+    );
+    const allowed = choice === "Run";
+    this._log("acp", `command ${allowed ? "approved" : "declined"}: ${rendered}`);
+    return allowed;
+  }
+
   async cmdDelegateToAcpSubagent(): Promise<void> {
     const agents = this._acpDriver.listAgents();
     if (agents.length === 0) {

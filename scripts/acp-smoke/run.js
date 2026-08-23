@@ -22,13 +22,15 @@ const BUNDLE = path.join(os.tmpdir(), `acp-smoke-${process.pid}.js`);
 // esbuild's Node API rather than the CLI: Node on Windows refuses to spawn
 // npx.cmd without a shell, and shelling out here would buy nothing.
 require("esbuild").buildSync({
-  entryPoints: [path.join(REPO_ROOT, "src", "acp", "AcpSubagentDriver.ts")],
+  entryPoints: [path.join(REPO_ROOT, "src", "acp", "smoke-entry.ts")],
   bundle: true,
   platform: "node",
   format: "cjs",
   outfile: BUNDLE,
 });
-const { AcpSubagentDriver, assessTurn, isRetryableFailure, buildPrompt } = require(BUNDLE);
+const {
+  AcpSubagentDriver, assessTurn, isRetryableFailure, buildPrompt, AcpTerminalHost,
+} = require(BUNDLE);
 
 let passed = 0;
 let failed = 0;
@@ -51,7 +53,7 @@ function makeCatalog(mode, workspace, extraEnv) {
 }
 
 /** Host mirroring WorkspaceAcpClientHost's boundary rule, without vscode. */
-function makeHost(workspace, permissionChoice) {
+function makeHost(workspace, permissionChoice, withTerminal, commandChoice) {
   const touched = [];
   const inside = (p) => {
     const root = path.resolve(workspace);
@@ -79,14 +81,22 @@ function makeHost(workspace, permissionChoice) {
       const allow = options.find((o) => (o.kind || o.optionId).includes("allow"));
       return allow ? { optionId: allow.optionId } : "cancelled";
     },
+    ...(withTerminal ? {
+      terminal: new AcpTerminalHost({
+        workspacePath: workspace,
+        confirm: async () => commandChoice !== "deny",
+        log: () => {},
+      }),
+    } : {}),
   };
 }
 
-function makeDriver(mode, workspace, permissionChoice, extraEnv) {
+function makeDriver(mode, workspace, permissionChoice, extraEnv, opts) {
+  const { withTerminal = false, commandChoice = "allow" } = opts || {};
   let host;
   const driver = new AcpSubagentDriver({
     registry: makeCatalog(mode, workspace, extraEnv),
-    createHost: () => (host = makeHost(workspace, permissionChoice)),
+    createHost: () => (host = makeHost(workspace, permissionChoice, withTerminal, commandChoice)),
     log: () => {},
   });
   return { driver, getHost: () => host };
@@ -231,7 +241,84 @@ async function main() {
     check("empty prompt still gets guidance", buildPrompt("", "text").includes("Do not use any tools"));
   }
 
-  console.log("\n[12] isRetryableFailure unit checks");
+  console.log("\n[12] terminal/* methods");
+  {
+    const { driver } = makeDriver("terminal", workspace, undefined, undefined, { withTerminal: true });
+    const r = await driver.delegate({ agentId: "stub", prompt: "run it", workspacePath: workspace });
+    check("turn succeeded", r.ok === true, r.failureReason);
+    check("exit code surfaced to the agent", r.text.includes("exit=3"), r.text);
+    check("stdout captured", r.text.includes("saw=yes"), r.text);
+    check("cwd escape refused", r.text.includes("escape_refused=yes"), r.text);
+    check("released terminal is gone", r.text.includes("released=yes"), r.text);
+  }
+
+  console.log("\n[13] terminal permission and capability gating");
+  {
+    // A denied command must fail the create, not run anyway.
+    const denied = makeDriver("terminal", workspace, undefined, undefined, {
+      withTerminal: true, commandChoice: "deny",
+    });
+    const r = await denied.driver.delegate({ agentId: "stub", prompt: "x", workspacePath: workspace });
+    check("declined command does not run", !r.text.includes("saw=yes"), r.text);
+
+    // A host with no terminal service must advertise terminal:false and error
+    // rather than hang if the agent calls anyway.
+    const noTerm = makeDriver("terminal", workspace, undefined, undefined, { withTerminal: false });
+    const r2 = await noTerm.driver.delegate({ agentId: "stub", prompt: "x", workspacePath: workspace });
+    check("no-terminal host still completes the turn", r2.stopReason === "end_turn", r2.stopReason);
+    check("agent told terminal is unsupported", !r2.text.includes("saw=yes"), r2.text);
+  }
+
+  console.log("\n[14] AcpTerminalHost unit checks");
+  {
+    const host = new AcpTerminalHost({
+      workspacePath: workspace,
+      confirm: async () => true,
+      log: () => {},
+    });
+
+    const id = await host.create({
+      sessionId: "s", command: process.execPath,
+      args: ["-e", "console.log('out'); console.error('err'); process.exit(0)"],
+    });
+    const status = await host.waitForExit(id);
+    check("exit status captured", status.exitCode === 0, JSON.stringify(status));
+    const out = host.output(id);
+    check("stdout and stderr both captured", /out/.test(out.output) && /err/.test(out.output), out.output);
+    check("exitStatus non-null after exit", out.exitStatus !== null);
+
+    // A command that cannot start must resolve, not hang the agent's turn.
+    const badId = await host.create({ sessionId: "s", command: "definitely-not-a-real-binary-xyz" });
+    const badStatus = await host.waitForExit(badId);
+    check("failed spawn still resolves wait_for_exit", badStatus !== undefined, JSON.stringify(badStatus));
+
+    // Output truncation keeps the tail, which is where failures live.
+    const bigId = await host.create({
+      sessionId: "s", command: process.execPath,
+      args: ["-e", "for (let i=0;i<200;i++) console.log('line'+i)"],
+      outputByteLimit: 200,
+    });
+    await host.waitForExit(bigId);
+    const big = host.output(bigId);
+    check("output truncated at limit", big.truncated === true && big.output.length <= 200, String(big.output.length));
+    check("tail kept, not head", big.output.includes("line199"), big.output.slice(-40));
+
+    let refused = false;
+    try {
+      await host.create({ sessionId: "s", command: process.execPath, args: ["-e", "0"], cwd: "../.." });
+    } catch (e) { refused = /outside the workspace/.test(e.message); }
+    check("cwd outside workspace refused", refused);
+
+    // A long-running process must be reaped by disposeAll, not leaked.
+    const sleeper = await host.create({
+      sessionId: "s", command: process.execPath, args: ["-e", "setTimeout(()=>{}, 60000)"],
+    });
+    check("terminal registered while running", host.activeTerminalIds.includes(sleeper));
+    host.disposeAll();
+    check("disposeAll clears the registry", host.activeTerminalIds.length === 0);
+  }
+
+  console.log("\n[15] isRetryableFailure unit checks");
   {
     check("empty content is retryable", isRetryableFailure("The agent reported an upstream failure: returned empty content"));
     check("rate limit is retryable", isRetryableFailure("Rate limited"));
@@ -248,7 +335,7 @@ async function main() {
     check("terminal wins over retryable", !isRetryableFailure("rate limited: HTTP 402 credits exhausted"));
   }
 
-  console.log("\n[13] assessTurn unit checks");
+  console.log("\n[16] assessTurn unit checks");
   {
     check("empty output is a failure", assessTurn("end_turn", "   ") !== undefined);
     check("refusal is a failure", assessTurn("refusal", "no") !== undefined);

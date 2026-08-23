@@ -5,8 +5,14 @@ from backend.session.models import CodeCoord, TaskDependency, TaskPriority, Task
 from backend.session.session_manager import SessionManager
 from backend.test_support import make_temp_dir as make_test_dir
 from backend.todo.store import TaskStore
-from backend.wizard.definitions import CODING_TEMPLATE
+from backend.llm.providers.wizard_stage_runner import _PROMPT_STAGE_BY_KIND
+from backend.wizard.definitions import (
+    BDD_TEMPLATE,
+    CODING_TEMPLATE,
+    DESIGN_AUDIT_TEMPLATE,
+)
 from backend.wizard.manager import WizardManager
+from backend.wizard.stage_executor import _phase_for_stage
 from backend.wizard.models import (
     WizardStageStatus,
     WizardTodoExport,
@@ -150,6 +156,63 @@ class WizardManagerTests(unittest.TestCase):
         for stage_id in design_ids:
             stage = refreshed.get_stage(stage_id)
             self.assertTrue(Path(stage.doc_path).exists())
+
+    def _accept_stage(self, manager, run_id: str, stage_id: str, runtime) -> None:
+        """Run a stage, accept every chunk, then accept the stage itself."""
+        manager.run_stage(run_id=run_id, stage_id=stage_id, runtime=runtime)
+        run = manager.load_run(run_id)
+        for chunk in run.get_stage(stage_id).chunks:
+            manager.accept_chunk(run_id=run_id, stage_id=stage_id, chunk_id=chunk.id)
+        manager.accept_stage(run_id=run_id, stage_id=stage_id)
+
+    def test_design_audit_gates_bdd_after_wireframes(self) -> None:
+        """The audit stage must appear once wireframes land, and BDD must wait for it."""
+        workspace = self.make_workspace()
+        manager = WizardManager(str(workspace))
+        runtime = _FakeRuntime()
+        run = manager.create_or_resume_run(
+            goal="Neighborhood flood alert app",
+            wizard_id="bring_idea_to_life",
+            persona="architect",
+        )
+
+        self._accept_stage(manager, run.id, "market_research", runtime)
+        self._accept_stage(manager, run.id, "architect_review", runtime)
+
+        run = manager.load_run(run.id)
+        for stage_id in sorted(s.id for s in run.stages if s.id.startswith("design:")):
+            self._accept_stage(manager, run.id, stage_id, runtime)
+
+        run = manager.load_run(run.id)
+        wireframe_ids = sorted(s.id for s in run.stages if s.id.startswith("wireframe:"))
+        self.assertTrue(wireframe_ids, "wireframe stages should exist after designs are accepted")
+
+        # BDD must not be reachable while the design is still unaudited.
+        run = manager.load_run(run.id)
+        self.assertIsNone(run.get_stage(BDD_TEMPLATE.id))
+
+        for stage_id in wireframe_ids:
+            self._accept_stage(manager, run.id, stage_id, runtime)
+
+        run = manager.load_run(run.id)
+        audit = run.get_stage(DESIGN_AUDIT_TEMPLATE.id)
+        self.assertIsNotNone(audit, "design audit should be created once wireframes are accepted")
+        self.assertIsNone(run.get_stage(BDD_TEMPLATE.id), "BDD must wait for the audit")
+        self.assertTrue(Path(audit.doc_path).exists())
+
+        self._accept_stage(manager, run.id, DESIGN_AUDIT_TEMPLATE.id, runtime)
+
+        run = manager.load_run(run.id)
+        self.assertIsNotNone(run.get_stage(BDD_TEMPLATE.id), "accepting the audit should unlock BDD")
+
+    def test_design_audit_runs_under_its_own_prompt_stage(self) -> None:
+        """The audit must not silently fall back to the PLANNING system prompt."""
+        self.assertEqual(_PROMPT_STAGE_BY_KIND.get(DESIGN_AUDIT_TEMPLATE.kind), "DESIGN_AUDIT")
+        self.assertLess(
+            _phase_for_stage(DESIGN_AUDIT_TEMPLATE.id),
+            _phase_for_stage(BDD_TEMPLATE.id),
+            "audit must order before BDD or is_stage_unlocked will not gate it",
+        )
 
     def test_start_coding_creates_session_and_backlog_from_todos(self) -> None:
         workspace = self.make_workspace()

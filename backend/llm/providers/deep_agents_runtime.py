@@ -512,30 +512,16 @@ class DeepAgentsRuntime:
             for persona in self._persona_subagents()
         ]
 
-    def delegate_to_subagent(
-        self,
-        *,
-        session_id: str,
-        subagent_id: str,
-        task_id: str,
-        prompt: str,
-        workspace_path: str = "",
-    ) -> dict:
-        cp = self.checkpoint(
-            session_id=session_id,
-            reason="subagent_delegation",
-            payload={
-                "summary": f"Delegated task {task_id} to {subagent_id}",
-                "subagentId": subagent_id,
-                "prompt": prompt,
-                "workspacePath": workspace_path,
-                "taskId": task_id,
-                "requiresApproval": True,
-                "toolCalls": [],
-                "touchedFiles": [],
-            },
-        )
-        return {"checkpointId": cp["id"], "result": None}
+    # Subagent delegation deliberately has no entry point here.
+    #
+    # There were two, and they disagreed. `_deepagents_subagents` below is the
+    # live one: persona subagents handed to the deepagents library, which runs
+    # them in-process. A second `delegate_to_subagent` recorded an approval
+    # checkpoint and returned `result: None` — it never executed anything, and
+    # nothing in the extension ever called its RPC. Removed rather than fixed,
+    # because real out-of-process delegation is the ACP driver's job
+    # (src/acp/AcpSubagentDriver.ts), and a stub that looks like a second
+    # mechanism is worse than no second mechanism.
 
     # ------------------------------------------------------------------
     # Usage stats

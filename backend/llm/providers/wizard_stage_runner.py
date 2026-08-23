@@ -16,6 +16,15 @@ from backend.llm.structural_support import route_structural_persona
 from backend.wizard.design_artifacts import normalize_design_artifacts
 
 
+# Which system prompt a wizard stage runs under. Stages default to PLANNING; only
+# those whose work is not planning are listed. `review` looks backwards at executed
+# work, `design_audit` cross-checks design artifacts before anything is built.
+_PROMPT_STAGE_BY_KIND: dict[str, str] = {
+    "review": "QUESTION_ANSWER",
+    "design_audit": "DESIGN_AUDIT",
+}
+
+
 # Focused research instructions per project type for the market researcher.
 # Injected into the prompt when the user has selected a project type in the intake form,
 # replacing the need for the LLM to classify from the full type taxonomy.
@@ -171,7 +180,7 @@ class WizardStageRunner:
             f"{coding_stage_rules}"
             f"CONTEXT:\n{self._skill_adapter.augment_context(context, bundle)}"
         )
-        prompt_stage = "QUESTION_ANSWER" if stage_kind == "review" else "PLANNING"
+        prompt_stage = _PROMPT_STAGE_BY_KIND.get(stage_kind, "PLANNING")
         payload = self._executor._run_deepagents_structured(
             stage=prompt_stage,
             prompt=prompt,

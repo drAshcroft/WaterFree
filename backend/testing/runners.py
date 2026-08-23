@@ -587,7 +587,9 @@ def detect_runner(workspace_path: str) -> TestRunner:
     pkg_json = root / "package.json"
     if pkg_json.exists():
         try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            # utf-8-sig: package.json is authored outside WaterFree and a BOM
+            # would otherwise make framework detection silently fail.
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
             deps = {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
             if "jest" in deps:
                 return JestRunner()
@@ -599,7 +601,9 @@ def detect_runner(workspace_path: str) -> TestRunner:
             return VitestRunner()
     if pkg_json.exists():
         try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            # utf-8-sig: package.json is authored outside WaterFree and a BOM
+            # would otherwise make framework detection silently fail.
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
             deps = {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
             if "vitest" in deps:
                 return VitestRunner()
