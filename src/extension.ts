@@ -20,7 +20,7 @@ import {
 } from "./bridge/PythonBridge.js";
 import { LiveDebugCapture } from "./debug/LiveDebugCapture.js";
 import { PairLogger } from "./logging/PairLogger.js";
-import { WaterFreeProviders } from "./security/WaterFreeProviders.js";
+import { PROVIDER_TYPE_CATALOG, WaterFreeProviders } from "./security/WaterFreeProviders.js";
 import { WaterFreeSecrets } from "./security/WaterFreeSecrets.js";
 import { StatusBarManager } from "./ui/StatusBarManager.js";
 import {
@@ -1082,12 +1082,194 @@ export class WaterFreeController implements vscode.Disposable {
         workspacePath: this._workspacePath,
       });
       await this._handleWizardResponse(result, false);
-      void vscode.window.showInformationMessage("WaterFree: coding session created from accepted wizard outputs.");
+
+      const session = (result.session ?? null) as PlanData | null;
+      const ranOnAcp = await this._runWizardCodingOnAcp(session);
+      if (!ranOnAcp) {
+        void vscode.window.showInformationMessage(
+          "WaterFree: coding session created from accepted wizard outputs.",
+        );
+      }
     } catch (err) {
       this._handleError("Start wizard coding failed", err);
     } finally {
       this._sidebarProvider.setBusyMessage(null);
     }
+  }
+
+  /**
+   * Hand the wizard's promoted coding tasks to an ACP agent.
+   *
+   * The wizard used to stop at "session created": it promoted todos into
+   * tasks.db and left a human to run each one. An ACP agent is a coding agent
+   * with its own editing tools, which is the piece the earlier stages were
+   * writing specs *for* — so the accepted micro-prompts go straight to it.
+   *
+   * Returns false when nothing was delegated (no agents configured, operator
+   * chose the internal runtime, or no agent-owned work), so the caller can fall
+   * back to its own messaging.
+   */
+  private async _runWizardCodingOnAcp(session: PlanData | null): Promise<boolean> {
+    const tasks = (session?.tasks ?? []).filter(
+      (task) => task.owner.type !== "human" && task.status === "pending",
+    );
+    if (tasks.length === 0) {
+      return false;
+    }
+
+    const agent = await this._resolveWizardCodingAgent();
+    if (!agent) {
+      return false;
+    }
+
+    const goal = session?.goalStatement?.trim() ?? "";
+    let completed = 0;
+    const failures: string[] = [];
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `WaterFree: ${agent.label} building from the wizard plan`,
+        cancellable: true,
+      },
+      async (progress, token) => {
+        // Sequential on purpose: several agent processes editing the same
+        // worktree at once produce conflicts the wizard has no way to reconcile.
+        for (const [index, task] of tasks.entries()) {
+          if (token.isCancellationRequested) {
+            break;
+          }
+          const taskId = `wizard-coding-${task.id}`;
+          const cancel = token.onCancellationRequested(() => this._acpDriver.cancel(taskId));
+          progress.report({ message: `${index + 1}/${tasks.length} · ${task.title}` });
+          try {
+            const result = await this._acpDriver.delegate({
+              agentId: agent.id,
+              prompt: this._buildWizardCodingPrompt(task, goal),
+              workspacePath: this._workspacePath,
+              taskId,
+              deliverable: "files",
+              maxAttempts: 3,
+              onToolCall: (update) => {
+                const title = (update as { title?: string }).title;
+                if (title) {
+                  progress.report({ message: `${index + 1}/${tasks.length} · ${title}` });
+                }
+              },
+            });
+            if (result.ok) {
+              completed += 1;
+              this._log(
+                "acp",
+                `wizard task "${task.title}" done in ${result.durationMs}ms, touched ${result.touchedFiles.length} file(s)`,
+              );
+            } else {
+              failures.push(`${task.title}: ${result.failureReason ?? "unknown"}`);
+              this._log("acp", `wizard task "${task.title}" failed: ${result.failureReason ?? "unknown"}`);
+            }
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            failures.push(`${task.title}: ${reason}`);
+            this._log("acp", `wizard task "${task.title}" threw: ${reason}`);
+          } finally {
+            cancel.dispose();
+          }
+        }
+      },
+    );
+
+    if (failures.length > 0) {
+      const detail = failures.slice(0, 3).join("; ");
+      void vscode.window.showWarningMessage(
+        `WaterFree: ${completed}/${tasks.length} wizard tasks completed on ${agent.label}. Failed: ${detail}`,
+      );
+    } else {
+      void vscode.window.showInformationMessage(
+        `WaterFree: ${agent.label} completed ${completed}/${tasks.length} wizard coding tasks.`,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Which executor runs the coding stage. Defaults to ACP because the whole
+   * point of the earlier stages is to produce prompts a coding agent can run.
+   */
+  private async _resolveWizardCodingAgent(): Promise<{ id: string; label: string } | null> {
+    const executor = vscode.workspace
+      .getConfiguration("waterfree")
+      .get<"acp" | "provider" | "ask">("wizardCodingExecutor", "acp");
+    if (executor === "provider") {
+      return null;
+    }
+
+    const agents = this._acpDriver.listAgents();
+    if (agents.length === 0) {
+      if (executor === "acp") {
+        // Silent fallback would look like the handoff simply did nothing.
+        void vscode.window.showWarningMessage(
+          "WaterFree: no ACP agents configured, so the wizard only queued tasks. Add one under waterfree.acpAgents.",
+        );
+      }
+      return null;
+    }
+
+    if (executor === "ask") {
+      const picked = await vscode.window.showQuickPick(
+        [
+          ...agents.map((agent) => ({
+            label: agent.label,
+            detail: "Run the wizard's coding tasks on this ACP agent.",
+            agent: agent as { id: string; label: string } | null,
+          })),
+          {
+            label: "Queue for the internal runtime",
+            detail: "Leave the tasks pending in the session instead.",
+            agent: null,
+          },
+        ],
+        { title: "Who should build the wizard's coding tasks?", ignoreFocusOut: true },
+      );
+      return picked?.agent ?? null;
+    }
+
+    return agents.length === 1
+      ? agents[0]
+      : (await vscode.window.showQuickPick(
+          agents.map((agent) => ({ label: agent.label, description: agent.id, agent })),
+          { title: "Which ACP agent should build the wizard's plan?", ignoreFocusOut: true },
+        ))?.agent ?? null;
+  }
+
+  private _buildWizardCodingPrompt(task: TaskData, goal: string): string {
+    const lines: string[] = [];
+    if (goal) {
+      lines.push(`Project goal: ${goal}`, "");
+    }
+    lines.push(`Task: ${task.title}`, "", task.description.trim());
+    if (task.rationale?.trim()) {
+      lines.push("", `Why: ${task.rationale.trim()}`);
+    }
+    if (task.phase?.trim()) {
+      lines.push("", `Phase: ${task.phase.trim()}`);
+    }
+    const target = task.targetCoord.file?.trim();
+    if (target) {
+      const line = task.targetCoord.line;
+      lines.push("", `Target: ${target}${typeof line === "number" && line > 0 ? `:${line}` : ""}`);
+    }
+    const context = (task.contextCoords ?? [])
+      .map((coord) => coord.file?.trim())
+      .filter((file): file is string => Boolean(file));
+    if (context.length > 0) {
+      lines.push(`Related files: ${context.join(", ")}`);
+    }
+    lines.push(
+      "",
+      "Implement this in the workspace. Follow the conventions already in the repo.",
+      "If the task is underspecified, make the smallest reasonable choice and say what you assumed.",
+    );
+    return lines.join("\n");
   }
 
   async cmdRunWizardReview(ctx?: unknown): Promise<void> {
@@ -1446,6 +1628,8 @@ export class WaterFreeController implements vscode.Disposable {
       this._onPlanReceived(session);
     }
 
+    this._sendWizardStatusFrom(result.wizard ?? null);
+
     if (result.wizard?.wizardId === "bring_idea_to_life") {
       await this._wizardEditor.showResponse(result);
       this._updateWizardEditorContext(vscode.window.activeTextEditor);
@@ -1457,6 +1641,40 @@ export class WaterFreeController implements vscode.Disposable {
     } else if (result.openDocPath && !focusDocument) {
       this._updateWizardEditorContext(vscode.window.activeTextEditor);
     }
+  }
+
+  /**
+   * Ask the backend whether a run is already in flight and tell the sidebar.
+   *
+   * The wizard card used to render the same "Launch" affordance whether or not
+   * a half-finished run was sitting in `.waterfree/wizards`, so the only way
+   * back into a run was to remember the doc path.
+   */
+  private async _pushWizardStatus(): Promise<void> {
+    try {
+      const result = await this._bridge.getWizardSession({ workspacePath: this._workspacePath });
+      this._sendWizardStatusFrom(result.wizard ?? null);
+    } catch {
+      // No backend, no workspace, or no run yet — all mean "offer Launch".
+      this._sidebarProvider.sendWizardStatus(null);
+    }
+  }
+
+  private _sendWizardStatusFrom(wizard: WizardRunData | null): void {
+    if (!wizard || wizard.status === "complete") {
+      this._sidebarProvider.sendWizardStatus(null);
+      return;
+    }
+    const stages = wizard.stages ?? [];
+    const index = stages.findIndex((stage) => stage.id === wizard.currentStageId);
+    this._sidebarProvider.sendWizardStatus({
+      wizardId: wizard.wizardId,
+      runId: wizard.id,
+      stageTitle: index >= 0 ? stages[index].title : "In progress",
+      stageIndex: index >= 0 ? index + 1 : 0,
+      stageCount: stages.length,
+      status: wizard.status,
+    });
   }
 
   private async _openWizardDocument(docPath: string): Promise<void> {
@@ -1921,6 +2139,10 @@ export class WaterFreeController implements vscode.Disposable {
         await this._sendProviderSettings();
         return;
       }
+      case "requestWizardStatus": {
+        await this._pushWizardStatus();
+        return;
+      }
       case "runQaSummary": {
         try {
           const result = await this._bridge.request<Record<string, unknown>>("runQaSummary", {
@@ -2157,6 +2379,10 @@ export class WaterFreeController implements vscode.Disposable {
     const resolvedProfile = profile ?? await this._providers.getProfile();
     const statuses = await this._providers.getStatuses();
     this._sidebarProvider.sendSettings({
+      // The webview renders its provider dropdown from this rather than from a
+      // list of its own, so a new ProviderType shows up in the UI as soon as
+      // it is added to the catalog.
+      providerTypes: PROVIDER_TYPE_CATALOG,
       providers: statuses,
       activeProviderId: resolvedProfile.activeProviderId,
       personaAssignments: resolvedProfile.policies.personaAssignments,

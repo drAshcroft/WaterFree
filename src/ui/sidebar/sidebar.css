@@ -46,16 +46,23 @@ h1, h2, h3, p { margin: 0; }
   margin-bottom: 4px;
 }
 
+/* Same shrink rule as .settings-title: `flex: 1` without `min-width: 0` refuses
+   to go below its own text and shoves the History button off the sidebar. */
 .sidebar-title {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--muted);
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .history-btn {
+  flex: 0 0 auto;
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.4;
@@ -378,6 +385,16 @@ button.primary:hover:enabled {
   padding-top: 0;
 }
 
+/* Row = disclosure target on the left, launch control pinned right. The launch
+   button must never live inside .wizard-body: a control you can only reach by
+   first discovering that an unmarked row is clickable reads as a missing
+   feature, which is exactly how this card was reported. */
+.wizard-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .wizard-header,
 .menu-item {
   display: flex;
@@ -388,6 +405,36 @@ button.primary:hover:enabled {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
+}
+
+.wizard-row .wizard-header {
+  flex: 1;
+  min-width: 0;
+}
+
+.wizard-header:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.wizard-launch {
+  flex-shrink: 0;
+  min-height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.wizard-soon {
+  cursor: default;
+}
+
+.wizard-progress {
+  margin-top: 2px;
+  color: var(--focus);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .wizard-header:hover,
@@ -452,6 +499,11 @@ button.primary:hover:enabled {
   flex-shrink: 0;
 }
 
+.wizard-chevron {
+  width: 10px;
+  text-align: center;
+}
+
 .wizard-body {
   margin-top: 4px;
   padding-top: 6px;
@@ -487,21 +539,41 @@ button.primary:hover:enabled {
   flex-direction: column;
 }
 
+/* The settings panel replaces the whole sidebar, so `Close` is the only way
+   back to the main view. It must survive any sidebar width.
+
+   It did not: `.settings-title` was `flex: 1` with no `min-width: 0`, so it
+   refused to shrink below its text, and two 58px-min buttons plus gaps gave the
+   header a 187px floor. Under a ~200px sidebar that pushed `Close` past the
+   panel edge (measured at 180px: button at x=150-208, panel ends at 170), and a
+   webview sidebar has no horizontal scroll. `Back` led to the settings menu,
+   which renders no `Back` at all — so the panel became a dead end you could
+   only leave by restarting.
+
+   Two independent guards now: the title shrinks to an ellipsis first, and the
+   header wraps rather than overflowing if even that is not enough. */
 .settings-dialog-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 12px;
 }
 
 .settings-title {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
 }
 
 .settings-nav-btn {
-  min-width: 58px;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0 8px;
 }
 
 .settings-body {

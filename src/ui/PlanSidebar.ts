@@ -56,6 +56,17 @@ export interface TaskData {
   annotations: AnnotationData[];
 }
 
+/** What the sidebar wizard card needs to render Launch vs Resume. */
+export interface WizardStatusData {
+  wizardId: string;
+  runId: string;
+  stageTitle: string;
+  /** 1-based position of the active stage, for the "step N of M" line. */
+  stageIndex: number;
+  stageCount: number;
+  status: string;
+}
+
 export interface PlanData {
   id: string;
   goalStatement: string;
@@ -135,6 +146,7 @@ export type SidebarAction =
   | { type: "requestHistory" }
   | { type: "restoreSession"; file: string }
   | { type: "requestSettings" }
+  | { type: "requestWizardStatus" }
   | { type: "runQaSummary"; fileOrUrl: string; question: string }
   | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
   | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
@@ -263,6 +275,16 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   sendUsageStats(data: unknown): void {
     void this._view?.webview.postMessage({ type: "usageStats", data });
+  }
+
+  /**
+   * Tells the wizard card whether a run is already in flight.
+   *
+   * Pass `null` for "no active run" so the card falls back to Launch; a stale
+   * Resume pointing at a deleted run is worse than offering a fresh start.
+   */
+  sendWizardStatus(data: WizardStatusData | null): void {
+    void this._view?.webview.postMessage({ type: "wizardStatus", data });
   }
 
   sendHistory(sessions: unknown[]): void {
@@ -433,6 +455,9 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
         if (typeof message.file === "string") {
           this._actionEmitter.fire({ type: "restoreSession", file: message.file });
         }
+        return;
+      case "requestWizardStatus":
+        this._actionEmitter.fire({ type: "requestWizardStatus" });
         return;
       case "requestSettings":
         this._actionEmitter.fire({ type: "requestSettings" });

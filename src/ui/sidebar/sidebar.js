@@ -16,17 +16,26 @@ const PERSONAS = [
   { id: "stub_wireframer",  title: "Stub / Wireframer",     tagline: "Compilable skeletons, TODO handoff" },
 ];
 
+/**
+ * Wizard catalog.
+ *
+ * `implemented` gates the launch button. Only `bring_idea_to_life` has a real
+ * stage pipeline behind it (see backend/wizard/manager.py:create_or_resume_run,
+ * which raises for every other id). The rest used to render an identical
+ * "Launch Wizard" button that reached the backend only to bounce off an
+ * information toast, so they now say so on the card instead of pretending.
+ */
 const WIZARDS = [
-  { id: "bring_idea_to_life",   title: "Bring Idea to Life",      tagline: "From raw idea to working code",               steps: ["Market Research", "Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "create_application",   title: "Create Application",       tagline: "Build a full application from scratch",       steps: ["Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "feature",              title: "Feature",                  tagline: "Add a feature to an existing codebase",       steps: ["Architect Review", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "refactor",             title: "Refactor",                 tagline: "Improve structure without changing behavior",  steps: ["Architect Review", "Design Patterns", "BDD Tests", "Coding Agents", "Review"] },
-  { id: "bug_hunt",             title: "Bug Hunt",                 tagline: "Systematically find and eliminate bugs",      steps: [] },
-  { id: "debugging",            title: "Debugging",                tagline: "Deep dive into a specific issue",             steps: [] },
-  { id: "improvement_search",   title: "Improvement Search",       tagline: "Find and prioritize improvements",            steps: [] },
-  { id: "deploy_package",       title: "Deploy / Package Helper",  tagline: "Prepare and ship your application",           steps: [] },
-  { id: "documentation_genius", title: "Documentation Genius",     tagline: "Generate comprehensive documentation",       steps: [] },
-  { id: "clean_code_review",    title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   steps: [] },
+  { id: "bring_idea_to_life",   title: "Bring Idea to Life",      tagline: "From raw idea to working code",               implemented: true,  steps: ["Market Research", "Architect Review", "Design Patterns", "Wireframes", "Design Audit", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "create_application",   title: "Create Application",       tagline: "Build a full application from scratch",       implemented: false, steps: ["Architect Review", "Design Patterns", "Wireframes", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "feature",              title: "Feature",                  tagline: "Add a feature to an existing codebase",       implemented: false, steps: ["Architect Review", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "refactor",             title: "Refactor",                 tagline: "Improve structure without changing behavior",  implemented: false, steps: ["Architect Review", "Design Patterns", "BDD Tests", "Coding Agents", "Review"] },
+  { id: "bug_hunt",             title: "Bug Hunt",                 tagline: "Systematically find and eliminate bugs",      implemented: false, steps: [] },
+  { id: "debugging",            title: "Debugging",                tagline: "Deep dive into a specific issue",             implemented: false, steps: [] },
+  { id: "improvement_search",   title: "Improvement Search",       tagline: "Find and prioritize improvements",            implemented: false, steps: [] },
+  { id: "deploy_package",       title: "Deploy / Package Helper",  tagline: "Prepare and ship your application",           implemented: false, steps: [] },
+  { id: "documentation_genius", title: "Documentation Genius",     tagline: "Generate comprehensive documentation",       implemented: false, steps: [] },
+  { id: "clean_code_review",    title: "Clean Code Review",        tagline: "Review and enforce code quality standards",   implemented: false, steps: [] },
 ];
 
 const QUICK_JOB_MODES = [
@@ -36,53 +45,48 @@ const QUICK_JOB_MODES = [
   { id: "tutorialize", label: "Tutorialize", persona: "tutorializer" },
 ];
 
-const PROVIDER_LABELS = {
-  claude: "Claude",
-  openai: "OpenAI / Codex",
-  groq: "Groq",
-  ollama: "Ollama",
-  huggingface: "Hugging Face",
-  mock: "Mock (no API calls)",
-};
+/**
+ * Provider type catalog.
+ *
+ * Pushed from the extension (PROVIDER_TYPE_CATALOG in WaterFreeProviders.ts)
+ * with the settings message; the sidebar deliberately keeps no list of its own.
+ * A hand-written duplicate here is what kept OpenRouter, Gemini and Qwen out of
+ * the provider dropdown long after the adapters, default models and profile
+ * writer all supported them.
+ */
+function providerTypeCatalog() {
+  const types = state.settingsData && state.settingsData.providerTypes;
+  return Array.isArray(types) ? types : [];
+}
 
-const PROVIDER_ICONS = { claude: "ANT", openai: "OAI", groq: "GRQ", ollama: "OLL", huggingface: "HF", mock: "OFF" };
-const DEFAULT_PROVIDER_URLS = {
-  claude: "https://api.anthropic.com",
-  openai: "https://api.openai.com/v1",
-  groq: "https://api.groq.com/openai/v1",
-  ollama: "http://localhost:11434",
-  huggingface: "https://router.huggingface.co/v1",
-  mock: "",
-};
-const API_KEY_PLACEHOLDERS = {
-  claude: "sk-ant-api03-...",
-  openai: "sk-proj-...",
-  groq: "gsk_...",
-  ollama: "",
-  huggingface: "hf_...",
-  mock: "",
-};
+function providerTypeDescriptor(type) {
+  return providerTypeCatalog().find(function(entry) { return entry && entry.type === type; }) || null;
+}
 
-const PROVIDER_MODELS = {
-  claude: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
-  openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
-  groq: [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "llama-3.2-90b-vision-preview",
-    "meta-llama/llama-guard-4-12b",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "openai/gpt-oss-safeguard-20b",
-    "qwen/qwen3-32b",
-    "moonshotai/kimi-k2-instruct-0905",
-  ],
-  ollama: ["freehuntx/qwen3-coder:14b", "llama3.2", "codestral", "qwen2.5-coder", "mistral"],
-  huggingface: [],
-  mock: [],
-};
+function providerTypeLabel(type) {
+  const descriptor = providerTypeDescriptor(type);
+  return descriptor ? descriptor.label : type;
+}
+
+function defaultBaseUrlForProviderType(type) {
+  const descriptor = providerTypeDescriptor(type);
+  return descriptor ? descriptor.defaultBaseUrl : "";
+}
+
+function apiKeyPlaceholderForProviderType(type) {
+  const descriptor = providerTypeDescriptor(type);
+  return (descriptor && descriptor.apiKeyPlaceholder) || "API key";
+}
+
+function defaultModelsForProviderType(type) {
+  const descriptor = providerTypeDescriptor(type);
+  return descriptor && Array.isArray(descriptor.defaultModels) ? descriptor.defaultModels.slice() : [];
+}
+
+/** Labels the form auto-fills, so a user-typed name is never overwritten. */
+function autoProviderNames() {
+  return providerTypeCatalog().map(function(entry) { return entry.label; });
+}
 
 const PROVIDER_MODE_LABELS = {
   planning: "Planning",
@@ -129,6 +133,10 @@ let state = {
   selectedQuickProviderId: typeof savedState.selectedQuickProviderId === "string" ? savedState.selectedQuickProviderId : "",
   selectedQuickModel: typeof savedState.selectedQuickModel === "string" ? savedState.selectedQuickModel : "",
   expandedWizard: typeof savedState.expandedWizard === "string" ? savedState.expandedWizard : null,
+  // {wizardId, runId, stageTitle, stageIndex, stageCount, status} or null.
+  // Pushed by the extension; never persisted, because a stale "Resume" for a
+  // run that no longer exists is worse than showing "Launch".
+  wizardStatus: null,
   // history dropdown
   historyOpen: false,
   historyItems: [],      // [{id, goalStatement, status, createdAt, persona, file}]
@@ -136,7 +144,7 @@ let state = {
   // settings state (not persisted)
   settingsOpen: false,
   settingsPage: null,   // null = menu, "providers", "mcp", "skills", "personas", "usage", "todos", "index", "knowledge"
-  settingsData: { providers: [], activeProviderId: "", personaAssignments: [] },
+  settingsData: { providerTypes: [], providers: [], activeProviderId: "", personaAssignments: [] },
   providerForm: null,  // {mode:"add"|"edit", id, type, name, apiKey, baseUrl, models, enabled}
   personaForm: null,   // {personaId, title, tagline, assignments:[{providerId, model, stages}]}
   usageData: null,     // {providers: [], byPersona: [], byStage: []} or null = not loaded yet
@@ -364,7 +372,7 @@ function normalizeQuickJobSelection() {
 
 function providerLabel(provider) {
   if (!provider) { return ""; }
-  return provider.name || PROVIDER_LABELS[provider.type] || provider.id || "Provider";
+  return provider.name || providerTypeLabel(provider.type) || provider.id || "Provider";
 }
 
 function providerChoices() {
@@ -376,9 +384,6 @@ function providerModels(providerId) {
   return provider && Array.isArray(provider.models) ? provider.models.slice() : [];
 }
 
-function defaultModelsForProviderType(type) {
-  return Array.isArray(PROVIDER_MODELS[type]) ? PROVIDER_MODELS[type].slice() : [];
-}
 
 function assignmentsForPersona(personaId) {
   const all = Array.isArray(state.settingsData.personaAssignments) ? state.settingsData.personaAssignments : [];
@@ -474,7 +479,7 @@ function renderQuickJobs() {
   const selectedProvider = findQuickProvider(state.selectedQuickProviderId);
   const providerOptions = providers.length > 0
     ? providers.map(function(provider) {
-        const label = provider.name || PROVIDER_LABELS[provider.type] || provider.id;
+        const label = provider.name || providerTypeLabel(provider.type) || provider.id;
         return '<option value="' + escapeHtml(provider.id) + '"' + (state.selectedQuickProviderId === provider.id ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
       }).join("")
     : null;
@@ -515,35 +520,76 @@ function renderQuickJobs() {
   ].join("");
 }
 
+/**
+ * Wizard status pushed from the extension (`wizardStatus` message).
+ *
+ * Without it the card cannot tell "never started" from "half-finished run
+ * sitting in .waterfree/wizards", which is the difference between a Launch
+ * button and a Resume button.
+ */
+function activeWizardStatus(wizardId) {
+  const status = state.wizardStatus;
+  if (!status || !status.runId) { return null; }
+  return status.wizardId === wizardId ? status : null;
+}
+
 function renderWizards() {
   const disabled = Boolean(state.busyMessage);
   const items = WIZARDS.map(function(w) {
     const isExpanded = state.expandedWizard === w.id;
-    const collapsedHint = w.steps.length > 0 ? String(w.steps.length) + " steps" : "Run";
+    const status = activeWizardStatus(w.id);
+
+    // The launch control lives on the collapsed row, not inside the expanded
+    // body. Hiding it behind a disclosure whose only affordance was a muted
+    // "6 steps" label is what made the wizard look like it had been removed.
+    let actionHtml;
+    if (!w.implemented) {
+      actionHtml = '<span class="key-badge wizard-soon" title="No stage pipeline behind this wizard yet.">Soon</span>';
+    } else {
+      const label = status ? "Resume" : "Launch";
+      const title = status
+        ? "Reopen the run in progress"
+        : "Start this wizard from the idea in the composer above";
+      actionHtml = '<button type="button" class="primary wizard-launch" data-action="openWizard"'
+        + ' data-wizard-id="' + escapeHtml(w.id) + '"'
+        + ' title="' + escapeHtml(title) + '"'
+        + (disabled ? " disabled" : "") + ">" + label + "</button>";
+    }
+
+    const progressHtml = status && status.stageTitle
+      ? '<p class="wizard-progress">' + escapeHtml(status.stageTitle)
+        + (status.stageIndex && status.stageCount
+            ? ' \u00b7 step ' + escapeHtml(String(status.stageIndex)) + " of " + escapeHtml(String(status.stageCount))
+            : "")
+        + "</p>"
+      : "";
+
     let bodyHtml = "";
     if (isExpanded) {
       const stepsHtml = w.steps.length > 0
         ? '<p class="wizard-steps"><span class="wizard-steps-label">Flow:</span> ' + w.steps.map(function(s) {
             return escapeHtml(s);
-          }).join(" · ") + "</p>"
+          }).join(" \u00b7 ") + "</p>"
         : '<p class="wizard-steps">Focused run for this workflow.</p>';
-      bodyHtml = [
-        '<div class="wizard-body">',
-        stepsHtml,
-        '<div class="button-row button-row--compact">',
-        '<button type="button" class="primary" data-action="openWizard" data-wizard-id="' + escapeHtml(w.id) + '"' + (disabled ? " disabled" : "") + ">Launch Wizard</button>",
-        "</div>",
-        "</div>",
-      ].join("");
+      const noteHtml = w.implemented
+        ? ""
+        : '<p class="wizard-steps">Not wired to a stage pipeline yet \u2014 use <strong>Bring Idea to Life</strong>, which covers the same ground from idea through code.</p>';
+      bodyHtml = ['<div class="wizard-body">', stepsHtml, noteHtml, "</div>"].join("");
     }
+
     return [
       '<div class="wizard-item' + (isExpanded ? " expanded" : "") + '">',
-      '<div class="wizard-header" data-action="toggleWizard" data-wizard-id="' + escapeHtml(w.id) + '">',
+      '<div class="wizard-row">',
+      '<div class="wizard-header" role="button" tabindex="0" aria-expanded="' + (isExpanded ? "true" : "false") + '"',
+      ' data-action="toggleWizard" data-wizard-id="' + escapeHtml(w.id) + '" title="Show the stage flow">',
+      '<span class="wizard-chevron" aria-hidden="true">' + (isExpanded ? "\u25be" : "\u25b8") + "</span>",
       '<div class="wizard-info">',
       '<div class="wizard-name">' + escapeHtml(w.title) + "</div>",
       '<div class="wizard-tagline">' + escapeHtml(w.tagline) + "</div>",
+      progressHtml,
       "</div>",
-      '<span class="wizard-chevron">' + escapeHtml(isExpanded ? "Hide" : collapsedHint) + "</span>",
+      "</div>",
+      actionHtml,
       "</div>",
       bodyHtml,
       "</div>",
@@ -874,7 +920,7 @@ function renderProvidersPage() {
   const cards = providers.length === 0
     ? '<p class="empty" style="margin-bottom:10px">No providers configured.</p>'
     : providers.map(function(p) {
-        const label = PROVIDER_LABELS[p.type] || p.type;
+        const label = providerTypeLabel(p.type);
         const enabledLabel = p.enabled ? "Enabled" : "Disabled";
         const credHtml = p.type === "mock"
           ? '<span class="key-badge mock">Mock</span>'
@@ -890,7 +936,7 @@ function renderProvidersPage() {
           '<div class="provider-card-header">',
           '<div class="provider-card-info">',
           '<span class="provider-name">' + escapeHtml(p.name) + '</span>',
-          '<span class="provider-type">' + escapeHtml(label) + ' · ' + enabledLabel + '</span>',
+          '<span class="provider-type">' + escapeHtml(label) + ' \u00b7 ' + enabledLabel + '</span>',
           '</div>',
           '<button type="button" class="toggle-btn' + (p.enabled ? ' toggle-btn--on' : '') + '" data-action="toggleProvider" data-provider-id="' + escapeHtml(p.id) + '" title="' + (p.enabled ? "Disable" : "Enable") + '">',
           p.enabled ? 'Disable' : 'Enable',
@@ -997,14 +1043,15 @@ function syncMcpSummaryRunButton() {
 
 function renderProviderForm() {
   const f = state.providerForm;
-  const typeOptions = Object.keys(PROVIDER_LABELS).map(function(t) {
-    return '<option value="' + t + '"' + (f.type === t ? " selected" : "") + ">" + escapeHtml(PROVIDER_LABELS[t]) + "</option>";
+  const typeOptions = providerTypeCatalog().map(function(entry) {
+    return '<option value="' + escapeHtml(entry.type) + '"' + (f.type === entry.type ? " selected" : "") + ">" + escapeHtml(entry.label) + "</option>";
   }).join("");
 
-  const needsKey = f.type !== "mock" && f.type !== "ollama";
-  const supportsUrl = f.type !== "mock";
-  const keyPlaceholder = API_KEY_PLACEHOLDERS[f.type] || "API key";
-  const defaultUrl = DEFAULT_PROVIDER_URLS[f.type] || "";
+  const descriptor = providerTypeDescriptor(f.type);
+  const needsKey = descriptor ? descriptor.requiresApiKey !== false : true;
+  const supportsUrl = descriptor ? descriptor.supportsBaseUrl !== false : true;
+  const keyPlaceholder = apiKeyPlaceholderForProviderType(f.type);
+  const defaultUrl = defaultBaseUrlForProviderType(f.type);
 
   return [
     '<div class="provider-form">',
@@ -1060,8 +1107,8 @@ function renderPersonasPage() {
               return stage ? stage.label : formatLabel(stageId);
             }).join(", ");
             return '<span class="mode-pill">' + escapeHtml(providerLabel(providerChoices().find(function(item) { return item.id === entry.providerId; })))
-              + (entry.model ? " · " + escapeHtml(entry.model) : "")
-              + (stages ? " · " + escapeHtml(stages) : "") + '</span>';
+              + (entry.model ? " \u00b7 " + escapeHtml(entry.model) : "")
+              + (stages ? " \u00b7 " + escapeHtml(stages) : "") + '</span>';
           }).join("") + '</div>'
         : '<p class="empty" style="margin:10px 0 0">No provider/model routes configured yet.</p>',
       '<div class="button-row" style="margin-top:8px">',
@@ -1261,12 +1308,12 @@ function wireSettingsForms() {
   if (typeSelect) {
     typeSelect.addEventListener("change", function(e) {
       const t = e.target.value;
-      const autoNames = Object.values(PROVIDER_LABELS);
+      const autoNames = autoProviderNames();
       if (!state.providerForm.name || autoNames.includes(state.providerForm.name)) {
-        state.providerForm.name = PROVIDER_LABELS[t] || t;
+        state.providerForm.name = providerTypeLabel(t);
       }
-      if (!state.providerForm.baseUrl || state.providerForm.baseUrl === DEFAULT_PROVIDER_URLS[state.providerForm.type]) {
-        state.providerForm.baseUrl = DEFAULT_PROVIDER_URLS[t] || "";
+      if (!state.providerForm.baseUrl || state.providerForm.baseUrl === defaultBaseUrlForProviderType(state.providerForm.type)) {
+        state.providerForm.baseUrl = defaultBaseUrlForProviderType(t);
       }
       state.providerForm.type = t;
       state.providerForm.models = defaultModelsForProviderType(t);
@@ -1414,6 +1461,16 @@ function render() {
   }
 }
 
+// The wizard row is a div with role="button" (it holds block children a real
+// <button> cannot legally nest), so keyboard activation has to be wired by hand.
+root.addEventListener("keydown", function(event) {
+  if (event.key !== "Enter" && event.key !== " ") { return; }
+  const el = event.target.closest('[data-action="toggleWizard"]');
+  if (!el) { return; }
+  event.preventDefault();
+  el.click();
+});
+
 root.addEventListener("click", function(event) {
   const el = event.target.closest("[data-action]");
   if (!el) { return; }
@@ -1540,8 +1597,8 @@ root.addEventListener("click", function(event) {
     state.providerForm = {
       mode: "add", id: null,
       type: "claude",
-      name: PROVIDER_LABELS["claude"],
-      apiKey: "", baseUrl: DEFAULT_PROVIDER_URLS.claude,
+      name: providerTypeLabel("claude"),
+      apiKey: "", baseUrl: defaultBaseUrlForProviderType("claude"),
       models: defaultModelsForProviderType("claude"),
       enabled: true,
     };
@@ -1559,7 +1616,7 @@ root.addEventListener("click", function(event) {
         type: provider.type,
         name: provider.name,
         apiKey: "",
-        baseUrl: provider.baseUrl || DEFAULT_PROVIDER_URLS[provider.type] || "",
+        baseUrl: provider.baseUrl || defaultBaseUrlForProviderType(provider.type),
         models: (provider.models || []).slice(),
         enabled: provider.enabled,
       };
@@ -1601,7 +1658,7 @@ root.addEventListener("click", function(event) {
     if (!f) { return; }
     const msg = {
       providerType: f.type,
-      name: f.name || PROVIDER_LABELS[f.type] || f.type,
+      name: f.name || providerTypeLabel(f.type),
       apiKey: f.apiKey || "",
       baseUrl: f.baseUrl || "",
       models: (f.models && f.models.length > 0 ? f.models : defaultModelsForProviderType(f.type)),
@@ -1839,8 +1896,13 @@ window.addEventListener("message", function(event) {
     render();
     return;
   }
+  if (message.type === "wizardStatus") {
+    state.wizardStatus = message.data || null;
+    render();
+    return;
+  }
   if (message.type === "settings") {
-    state.settingsData = Object.assign({ providers: [], activeProviderId: "", personaAssignments: [] }, message.data || {});
+    state.settingsData = Object.assign({ providerTypes: [], providers: [], activeProviderId: "", personaAssignments: [] }, message.data || {});
     normalizeQuickJobSelection();
     normalizePersonaAssignmentsForm();
     persistState();
@@ -1900,3 +1962,4 @@ window.addEventListener("message", function(event) {
 
 render();
 vscode.postMessage({ type: "requestSettings" });
+vscode.postMessage({ type: "requestWizardStatus" });

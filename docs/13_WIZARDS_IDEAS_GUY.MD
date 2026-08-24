@@ -60,3 +60,76 @@ Design has chunks: `Similar Subsystems`, `3rd party APIs`,`Subsystem Overview`, 
 - Step progression always requires explicit approval.
 - Market research is local-first. If optional web-capable runtime tools are unavailable, the step must say that explicitly and continue with local architecture/docs/knowledge only.  If no websearch is available, build a detailed prompt to allow user to get information from chatGPT web
 - The living markdown doc is the human source of truth; `wizard.json` exists only to keep state and integration deterministic.
+
+## Launcher and Coding Handoff (2026-08-23)
+
+**Launcher discoverability.** The sidebar wizard card previously rendered the
+`Launch Wizard` button only inside the expanded body, behind a disclosure whose
+sole affordance was a muted right-hand label (`7 steps`). Ten collapsed rows with
+no visible control read as a removed feature. The launch control now lives on the
+collapsed row itself:
+
+- Every implemented wizard shows a `Launch` / `Resume` button without any prior
+  interaction. A `>`/`v` chevron marks the disclosure separately.
+- Wizards with no stage pipeline behind them render a `Soon` badge instead of a
+  button. They used to offer an identical `Launch Wizard` that reached the
+  backend only to bounce off an information toast.
+- The extension pushes a `wizardStatus` message (`PlanSidebarProvider.sendWizardStatus`)
+  built from `getWizardSession`, so an in-flight run shows `Resume` plus a
+  `<stage> - step N of M` line rather than a fresh `Launch`.
+
+**Coding executor.** `startWizardCoding` used to stop at "session created": it
+promoted todos into `tasks.db` and left a human to run each one, which left the
+ACP work with no pipeline feeding it. The coding stage now delegates each
+agent-owned pending task to an ACP agent (`AcpSubagentDriver.delegate` with
+`deliverable: "files"`), sequentially, so concurrent agent processes cannot
+conflict in one worktree.
+
+`waterfree.wizardCodingExecutor` selects the executor:
+
+| value | behavior |
+| --- | --- |
+| `acp` (default) | Send the accepted coding tasks to a configured ACP agent. Warns and falls back to queueing when `waterfree.acpAgents` is empty. |
+| `provider` | Leave the tasks pending for the internal runtime. |
+| `ask` | Prompt at the start of each coding stage. |
+
+Still open (tracked in the backlog): task status in `tasks.db` is not yet updated
+from `DelegationResult`, so `Review` cannot aggregate what the agent actually did.
+
+## Sidebar Settings Was a Dead End on Narrow Widths (2026-08-24)
+
+Opening Settings from the Wizards sidebar could trap you with no way back to the
+main view short of restarting the editor. It was a layout bug, not a logic bug --
+every handler worked, and the `Close` button was in the DOM the whole time.
+
+`.settings-dialog-header` is a flex row of `Back` / title / `Close`. The title was
+`flex: 1` with no `min-width: 0`, so it refused to shrink below its own text, and
+two `min-width: 58px` buttons plus gaps gave the header a ~187px floor. Measured
+at a 180px sidebar: the header's content box is 138px, `Close` lands at
+`x=150..208`, and the panel itself ends at 170. A webview sidebar has no
+horizontal scroll, so the button was rendered but unreachable.
+
+`Back` was not an escape either -- it returns to the settings menu, and the menu
+renders no `Back` at all (`isMenu` suppresses it), leaving the same off-screen
+`Close` as the only exit.
+
+Fixed with two independent guards, so neither alone has to be sufficient:
+
+- the title takes `flex: 1 1 0` + `min-width: 0` and ellipsis-truncates, which
+  keeps the row on one line at every realistic width;
+- the header may `flex-wrap`, so if the buttons still cannot fit they move to a
+  second row instead of overflowing off-screen.
+
+`.sidebar-title` had the identical defect and pushed the `History` button out
+below ~120px; it got the same treatment.
+
+**Regression guard.** `scripts/sidebar-layout/check.py` (`npm run test:sidebar`)
+renders the real `sidebar.js`/`sidebar.css` headlessly at 340/260/220/180/150/120px
+and fails if any interactive control's box escapes the viewport, or if `Close`
+is unreachable on any settings page. It was confirmed to fail on the pre-fix CSS
+and pass after. DOM-only assertions cannot catch this class of bug -- the element
+exists and is `visible`; only its geometry is wrong.
+
+Known and accepted: at 100px the quick-job selects and the MCP `Browse` button
+still overflow. VS Code will not drag a sidebar that narrow, and none of them
+trap navigation.

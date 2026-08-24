@@ -300,27 +300,141 @@ export function selectModel(
 
 const PROVIDERS_KEY = "waterfree.providers.v1";
 const PROVIDERS_FILENAME = "providers.json";
-const DEFAULT_PROVIDER_URLS: Partial<Record<ProviderType, string>> = {
-  claude: "https://api.anthropic.com",
-  openai: "https://api.openai.com/v1",
-  groq: "https://api.groq.com/openai/v1",
-  ollama: "http://localhost:11434",
-  openrouter: "https://openrouter.ai/api/v1",
-  huggingface: "https://router.huggingface.co/v1",
-  gemini: "https://generativelanguage.googleapis.com",
-  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-};
-const DEFAULT_MODELS: Record<Exclude<ProviderType, "mock">, string[]> = {
-  claude: ["claude-opus-4-6", "claude-sonnet-4-6"],
-  openai: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
-  groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-  ollama: ["freehuntx/qwen3-coder:14b"],
-  // OpenRouter ids are always vendor/model; its catalog is too large to enumerate.
-  openrouter: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder"],
-  huggingface: [],
-  gemini: ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
-  qwen: ["qwen-max", "qwen-plus", "qwen-turbo"],
-};
+
+/**
+ * One row per provider type — everything the UI needs to offer it, and
+ * everything normalization needs to fill in a partial config.
+ *
+ * This is the single source of truth, and it is shipped to the sidebar webview
+ * over the settings message rather than being restated there. The sidebar used
+ * to keep its own hand-written copy of these maps, which is why openrouter,
+ * gemini and qwen were fully supported by the adapters and the profile writer
+ * yet absent from the provider dropdown.
+ */
+export interface ProviderTypeDescriptor {
+  type: ProviderType;
+  /** Display name, and the default `name` for a provider of this type. */
+  label: string;
+  /** Empty for providers with no endpoint of their own. */
+  defaultBaseUrl: string;
+  /** Placeholder for the key field; empty when no key is taken. */
+  apiKeyPlaceholder: string;
+  /** Offered in the model picker, and the fallback when a config omits models. */
+  defaultModels: string[];
+  requiresApiKey: boolean;
+  supportsBaseUrl: boolean;
+}
+
+export const PROVIDER_TYPE_CATALOG: ProviderTypeDescriptor[] = [
+  {
+    type: "claude",
+    label: "Claude",
+    defaultBaseUrl: "https://api.anthropic.com",
+    apiKeyPlaceholder: "sk-ant-api03-...",
+    defaultModels: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "openai",
+    label: "OpenAI / Codex",
+    defaultBaseUrl: "https://api.openai.com/v1",
+    apiKeyPlaceholder: "sk-proj-...",
+    defaultModels: ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "openrouter",
+    label: "OpenRouter",
+    defaultBaseUrl: "https://openrouter.ai/api/v1",
+    apiKeyPlaceholder: "sk-or-v1-...",
+    // OpenRouter ids are always vendor/model; its catalog is too large to
+    // enumerate, so these are a starting point rather than the whole set.
+    defaultModels: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder"],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "gemini",
+    label: "Gemini",
+    defaultBaseUrl: "https://generativelanguage.googleapis.com",
+    apiKeyPlaceholder: "AIza...",
+    defaultModels: ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "qwen",
+    label: "Qwen",
+    defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    apiKeyPlaceholder: "sk-...",
+    defaultModels: ["qwen-max", "qwen-plus", "qwen-turbo"],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "groq",
+    label: "Groq",
+    defaultBaseUrl: "https://api.groq.com/openai/v1",
+    apiKeyPlaceholder: "gsk_...",
+    defaultModels: [
+      "llama-3.3-70b-versatile",
+      "llama-3.1-8b-instant",
+      "meta-llama/llama-4-scout-17b-16e-instruct",
+      "meta-llama/llama-4-maverick-17b-128e-instruct",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3-32b",
+      "moonshotai/kimi-k2-instruct-0905",
+    ],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "ollama",
+    label: "Ollama",
+    defaultBaseUrl: "http://localhost:11434",
+    apiKeyPlaceholder: "",
+    defaultModels: ["freehuntx/qwen3-coder:14b", "llama3.2", "codestral", "qwen2.5-coder", "mistral"],
+    requiresApiKey: false,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "huggingface",
+    label: "Hugging Face",
+    defaultBaseUrl: "https://router.huggingface.co/v1",
+    apiKeyPlaceholder: "hf_...",
+    // Routed inference: the usable set depends on the account, so there is no
+    // meaningful default to offer.
+    defaultModels: [],
+    requiresApiKey: true,
+    supportsBaseUrl: true,
+  },
+  {
+    type: "mock",
+    label: "Mock (no API calls)",
+    defaultBaseUrl: "",
+    apiKeyPlaceholder: "",
+    defaultModels: [],
+    requiresApiKey: false,
+    supportsBaseUrl: false,
+  },
+];
+
+const PROVIDER_TYPES_BY_ID = new Map<ProviderType, ProviderTypeDescriptor>(
+  PROVIDER_TYPE_CATALOG.map((entry) => [entry.type, entry]),
+);
+
+export function providerTypeDescriptor(type: ProviderType): ProviderTypeDescriptor {
+  const descriptor = PROVIDER_TYPES_BY_ID.get(type);
+  if (!descriptor) {
+    // Unreachable while the catalog covers every ProviderType — the compiler
+    // enforces the union, not the array's completeness, so fail loudly.
+    throw new Error(`No catalog entry for provider type "${type}"`);
+  }
+  return descriptor;
+}
 const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string, string>> = {
   claude: {
     default: "claude-sonnet-4-6",
@@ -1086,26 +1200,7 @@ function normalizeName(value: unknown, type: ProviderType): string {
   if (typeof value === "string" && value.trim()) {
     return value.trim();
   }
-  switch (type) {
-    case "claude":
-      return "Claude";
-    case "openai":
-      return "OpenAI / ChatGPT";
-    case "groq":
-      return "Groq";
-    case "openrouter":
-      return "OpenRouter";
-    case "ollama":
-      return "Ollama";
-    case "huggingface":
-      return "Hugging Face";
-    case "gemini":
-      return "Gemini";
-    case "qwen":
-      return "Qwen";
-    case "mock":
-      return "Mock";
-  }
+  return providerTypeDescriptor(type).label;
 }
 
 function normalizeBaseUrl(type: ProviderType, value: unknown): string {
@@ -1113,7 +1208,7 @@ function normalizeBaseUrl(type: ProviderType, value: unknown): string {
   if (url) {
     return url;
   }
-  return DEFAULT_PROVIDER_URLS[type] || "";
+  return providerTypeDescriptor(type).defaultBaseUrl;
 }
 
 function normalizeModels(type: ProviderType, value: unknown): string[] {
@@ -1129,10 +1224,7 @@ function normalizeModels(type: ProviderType, value: unknown): string[] {
   if (models.length > 0) {
     return models;
   }
-  if (type === "mock") {
-    return [];
-  }
-  return [...DEFAULT_MODELS[type]];
+  return [...providerTypeDescriptor(type).defaultModels];
 }
 
 function normalizeModes(value: unknown): string[] {
@@ -1186,7 +1278,7 @@ function normalizeConnectionStyle(
 }
 
 function acceptsApiKey(provider: Pick<ProviderProfileEntry, "type" | "connection">): boolean {
-  if (provider.type === "mock" || provider.type === "ollama") {
+  if (!providerTypeDescriptor(provider.type).requiresApiKey) {
     return false;
   }
   return provider.connection.style !== "none";

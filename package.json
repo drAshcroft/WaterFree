@@ -272,6 +272,17 @@
           "default": "",
           "description": "Absolute path to the Godot executable used to run Godot tests (GUT / gdUnit4). Leave blank to fall back to the WATERFREE_GODOT, GODOT_BIN or GODOT environment variables, then 'godot' on PATH. Godot ships many differently named builds, so WaterFree never guesses — point this at the exact binary you want, e.g. C:\\\\Godot\\\\godot.windows.editor.x86_64.exe."
         },
+        "waterfree.wizardCodingExecutor": {
+          "type": "string",
+          "enum": ["acp", "provider", "ask"],
+          "enumDescriptions": [
+            "Send the wizard's accepted coding tasks to a configured ACP agent, which edits the workspace directly.",
+            "Leave the tasks pending in the session for the internal runtime.",
+            "Ask each time the coding stage starts."
+          ],
+          "default": "acp",
+          "markdownDescription": "Who builds the code once the `Coding Agents` stage is accepted. Defaults to `acp`: the earlier wizard stages exist to produce prompts a coding agent can execute, and an ACP agent brings its own editing tools. Falls back to queueing the tasks when no agent is configured under `waterfree.acpAgents`."
+        },
         "waterfree.acpAllowTerminal": {
           "type": "boolean",
           "default": false,
@@ -307,6 +318,7 @@
     "compile": "node esbuild.config.js",
     "watch": "node esbuild.config.js --watch",
     "test:acp": "node scripts/acp-smoke/run.js",
+    "test:sidebar": "python scripts/sidebar-layout/check.py",
     "vscode:prepublish": "node esbuild.config.js --minify",
     "package": "node esbuild.config.js --minify && npx @vscode/vsce package --no-dependencies --out waterfree.vsix --baseContentUrl https://localhost"
   },
