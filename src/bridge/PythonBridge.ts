@@ -61,8 +61,38 @@ export type SubagentInfo = {
 export type BackendProviderProfile = {
   version: number;
   activeProviderId: string;
-  catalog: Array<{ id?: string; type?: string }>;
+  catalog: Array<{
+    id?: string;
+    type?: string;
+    enabled?: boolean;
+    /**
+     * Present only on the *backend* profile — `exportBackendConfig()` resolves
+     * each entry's key out of SecretStorage. The on-disk `.waterfree/providers.json`
+     * never carries one.
+     */
+    connection?: { apiKey?: string };
+  }>;
   policies: unknown;
+};
+
+/**
+ * Vendor env var each provider type's SDK reads when no key is passed
+ * explicitly. The backend receives keys through the synced provider profile,
+ * but entry points that never see that profile — the standalone `waterfree`
+ * CLI, `qa-summary`, the tutorializer — have only the environment to go on,
+ * and an SDK constructed with an empty credential fails at construction time
+ * rather than at the request. Exporting these makes the environment a real
+ * backstop instead of an Anthropic-only one.
+ */
+const PROVIDER_KEY_ENV_VARS: Record<string, string> = {
+  claude: "ANTHROPIC_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  gemini: "GOOGLE_API_KEY",
+  groq: "GROQ_API_KEY",
+  qwen: "DASHSCOPE_API_KEY",
+  huggingface: "WATERFREE_HF_TOKEN",
 };
 
 export type WizardChunkData = {
@@ -205,6 +235,9 @@ export class PythonBridge implements vscode.Disposable {
       WATERFREE_BACKEND_LOG_FILE: this._backendLogFilePath,
       WATERFREE_EXTENSION_LOG_FILE: this._logger.logFilePath,
       WATERFREE_GRAPH_BINARY: graphBinary,
+      ...this._providerKeyEnv(),
+      // Spread last so the explicitly configured Anthropic key still wins over
+      // whatever the catalog happens to hold for a claude-typed entry.
       ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
       ...(webSearchEnabled ? {
         WATERFREE_ENABLE_WEB_TOOLS: "1",
@@ -610,6 +643,37 @@ export class PythonBridge implements vscode.Disposable {
     } catch {
       // Process already exited.
     }
+  }
+
+  /**
+   * Map every enabled catalog entry that carries a key onto its vendor env var.
+   *
+   * First enabled entry of a given type wins, matching the precedence
+   * `WaterFreeProviders.getPrimaryKey` already uses. Entries without a key are
+   * skipped so a keyless catalog entry cannot blank out a variable the user set
+   * in their own shell.
+   */
+  private _providerKeyEnv(): Record<string, string> {
+    const resolved: Record<string, string> = {};
+    if (!this._providerProfile) {
+      return resolved;
+    }
+    for (const entry of this._providerProfile.catalog) {
+      if (entry.enabled === false) {
+        continue;
+      }
+      const envVar = PROVIDER_KEY_ENV_VARS[String(entry.type ?? "")];
+      if (!envVar || resolved[envVar]) {
+        continue;
+      }
+      const key = String(entry.connection?.apiKey ?? "").trim();
+      if (!key) {
+        continue;
+      }
+      resolved[envVar] = key;
+      this._log(`Provider key found for ${String(entry.type)} — exporting ${envVar} to backend`);
+    }
+    return resolved;
   }
 
   private _resolveActiveProviderType(): string {

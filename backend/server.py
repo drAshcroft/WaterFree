@@ -369,13 +369,24 @@ class Server:
         return profile
 
     def _set_provider_profile(self, workspace_path: str, profile: ProviderProfileDocument) -> str:
+        """Store an already-normalized profile document for a workspace.
+
+        Deliberately does NOT re-normalize via ``profile.to_dict()``. That
+        round-trip is lossy for secrets: ``provider_to_dict`` serializes the
+        connection key as ``api_key`` (dataclass field name) while
+        ``normalize_provider_entry`` reads ``apiKey``, so a key handed over by
+        the extension host was silently dropped here — leaving adapters to
+        construct their clients with an empty credential. Callers reach this
+        through ``normalize_provider_profile``, so the document is already
+        canonical; keeping secrets out of ``provider_to_dict`` also keeps them
+        out of ``profile_hash`` and any other serialization of the document.
+        """
         path = os.path.abspath(workspace_path)
         if not hasattr(self, "_provider_profiles"):
             self._provider_profiles = {}
-        normalized = normalize_provider_profile(profile.to_dict())
-        self._provider_profiles[path] = normalized
+        self._provider_profiles[path] = profile
         self._clear_runtime_cache(workspace_path=path)
-        return normalized.profile_hash
+        return profile.profile_hash
 
     def _clear_runtime_cache(self, workspace_path: str | None = None) -> None:
         if not hasattr(self, "_runtime_cache"):

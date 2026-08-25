@@ -15,11 +15,14 @@ shape rather than looking the id up in ``model_catalog``.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from backend.llm.adapters.anthropic_adapter import _extract
 from backend.llm.provider_profiles import OPENROUTER_API_KEY_ENV, OPENROUTER_BASE_URL
+
+log = logging.getLogger(__name__)
 
 # Optional attribution headers. OpenRouter surfaces these on its dashboard; they
 # are not required for auth and carry no user data.
@@ -31,12 +34,27 @@ class OpenRouterAdapter:
     provider_type = "openrouter"
 
     def create_llm(self, model_id: str, config: Any) -> Any:
+        # Checked up front, rather than letting ChatOpenAI raise on an empty
+        # key: a targeted log here names the real cause. Previously this was
+        # a bare `except Exception: return f"openrouter:{model_id}"`, which
+        # fed that string to create_deep_agent(model=...) and surfaced as a
+        # misleading "requires the langchain-openrouter package" error many
+        # layers away from the actual missing credential.
+        api_key = resolve_api_key(config.get("api_key"))
+        if not api_key:
+            log.warning(
+                "OpenRouter: no API key for model '%s' — the profile carried none "
+                "and $%s is not set. Add the key through WaterFree provider "
+                "settings, or export $%s for the standalone CLI.",
+                model_id, OPENROUTER_API_KEY_ENV, OPENROUTER_API_KEY_ENV,
+            )
+            return None
         try:
             from langchain_openai import ChatOpenAI
 
             return ChatOpenAI(
                 model=model_id,
-                api_key=resolve_api_key(config.get("api_key")),
+                api_key=api_key,
                 base_url=config.get("base_url") or OPENROUTER_BASE_URL,
                 stream_usage=bool(config.get("streamUsage", True)),
                 # Chat Completions only — see module docstring.
@@ -44,8 +62,9 @@ class OpenRouterAdapter:
                 default_headers={"HTTP-Referer": _REFERER, "X-Title": _TITLE},
                 model_kwargs=dict(config.get("model_kwargs", {})),
             )
-        except Exception:
-            return f"openrouter:{model_id}"
+        except Exception as exc:
+            log.warning("OpenRouter: failed to construct ChatOpenAI for model '%s': %s", model_id, exc)
+            return None
 
     def extract_usage(self, response: Any) -> dict[str, int]:
         # OpenRouter normalizes upstream usage into the OpenAI shape, including
@@ -73,14 +92,15 @@ def is_openrouter_model_id(model_id: str) -> bool:
     return bool(vendor.strip()) and bool(name.strip())
 
 
-def resolve_api_key(profile_key: Any) -> str:
-    """Profile key first, then the environment.
+def resolve_api_key(profile_key: Any) -> str | None:
+    """Profile key first, then the environment. ``None`` when neither has one.
 
     The profile only carries a key when the extension host exported it from VS
     Code SecretStorage. The standalone `waterfree` CLI has no SecretStorage, so
-    it falls back to $OPENROUTER_API_KEY.
+    it falls back to $OPENROUTER_API_KEY. Returning ``None`` rather than ``""``
+    for "nothing resolved" lets callers use a plain truthiness check.
     """
     key = str(profile_key or "").strip()
     if key:
         return key
-    return os.environ.get(OPENROUTER_API_KEY_ENV, "").strip()
+    return os.environ.get(OPENROUTER_API_KEY_ENV, "").strip() or None

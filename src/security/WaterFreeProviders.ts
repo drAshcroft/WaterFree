@@ -351,7 +351,10 @@ export const PROVIDER_TYPE_CATALOG: ProviderTypeDescriptor[] = [
     apiKeyPlaceholder: "sk-or-v1-...",
     // OpenRouter ids are always vendor/model; its catalog is too large to
     // enumerate, so these are a starting point rather than the whole set.
-    defaultModels: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder"],
+    // stealth/ox-alpha is a cloaked preview model surfaced under OpenRouter's
+    // "stealth/" namespace — expect the id to change or disappear once it's
+    // deanonymized or retired.
+    defaultModels: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder", "stealth/ox-alpha"],
     requiresApiKey: true,
     supportsBaseUrl: true,
   },
