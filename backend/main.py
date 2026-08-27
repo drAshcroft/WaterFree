@@ -7,14 +7,16 @@ Usage:
     waterfree <area> <action> ...    CLI subcommand
                                      (see docs/cli-surface.md)
 
-Areas: todos | knowledge | index | testing | qa-summary
+Areas: see backend/cli/areas.py (the single source of truth).
 """
 from __future__ import annotations
 
 import multiprocessing
 import sys
 
-_CLI_AREAS = ("todos", "knowledge", "index", "testing", "qa-summary")
+# Imported rather than restated: this module and the dispatcher previously kept
+# separate copies, and a new area registered in one was invisible to the other.
+from backend.cli.areas import CLI_AREAS as _CLI_AREAS
 
 
 def main() -> None:

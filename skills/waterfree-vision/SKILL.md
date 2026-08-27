@@ -1,6 +1,7 @@
 ---
 name: waterfree-vision
 description: Use the `waterfree vision` CLI to look at screenshots and images with a local vision model — describe a rendered page, critique its UI, read its text, infer what it does, or compare two versions. Runs on the local GPU via Ollama; no image ever leaves the machine.
+requiresOllama: true
 ---
 
 # WaterFree — Vision

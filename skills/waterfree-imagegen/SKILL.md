@@ -1,6 +1,7 @@
 ---
 name: waterfree-imagegen
 description: Use the `waterfree imagegen` CLI to generate images on the local GPU with Stable Diffusion via diffusers. Presets are tuned for a 12 GB card and every setting is configurable per workspace or per invocation.
+requiresOllama: false
 ---
 
 # WaterFree — Image Generation

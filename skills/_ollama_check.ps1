@@ -6,7 +6,9 @@
     Dot-sourced by install_claude.ps1 and install_codex.ps1. Provides:
 
       Test-PackageNeedsOllama  -> $true if a skill package's SKILL.md declares
-                                  an Ollama dependency.
+                                  an Ollama dependency, via an explicit
+                                  `requiresOllama:` frontmatter field or, absent
+                                  that, a mention of Ollama in the body.
       Test-OllamaReady         -> a result object describing whether a local
                                   Ollama daemon (or CLI) is reachable and has a
                                   reasonably-sized model installed.
@@ -27,6 +29,17 @@ function Test-PackageNeedsOllama {
 
     $skillDoc = Join-Path $Package.FullName "SKILL.md"
     if (-not (Test-Path $skillDoc)) { return $false }
+
+    # An explicit declaration wins over the body scan below. The scan alone
+    # produces false positives: waterfree-imagegen needs no Ollama at all, but
+    # mentions `ollama stop` as advice for freeing VRAM, and was skipped on
+    # machines with no Ollama as a result.
+    $declared = Select-String -Path $skillDoc -Pattern '^requiresOllama:\s*(true|false)\s*$' `
+        -CaseSensitive:$false | Select-Object -First 1
+    if ($declared) {
+        return ($declared.Matches[0].Groups[1].Value -ieq 'true')
+    }
+
     return (Select-String -Path $skillDoc -Pattern "ollama" -SimpleMatch -Quiet)
 }
 
