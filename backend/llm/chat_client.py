@@ -24,10 +24,11 @@ local Ollama exactly as before.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from backend.llm import ollama_client
 from backend.llm.provider_profiles import (
@@ -37,6 +38,8 @@ from backend.llm.provider_profiles import (
     load_provider_profile,
 )
 from backend.llm.provider_resolver import resolve_provider
+
+log = logging.getLogger(__name__)
 
 # Provider types this module can talk to. The agent runtime supports more, but
 # these readers only need a local daemon and an OpenAI-compatible gateway --
@@ -70,13 +73,20 @@ class ChatUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class ChatTarget:
-    """A fully-resolved destination for one reader stage."""
+    """A fully-resolved destination for one reader stage.
+
+    `alternates` is the ordered fallback chain tried when this target fails --
+    the mechanism behind the `auto:free` / `auto:floor` sentinels, where one
+    logical selection expands to several concrete models plus a local tail.
+    Empty for a target that names a single model outright.
+    """
 
     provider_type: str
     provider_label: str
     model: str
     base_url: str
     api_key: str
+    alternates: tuple["ChatTarget", ...] = ()
 
     @property
     def is_local(self) -> bool:
@@ -84,6 +94,11 @@ class ChatTarget:
 
     def describe(self) -> str:
         return f"{self.provider_label} ({self.provider_type}) / {self.model}"
+
+    def chain(self) -> tuple["ChatTarget", ...]:
+        """This target followed by its fallbacks, each stripped of its own chain."""
+        head = self if not self.alternates else replace(self, alternates=())
+        return (head, *self.alternates)
 
 
 def local_ollama_target(model: str) -> ChatTarget:
@@ -122,12 +137,17 @@ def resolve_chat_target(
         if resolved is not None:
             profile = resolved.profile
             if profile.type in _OPENAI_COMPATIBLE:
-                return ChatTarget(
+                remote = ChatTarget(
                     provider_type=profile.type,
                     provider_label=profile.label or profile.type,
                     model=resolved.model_name,
                     base_url=profile.connection.base_url or _default_base_url(profile.type),
                     api_key=_resolve_api_key(profile.type, profile.connection.api_key),
+                )
+                return _expand_auto_model(
+                    remote,
+                    workspace_path=workspace_path,
+                    fallback_model=fallback_model,
                 )
             if profile.type == "ollama":
                 return ChatTarget(
@@ -141,12 +161,92 @@ def resolve_chat_target(
     return local_ollama_target(fallback_model)
 
 
+def _expand_auto_model(
+    target: ChatTarget,
+    *,
+    workspace_path: str,
+    fallback_model: str,
+) -> ChatTarget:
+    """Turn an `auto:free` / `auto:floor` model into a concrete fallback chain.
+
+    Only OpenRouter is fronted by a live catalog, so the sentinels are a no-op
+    for the other OpenAI-compatible providers -- resolving them there would mean
+    guessing prices we cannot see. The chain always ends at local Ollama, which
+    is what "free" means when the gateway has nothing to give.
+    """
+    # Deferred import: the catalog module reaches the network, and callers that
+    # never use a sentinel should not pay for importing it.
+    from backend.llm.openrouter_catalog import (  # noqa: PLC0415
+        AUTO_FREE,
+        MIN_READER_CONTEXT,
+        CatalogUnavailable,
+        is_auto_model,
+        load_models,
+        select_candidates,
+    )
+
+    if not is_auto_model(target.model):
+        return target
+    sentinel = target.model.strip().lower()
+    if target.provider_type != "openrouter":
+        raise ChatUnavailable(
+            f"Model '{sentinel}' is only supported for OpenRouter providers; "
+            f"'{target.provider_label}' is of type '{target.provider_type}'. "
+            "Name a concrete model id for this provider."
+        )
+
+    local_tail = (local_ollama_target(fallback_model),) if fallback_model else ()
+    try:
+        models = load_models(workspace_path=workspace_path, api_key=target.api_key)
+        candidates = select_candidates(models, sentinel=sentinel)
+    except CatalogUnavailable as exc:
+        if not local_tail:
+            raise ChatUnavailable(
+                f"Could not resolve '{sentinel}' against the OpenRouter catalog: {exc}"
+            ) from exc
+        log.warning("Falling back to local Ollama: %s", exc)
+        return local_tail[0]
+
+    if not candidates:
+        message = (
+            f"No OpenRouter model matched '{sentinel}' "
+            f"(needs a context window of at least {MIN_READER_CONTEXT:,} tokens)."
+        )
+        if not local_tail:
+            raise ChatUnavailable(message)
+        log.warning("%s Falling back to local Ollama.", message)
+        return local_tail[0]
+
+    chain = [replace(target, model=model_id, alternates=()) for model_id in candidates]
+    if sentinel == AUTO_FREE:
+        log.info("Resolved %s to free-first chain: %s", sentinel, ", ".join(candidates))
+    else:
+        log.info("Resolved %s to price-floor chain: %s", sentinel, ", ".join(candidates))
+    return replace(chain[0], alternates=(*chain[1:], *local_tail))
+
+
 def preflight(target: ChatTarget) -> None:
     """Fail fast with an actionable message before fanning out N chunk calls.
 
     A reader issues one request per chunk; discovering a dead daemon or a bad
     key on chunk 1 of 40 wastes the caller's time, so we check up front.
+
+    With a fallback chain the check passes if *any* link is usable: an
+    unreachable free endpoint is exactly what the chain exists to absorb.
     """
+    problems: list[str] = []
+    for link in target.chain():
+        try:
+            _preflight_one(link)
+            return
+        except ChatUnavailable as exc:
+            problems.append(f"{link.describe()}: {exc}")
+    raise ChatUnavailable(
+        "No usable target for this stage. Tried:\n  " + "\n  ".join(problems)
+    )
+
+
+def _preflight_one(target: ChatTarget) -> None:
     if target.is_local:
         _preflight_local(target)
         return
@@ -172,7 +272,36 @@ def chat(
 
     `max_tokens` is the caller's output budget; it maps to Ollama's
     `options.num_predict` and to `max_tokens` on OpenAI-compatible gateways.
+
+    When `target` carries a fallback chain (an `auto:free` / `auto:floor`
+    expansion), each link is tried in order and the first success wins. Failures
+    are per-request, not per-run: a free model that 429s on chunk 7 falls
+    through for chunk 7 and is tried again on chunk 8, since these limits are
+    usually a short window rather than an exhausted quota.
     """
+    links = target.chain()
+    if len(links) == 1:
+        return _chat_once(messages, target=links[0], max_tokens=max_tokens, timeout=timeout)
+
+    problems: list[str] = []
+    for link in links:
+        try:
+            return _chat_once(messages, target=link, max_tokens=max_tokens, timeout=timeout)
+        except ChatUnavailable as exc:
+            problems.append(f"{link.describe()}: {exc}")
+            log.info("Falling through from %s: %s", link.describe(), exc)
+    raise ChatUnavailable(
+        "Every candidate model failed for this request. Tried:\n  " + "\n  ".join(problems)
+    )
+
+
+def _chat_once(
+    messages: list[dict[str, str]],
+    *,
+    target: ChatTarget,
+    max_tokens: int,
+    timeout: int,
+) -> str:
     if target.is_local:
         # Normalize OllamaError into ChatUnavailable so callers handle exactly
         # one failure type regardless of which provider they were routed to.

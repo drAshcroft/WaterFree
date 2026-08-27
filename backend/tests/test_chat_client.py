@@ -16,7 +16,9 @@ def _profile(*, stages: list[str], provider_type: str = "openrouter", api_key: s
             "enabled": True,
             "label": "My Router",
             "connection": {"apiKey": api_key},
-            "models": {"default": "qwen/qwen3-coder"},
+            # Pinned per stage: reader stages otherwise default to the
+            # `auto:free` sentinel, which resolves against the live catalog.
+            "models": {"default": "qwen/qwen3-coder", "qa_summary": "qwen/qwen3-coder"},
             "routing": {"useForStages": stages},
         }],
         "policies": {"fallbackProviderOrder": ["router"]},

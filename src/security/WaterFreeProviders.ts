@@ -23,7 +23,8 @@ export type ProviderStage =
   | "knowledge"
   // Reader stages -- see READER_STAGES below.
   | "qa_summary"
-  | "tutorial";
+  | "tutorial"
+  | "testing";
 export type ProviderReloadMode = "manual" | "on_change";
 
 // ── Model abstraction types ───────────────────────────────────────────────
@@ -82,7 +83,7 @@ export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
 ];
 /**
  * Map/reduce reader stages: `waterfree qa-summary` over a large file or URL,
- * and tutorial generation.
+ * tutorial generation, and intelligent summarization of a test run.
  *
  * Deliberately NOT part of DEFAULT_PROVIDER_STAGES. That list is the "this
  * provider serves everything" default, so including them would silently hand
@@ -90,7 +91,26 @@ export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
  * to sit first in the fallback order. A provider must name a reader stage in
  * routing.useForStages to claim it; otherwise readers stay on local Ollama.
  */
-export const READER_STAGES: ProviderStage[] = ["qa_summary", "tutorial"];
+export const READER_STAGES: ProviderStage[] = ["qa_summary", "tutorial", "testing"];
+
+/**
+ * Pseudo-model ids accepted wherever a model id is, for OpenRouter only.
+ * They resolve at run time against the live `/api/v1/models` catalog:
+ *
+ *   auto:free   zero-priced models, widest context first
+ *   auto:floor  cheapest priced models first
+ *
+ * Each expands to an ordered candidate chain ending at local Ollama, so a
+ * rate-limited free endpoint degrades instead of failing the run. See
+ * backend/llm/openrouter_catalog.py -- that module owns the behaviour.
+ */
+export const AUTO_MODEL_FREE = "auto:free";
+export const AUTO_MODEL_FLOOR = "auto:floor";
+export const AUTO_MODEL_IDS: string[] = [AUTO_MODEL_FREE, AUTO_MODEL_FLOOR];
+
+export function isAutoModelId(modelId: string): boolean {
+  return AUTO_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase());
+}
 
 export interface ProviderConfig {
   id: string;

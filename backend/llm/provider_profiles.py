@@ -28,6 +28,7 @@ DEFAULT_SUMMARIZATION_THRESHOLDS: dict[str, int] = {
     # already bounded by the chunker; summarization only needs to catch runaways.
     "QA_SUMMARY": 20_000,
     "TUTORIAL": 20_000,
+    "TESTING": 20_000,
 }
 DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
     "planning",
@@ -48,6 +49,9 @@ DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
 READER_STAGES: tuple[str, ...] = (
     "qa_summary",
     "tutorial",
+    # Intelligent summarization of a test run: `waterfree testing run --summary`
+    # feeds pass/fail counts and failure output through the same map/reduce path.
+    "testing",
 )
 ALL_PROVIDER_STAGES: tuple[str, ...] = DEFAULT_PROVIDER_STAGES + READER_STAGES
 DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
@@ -94,8 +98,11 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "annotation": "anthropic/claude-haiku-4.5",
         "execution": "anthropic/claude-sonnet-4.5",
         "debug": "anthropic/claude-haiku-4.5",
-        "qa_summary": "qwen/qwen3-coder",
-        "tutorial": "qwen/qwen3-coder",
+        # Reader stages default to the live "cheapest that works" selection
+        # rather than a pinned id -- see backend/llm/openrouter_catalog.py.
+        "qa_summary": "auto:free",
+        "tutorial": "auto:free",
+        "testing": "auto:free",
     },
     "qwen": {
         "default": "qwen-plus",

@@ -12,7 +12,8 @@ the host.
 waterfree <area> <action> [--workspace <path>] [flags] [positional]
 ```
 
-- **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`
+- **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`,
+  `vision`, `imagegen`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
   every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
@@ -138,10 +139,19 @@ Mirrors `backend/mcp_testing.py`. Auto-detects unittest/pytest/jest/vitest.
 
 | Action       | Flags / args |
 |--------------|--------------|
-| `run`        | `--workspace`, `--full` |
-| `run-one`    | `<name-substring>`, `--workspace`, `--full` |
+| `run`        | `--workspace`, `--full`, `--summary` |
+| `run-one`    | `<name-substring>`, `--workspace`, `--full`, `--summary` |
 | `list`       | `--workspace`, `--full` |
 | `logs`       | — |
+| `summarize`  | `--workspace` |
+
+`--summary` adds a `summary` key to the JSON: an LLM root-cause grouping of the
+failures, produced by `backend/testing/summary.py`. It is advisory — if the
+model is unreachable the run still reports its real result, with the reason in
+`summaryError`, and the exit code is unchanged. `summarize` does the same for
+the stored output of the last run, without re-running anything.
+
+Both route through the `testing` stage in `.waterfree/providers.json`.
 
 ## Area: qa-summary
 
@@ -154,8 +164,83 @@ CLI cannot read VS Code SecretStorage).
 |--------------|--------------|
 | `ask`        | `<file-or-url>`, `--question Q` (or `-q`), `--workspace PATH` |
 
+## Reader-stage model selection
+
+`qa_summary`, `tutorial`, and `testing` are the *reader* stages. A provider must
+name one in `routing.useForStages` to claim it; otherwise readers stay on local
+Ollama.
+
+For an `openrouter` provider, a reader stage's model may be a sentinel instead
+of a concrete id:
+
+| Model id     | Meaning |
+|--------------|---------|
+| `auto:free`  | Zero-priced models, widest context window first, with a short cheapest-paid tail |
+| `auto:floor` | Cheapest priced models first — the price floor |
+
+Both are resolved at run time against OpenRouter's live `/api/v1/models`, cached
+for a day in `.waterfree/openrouter-models.json` (a stale cache is served if the
+refresh fails, so an offline run still works). Each expands to an ordered
+*chain* of candidates ending at local Ollama: a rate-limited free endpoint falls
+through to the next candidate per request rather than failing the run. These are
+the defaults for the three reader stages on OpenRouter — set a concrete model id
+to opt out. See `backend/llm/openrouter_catalog.py`.
+
 Exit code `4` if the resolved provider is unavailable — Ollama not running, the
 model not installed, or no API key for a remote provider.
+
+## Area: vision
+
+Implemented in `backend/vision/`. Runs a local vision model through the Ollama
+daemon; no image leaves the machine. Takes image **files** — it does not capture
+screenshots itself.
+
+| Action      | Flags / args |
+|-------------|--------------|
+| `look`      | `<image>...` (up to 4), `--purpose`, `-q/--question`, `--model`, `--tier`, `--workspace` |
+| `models`    | `--workspace` |
+| `purposes`  | `--workspace` |
+| `pull`      | `--tier {small,large}` or `--model <id>`, `--workspace` |
+
+Purposes select both the model tier and the framing of the question:
+`describe` (small), and `triage` / `ui` / `function` / `text` / `compare` (large).
+
+Two tiers: `small` = moondream (~1.7 GB), `large` = qwen2.5vl:7b (~6 GB).
+Override per-invocation with `--model`, or globally with
+`$WATERFREE_VISION_MODEL_SMALL` / `$WATERFREE_VISION_MODEL_LARGE`.
+
+**Nothing is downloaded implicitly.** A missing model exits `4` with the exact
+`waterfree vision pull` command — these are gigabytes, and a describe should
+never silently cost 6 GB of disk.
+
+Images are downscaled to 1280px on the long edge (`$WATERFREE_VISION_MAX_EDGE`)
+and re-encoded as PNG before being sent.
+
+## Area: imagegen
+
+Implemented in `backend/imagegen/`. Generates images on the local GPU via
+`diffusers`. Requires `diffusers`, `accelerate`, `sentencepiece`, `protobuf`
+and a CUDA-capable PyTorch; CPU generation is deliberately unsupported.
+
+| Action    | Flags / args |
+|-----------|--------------|
+| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--workspace` |
+| `models`  | `--workspace` |
+| `status`  | `--workspace` |
+| `init`    | `--workspace` |
+| `unload`  | `--workspace` |
+
+Presets: `sd35-medium` (default, ~11 GB), `sdxl` (~7 GB), `sdxl-turbo` (~7 GB),
+`flux-schnell` (~24 GB, needs sequential offload on a 12 GB card). Settings
+resolve in three layers, later winning: preset defaults → `.waterfree/imagegen.json`
+→ CLI flags.
+
+Weights download to the Hugging Face cache on first use, not the workspace.
+SD3.5 and FLUX are gated repos: accept the licence and set `$HF_TOKEN`.
+
+Images and a reproducibility sidecar `.json` are written to
+`<workspace>/.waterfree/generated`. A batch shares one generator, so only the
+first image records its seed.
 
 ## Out of scope (deliberately)
 

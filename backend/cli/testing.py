@@ -15,8 +15,10 @@ from backend.cli._common import (
     emit_raw,
     resolve_workspace,
 )
+from backend.llm.chat_client import ChatUnavailable
 from backend.testing.godot import GodotError, GodotRunner
 from backend.testing.runners import RUNNERS, detect_runner, read_log, write_log
+from backend.testing.summary import summarize_log, summarize_run
 
 
 def _add_runner_args(parser: ArgumentParser) -> None:
@@ -37,6 +39,18 @@ def _add_runner_args(parser: ArgumentParser) -> None:
     )
 
 
+def _add_summary_arg(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "Add an LLM root-cause summary of the failures to the JSON output. "
+            "Uses the `testing` stage from .waterfree/providers.json, which "
+            "defaults to a free OpenRouter model and falls back to local Ollama."
+        ),
+    )
+
+
 def register(sub: _SubParsersAction) -> None:
     p = sub.add_parser("testing", help="Auto-detected test runner")
     actions = p.add_subparsers(dest="action", metavar="<action>")
@@ -45,12 +59,14 @@ def register(sub: _SubParsersAction) -> None:
     p_run = actions.add_parser("run", help="Run the full test suite")
     add_workspace_arg(p_run)
     _add_runner_args(p_run)
+    _add_summary_arg(p_run)
     add_full_arg(p_run)
 
     p_run_one = actions.add_parser("run-one", help="Run tests matching a substring")
     add_workspace_arg(p_run_one)
     p_run_one.add_argument("name_substr")
     _add_runner_args(p_run_one)
+    _add_summary_arg(p_run_one)
     add_full_arg(p_run_one)
 
     p_list = actions.add_parser("list", help="Discover all test names")
@@ -60,6 +76,12 @@ def register(sub: _SubParsersAction) -> None:
 
     p_logs = actions.add_parser("logs", help="Print raw output from the last run")
     add_workspace_arg(p_logs)
+
+    p_summary = actions.add_parser(
+        "summarize",
+        help="LLM root-cause summary of the last run's stored output",
+    )
+    add_workspace_arg(p_summary)
 
     p.set_defaults(_runner=run)
 
@@ -86,6 +108,16 @@ def run(args: Namespace) -> int:
         emit_raw(read_log(workspace))
         return EXIT_OK
 
+    if action == "summarize":
+        try:
+            summary = summarize_log(read_log(workspace), workspace_path=workspace)
+        except ChatUnavailable as exc:
+            return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
+        except ValueError as exc:
+            return emit_error(str(exc), exit_code=EXIT_USAGE)
+        emit_json({"summary": summary})
+        return EXIT_OK
+
     try:
         runner = _build_runner(args, workspace)
         return _dispatch(runner, workspace, args, action)
@@ -99,13 +131,13 @@ def _dispatch(runner, workspace: str, args: Namespace, action: str) -> int:
     if action == "run":
         result = runner.run_all(workspace)
         write_log(workspace, result.raw_output)
-        emit_json(_result_payload(result))
+        emit_json(_result_payload(result, workspace, args))
         return EXIT_OK if result.failed == 0 else 1
 
     if action == "run-one":
         result = runner.run_one(workspace, args.name_substr)
         write_log(workspace, result.raw_output)
-        emit_json(_result_payload(result))
+        emit_json(_result_payload(result, workspace, args))
         return EXIT_OK if result.failed == 0 and result.passed > 0 else 1
 
     if action == "list":
@@ -115,8 +147,8 @@ def _dispatch(runner, workspace: str, args: Namespace, action: str) -> int:
     return emit_error(f"unknown action: {action}", exit_code=EXIT_USAGE)
 
 
-def _result_payload(result) -> dict:
-    return {
+def _result_payload(result, workspace: str = "", args: Namespace | None = None) -> dict:
+    payload = {
         "passed": result.passed,
         "failed": result.failed,
         "total": result.passed + result.failed,
@@ -130,3 +162,11 @@ def _result_payload(result) -> dict:
             for r in result.results
         ],
     }
+    if args is not None and getattr(args, "summary", False):
+        # Advisory only: a dead gateway must not turn a green suite red, so the
+        # failure is reported in-band and the exit code is left to the tests.
+        try:
+            payload["summary"] = summarize_run(result, workspace_path=workspace)
+        except (ChatUnavailable, ValueError) as exc:
+            payload["summaryError"] = str(exc)
+    return payload

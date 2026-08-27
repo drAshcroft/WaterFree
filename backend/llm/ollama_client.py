@@ -167,15 +167,20 @@ def chat(
     timeout: int = 180,
     keep_alive: str | None = None,
     options: dict | None = None,
+    images: list[str] | None = None,
 ) -> str:
     """
     Send a chat request to Ollama and return the assistant's response text.
 
     messages: list of {"role": "system"|"user"|"assistant", "content": "..."}
+    images:   base64-encoded image payloads (no data: prefix) for a vision
+              model. Attached to the LAST user message, which is where Ollama
+              expects them -- a multimodal turn is one message carrying both
+              the question and its pixels, not a separate image message.
     """
     payload = {
         "model": model,
-        "messages": messages,
+        "messages": _attach_images(messages, images),
         "stream": False,
     }
     if os.environ.get("WATERFREE_OLLAMA_THINK", "false").strip().lower() not in {"1", "true", "yes", "on"}:
@@ -206,3 +211,76 @@ def chat(
         ) from exc
     except Exception as exc:
         raise OllamaError(f"Ollama request failed: {exc}") from exc
+
+
+def _attach_images(messages: list[dict], images: list[str] | None) -> list[dict]:
+    """Return `messages` with `images` bolted onto the last user turn."""
+    if not images:
+        return messages
+    copied = [dict(m) for m in messages]
+    for message in reversed(copied):
+        if message.get("role") == "user":
+            message["images"] = list(images)
+            return copied
+    # No user turn to attach to: synthesise one rather than silently dropping
+    # the pixels, which would produce a confident answer about nothing.
+    copied.append({"role": "user", "content": "", "images": list(images)})
+    return copied
+
+
+def pull(
+    model: str,
+    base: str = _DEFAULT_BASE,
+    timeout: int = 3600,
+    on_progress: "callable | None" = None,
+) -> None:
+    """Download `model` into the local Ollama store, blocking until complete.
+
+    Streams NDJSON status lines; `on_progress` receives each status string.
+    A generous default timeout: these are multi-gigabyte downloads.
+    """
+    req = urllib.request.Request(
+        f"{base}/api/pull",
+        data=json.dumps({"model": model, "stream": True}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for raw_line in resp:
+                line = raw_line.decode(errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("error"):
+                    raise OllamaError(f"Pull of '{model}' failed: {event['error']}")
+                if on_progress is not None:
+                    on_progress(str(event.get("status", "")))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise OllamaError(f"Ollama HTTP {exc.code} pulling '{model}': {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise OllamaError(f"Cannot reach Ollama at {base}: {exc}") from exc
+    except OllamaError:
+        raise
+    except Exception as exc:
+        raise OllamaError(f"Pull of '{model}' failed: {exc}") from exc
+
+
+def has_model(model: str, base: str = _DEFAULT_BASE) -> bool:
+    """True when `model` is already downloaded.
+
+    Tag-aware: a bare name matches any tag, while an explicit tag must match
+    exactly (with ":latest" implied), mirroring how Ollama itself resolves ids.
+    """
+    try:
+        installed = [name.lower() for name in list_models(base=base)]
+    except OllamaError:
+        return False
+    wanted = model.strip().lower()
+    if ":" in wanted:
+        return wanted in installed or f"{wanted}:latest" in installed
+    return any(name.split(":", 1)[0] == wanted for name in installed)

@@ -20,6 +20,7 @@ output).
 - Run a specific test to confirm a fix — `waterfree testing run-one <substr>`
 - See which tests exist before running one — `waterfree testing list`
 - Read the full output of the last test run — `waterfree testing logs`
+- Triage a wall of failures into root causes — `waterfree testing summarize`
 
 ## CLI
 
@@ -67,11 +68,36 @@ waterfree testing logs --workspace .
 Prints raw stdout+stderr from the most recent `run` or `run-one` (not JSON).
 Use this after a failure to see the complete traceback.
 
+### Intelligent failure summary
+
+A red suite usually fails in fewer ways than it has failing tests. Instead of
+reading thirty tracebacks, ask for a root-cause grouping:
+
+```bash
+waterfree testing run --summary --workspace .      # summarize this run
+waterfree testing summarize --workspace .          # summarize the stored last run
+```
+
+`--summary` adds a `summary` string to the same JSON; `summarize` returns
+`{"summary": "..."}` without re-running the suite. This is advisory: the summary
+never changes the exit code, and if the model is unreachable the run still
+reports its real result with the reason in `summaryError`.
+
+The model comes from the `testing` stage in `.waterfree/providers.json`. On an
+OpenRouter provider it defaults to `auto:free` — the widest-context zero-priced
+model available right now — falling through to the cheapest paid model and then
+to local Ollama if that is rate limited. Use `auto:floor` for cheapest-paid-first
+instead, or pin a concrete model id. See `docs/cli-surface.md`.
+
+Prefer `logs` when you need the literal traceback, and `summarize` when you need
+to know *which* problem to fix first.
+
 ## Recommended pattern
 
 ```bash
 waterfree testing run --workspace .                  # Quick pass/fail summary
 # if failing:
+waterfree testing summarize --workspace .            # Root causes, most impactful first
 waterfree testing logs --workspace .                 # Full traceback
 # fix code, then:
 waterfree testing run-one "test_foo" --workspace .   # Confirm specific test passes
