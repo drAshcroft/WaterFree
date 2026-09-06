@@ -72,7 +72,10 @@ if (-not $availablePackages) {
     throw "No installable skill packages found under '$SourceRoot'."
 }
 
-$selectedPackages = if ($Skill -and $Skill.Count -gt 0) {
+# @(...) so a single-skill selection stays an array. Without it PowerShell
+# unwraps to one DirectoryInfo, and $selectedPackages.Count below throws under
+# Set-StrictMode -- installing exactly one skill would succeed, then error.
+$selectedPackages = @(if ($Skill -and $Skill.Count -gt 0) {
     foreach ($s in $Skill) {
         $package = $availablePackages | Where-Object { $_.Name -eq $s }
         if (-not $package) {
@@ -83,7 +86,7 @@ $selectedPackages = if ($Skill -and $Skill.Count -gt 0) {
     }
 } else {
     $availablePackages
-}
+})
 
 # Gate the Ollama-dependent skills: skip them when there's no usable local
 # model, unless the user explicitly named them or passed -IncludeOllamaSkills.

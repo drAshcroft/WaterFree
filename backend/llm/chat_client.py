@@ -56,6 +56,14 @@ _API_KEY_ENV: dict[str, str] = {
 _DEFAULT_TIMEOUT_SECONDS = 240
 _LOCAL_KEEP_ALIVE = os.environ.get("WATERFREE_QA_SUMMARY_KEEP_ALIVE", "30m")
 
+# A cold Ollama daemon has to load the model off disk before it can answer,
+# which can run well past the callers' own timeouts (240s for qa_summary, 180s
+# for testing) on a large model or a slow disk/GPU -- timing out the very
+# request meant to fall back locally. Local calls cost nothing and hit no rate
+# limit, so it's safe to give them a much longer floor than a remote call would
+# get; this only stretches the *local* leg, never a paid/rate-limited one.
+_LOCAL_COLD_START_TIMEOUT_SECONDS = int(os.environ.get("WATERFREE_OLLAMA_TIMEOUT_SECONDS", "600"))
+
 # Retained for callers that still hardcode the local daemon.
 LOCAL_OLLAMA_BASE = os.environ.get("WATERFREE_OLLAMA_BASE", "http://localhost:11434")
 
@@ -310,7 +318,7 @@ def _chat_once(
                 model=target.model,
                 messages=messages,
                 base=target.base_url,
-                timeout=timeout,
+                timeout=max(timeout, _LOCAL_COLD_START_TIMEOUT_SECONDS),
                 keep_alive=_LOCAL_KEEP_ALIVE,
                 options={"num_predict": max_tokens},
             ).strip()

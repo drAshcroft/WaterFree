@@ -89,6 +89,16 @@ model available right now — falling through to the cheapest paid model and the
 to local Ollama if that is rate limited. Use `auto:floor` for cheapest-paid-first
 instead, or pin a concrete model id. See `docs/cli-surface.md`.
 
+**Cold start:** local Ollama (the default when no provider claims the `testing`
+stage, and the last-resort fallback otherwise) unloads its model from memory
+when idle and has to reload it from disk on the next call — potentially several
+minutes for a 14B model. That reload eats into the request's own 180s timeout
+with no retry, so `--summary`/`summarize` can fail with `summaryError` on a cold
+daemon even though the test run itself is unaffected (summarization never
+changes the exit code). Retrying right after usually succeeds since the model
+is warm by then. To avoid the wait, warm the model up first with
+`ollama run freehuntx/qwen3-coder:14b ""` (blocks until loaded, then returns).
+
 Prefer `logs` when you need the literal traceback, and `summarize` when you need
 to know *which* problem to fix first.
 

@@ -73,6 +73,17 @@ Output shape:
   or set `WATERFREE_OLLAMA_BASE`.
 - The `freehuntx/qwen3-coder:14b` model installed by default, or set `WATERFREE_QA_SUMMARY_MODEL`.
 
+**Cold start:** Ollama unloads a model from memory after `keep_alive` idles out
+(default `30m`, `WATERFREE_QA_SUMMARY_KEEP_ALIVE`). The next request then has to
+reload it from disk, which can take a long time — potentially several minutes
+for a 14B model on slower disks/GPUs — and that reload eats into the request's
+own 240s timeout with no retry. A cold start that overruns the timeout fails
+with exit `4`, even though a second attempt right after usually succeeds
+immediately because the model is warm by then. If the first call in a while
+fails this way, just retry it. To avoid the wait mid-task, warm the model up
+first with `ollama run freehuntx/qwen3-coder:14b ""` (blocks until loaded, then
+returns).
+
 **Remote (OpenRouter):** add a provider to `.waterfree/providers.json` that names
 `qa_summary` in `routing.useForStages`, and export `OPENROUTER_API_KEY`. Routing
 is opt-in — a provider that only serves the agent stages will not capture this
