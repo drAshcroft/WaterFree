@@ -33,6 +33,8 @@ Short files are graded directly. Long files are chunked, analyzed in order, and
 reduced to a whole-work grade; inspect `evidence_mode` and `chunks_processed` if
 the evaluation method matters to the user.
 
+Grading can take 30 s to 3 minutes depending on the load
+
 ## Cost-aware routing
 
 The command uses the opt-in `creative_writing` reader stage. For inexpensive

@@ -51,9 +51,30 @@
     Bypass the prerequisite probe (Python, PyInstaller, .NET SDK, Node, npm, WiX).
     Use only when you know exactly what's missing.
 
+.PARAMETER Deploy
+    After a successful build, install the artifacts onto THIS machine (Stage 5):
+
+      - dist\WaterFreeSetup-<version>.msi via `msiexec /i /qn` (perUser scope,
+        so no elevation is required)
+      - dist\waterfree.vsix via `code --install-extension --force`
+      - skills\install_claude.ps1 and skills\install_codex.ps1
+
+    Off by default: a plain build stays side-effect free.
+
+.PARAMETER SkipVsixDeploy
+    With -Deploy, don't run `code --install-extension`. The MSI's helper already
+    installs the vsix; use this when you only want the MSI's copy.
+
+.PARAMETER SkipSkillsDeploy
+    With -Deploy, don't run the Claude/Codex skill installers.
+
 .EXAMPLE
     .\build_installer.ps1
     # Full build with defaults; outputs dist\WaterFreeSetup-0.1.0.msi
+
+.EXAMPLE
+    .\build_installer.ps1 -Deploy
+    # Full build, then install the MSI, the vsix and the skills on this machine
 
 .EXAMPLE
     .\build_installer.ps1 -ProductVersion 0.2.0 -Clean
@@ -78,6 +99,9 @@ param(
     [switch]$SkipMsi,
     [switch]$SkipExeSmoke,
     [switch]$SkipPrereqCheck,
+    [switch]$Deploy,
+    [switch]$SkipVsixDeploy,
+    [switch]$SkipSkillsDeploy,
     [switch]$NoPause
 )
 
@@ -140,6 +164,7 @@ $WixProj    = Join-Path $WixDir   "WaterFreeInstaller.wixproj"
 $WixPayload = Join-Path $WixDir   "obj\payload"
 $BuildDir   = Join-Path $RepoRoot "build"   # build scratch (cleaned by -Clean)
 $VsixPath   = Join-Path $RepoRoot "waterfree.vsix"
+$SkillsDir  = Join-Path $RepoRoot "skills"
 
 # Runtime naming: waterfree-<sys.platform>-<arch>/waterfree(.exe). Mirrors the
 # path the VS Code extension probes (PythonBridge.start).
@@ -428,6 +453,113 @@ Invoke-Stage "Stage 4: Staging artifacts into dist/" {
     Write-Host "    -> dist\$RuntimeDirName\"   -ForegroundColor Green
     Write-Host "    -> dist\$RuntimeZipName"    -ForegroundColor Green
     Write-Host "    -> dist\waterfree.vsix"    -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# Stage 5: Deploy the freshly built artifacts onto this machine
+#
+# Opt-in (-Deploy) so a plain build never mutates the developer's environment.
+# The MSI is perUser scope, so none of this needs elevation.
+# ---------------------------------------------------------------------------
+
+# Run one of the skill installers in a child PowerShell. Isolation matters: those
+# scripts set Set-StrictMode/$ErrorActionPreference and `exit` from a trap, none
+# of which should be able to reach into this build. Returns the child exit code.
+function Invoke-SkillInstaller([string]$scriptPath) {
+    if (-not (Test-Path $scriptPath)) {
+        Write-Host "    SKIP: $scriptPath not found." -ForegroundColor Yellow
+        return 0
+    }
+    $psExe = (Get-Process -Id $PID).Path
+    Write-Host "    Running $(Split-Path -Leaf $scriptPath) ..." -ForegroundColor DarkGray
+    $proc = Start-Process -FilePath $psExe `
+                          -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass",
+                                          "-File", $scriptPath, "-NoPause") `
+                          -Wait -PassThru -NoNewWindow
+    return $proc.ExitCode
+}
+
+if (-not $Deploy) {
+    Write-Stage "Stage 5: Deploy (skipped, pass -Deploy to install on this machine)"
+} else {
+    Invoke-Stage "Stage 5: Deploying to this machine" {
+        # --- 5a. MSI -------------------------------------------------------
+        if ($SkipMsi) {
+            Write-Host "    SKIP MSI install (-SkipMsi was passed; nothing was built)." -ForegroundColor Yellow
+        } else {
+            $deployMsi = Join-Path $DistDir "WaterFreeSetup-$ProductVersion.msi"
+            if (-not (Test-Path $deployMsi)) {
+                Write-Host "FAILED: expected MSI at $deployMsi." -ForegroundColor Red
+                Stop-Build 1
+            }
+            $msiLog = Join-Path $env:TEMP "WaterFreeSetup-$ProductVersion.log"
+            Write-Host "    msiexec /i $deployMsi /qn" -ForegroundColor DarkGray
+            $msi = Start-Process -FilePath "msiexec.exe" `
+                                 -ArgumentList @("/i", "`"$deployMsi`"", "/qn", "/norestart",
+                                                 "/l*v", "`"$msiLog`"") `
+                                 -Wait -PassThru
+            # 3010 = success, reboot requested. Anything else is a real failure.
+            if ($msi.ExitCode -ne 0 -and $msi.ExitCode -ne 3010) {
+                Write-Host "FAILED: msiexec returned $($msi.ExitCode). Log: $msiLog" -ForegroundColor Red
+                Stop-Build $msi.ExitCode
+            }
+            Write-Host "    Installed WaterFree $ProductVersion (log: $msiLog)" -ForegroundColor Green
+        }
+
+        # --- 5b. VSIX ------------------------------------------------------
+        # The MSI helper installs the vsix too; doing it here as well is
+        # idempotent (--force) and covers -SkipMsi / helper-failure cases.
+        if ($SkipVsixDeploy) {
+            Write-Host "    SKIP vsix install (-SkipVsixDeploy)." -ForegroundColor Yellow
+        } else {
+            $deployVsix = Join-Path $DistDir "waterfree.vsix"
+            if (-not (Test-Path $deployVsix)) { $deployVsix = $VsixPath }
+            if (-not (Test-Command "code")) {
+                # Non-fatal: the MSI's helper already handled the vsix, and a
+                # machine without the `code` CLI on PATH is a normal setup.
+                Write-Host "    SKIP vsix install: the 'code' CLI is not on PATH." -ForegroundColor Yellow
+            } else {
+                & code --install-extension $deployVsix --force
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "    Installed $deployVsix into VS Code" -ForegroundColor Green
+                } elseif (-not $SkipMsi) {
+                    # The MSI helper is the authoritative vsix installer and has
+                    # already run. This second pass is belt-and-braces, and it
+                    # reliably hits EBUSY when the build is launched from a VS
+                    # Code instance that currently has the extension loaded --
+                    # an environmental condition, not a broken build. Warn only.
+                    Write-Host "    WARNING: code --install-extension returned $LASTEXITCODE." -ForegroundColor Yellow
+                    Write-Host "    The MSI helper already installed the vsix, so this is non-fatal." -ForegroundColor DarkGray
+                    Write-Host "    Restart VS Code to load WaterFree $ProductVersion." -ForegroundColor DarkGray
+                } else {
+                    # -SkipMsi means nothing else installed the extension, so a
+                    # failure here really does leave the machine un-deployed.
+                    Write-Host "FAILED: code --install-extension returned $LASTEXITCODE." -ForegroundColor Red
+                    Write-Host "Close every VS Code window and re-run, or pass -SkipVsixDeploy." -ForegroundColor Yellow
+                    Stop-Build $LASTEXITCODE
+                }
+            }
+        }
+
+        # --- 5c. Skills ----------------------------------------------------
+        if ($SkipSkillsDeploy) {
+            Write-Host "    SKIP skill installers (-SkipSkillsDeploy)." -ForegroundColor Yellow
+        } else {
+            foreach ($installer in @("install_claude.ps1", "install_codex.ps1")) {
+                $code = Invoke-SkillInstaller (Join-Path $SkillsDir $installer)
+                if ($code -ne 0) {
+                    Write-Host "FAILED: $installer returned $code." -ForegroundColor Red
+                    Stop-Build $code
+                }
+            }
+            Write-Host "    Skills installed for Claude Code and Codex" -ForegroundColor Green
+        }
+
+        # Invoke-Stage treats a non-zero $LASTEXITCODE as a stage failure. The
+        # child processes above are already checked explicitly, so clear any
+        # residue (e.g. a benign 3010) before returning.
+        $global:LASTEXITCODE = 0
+    }
 }
 
 # ---------------------------------------------------------------------------
