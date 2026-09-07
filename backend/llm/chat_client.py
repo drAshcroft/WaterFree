@@ -1,6 +1,6 @@
 """Provider-dispatching chat for the map/reduce reader stages.
 
-`waterfree qa-summary` and tutorial generation are bulk readers: they fan a
+`waterfree qa-summary`, writing grading, and tutorial generation are bulk readers: they fan a
 large document out into chunks, run one cheap completion per chunk, then reduce.
 They historically ran only against local Ollama. This module lets them target a
 remote OpenAI-compatible gateway (OpenRouter) instead, chosen from
@@ -16,7 +16,7 @@ Two constraints shape the implementation:
   profile loaded from disk always has `apiKey: ""`. Keys therefore fall back to
   the environment (see `_API_KEY_ENV`).
 
-Routing is opt-in: a provider must name `qa_summary` / `tutorial` in its
+Routing is opt-in: a provider must name the relevant reader stage in its
 `routing.useForStages` to claim them. With no such provider, readers stay on
 local Ollama exactly as before.
 """
@@ -333,7 +333,7 @@ def _chat_once(
         ).strip()
     raise ChatUnavailable(
         f"Provider type '{target.provider_type}' is not supported for reader stages. "
-        "Route qa_summary/tutorial to an ollama or OpenAI-compatible provider "
+        "Route the reader stage to an ollama or OpenAI-compatible provider "
         "(OpenRouter fronts Anthropic, Google, and others)."
     )
 

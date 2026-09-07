@@ -69,6 +69,12 @@
               <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillQaSummaryPayload" Type="string" Value="1" KeyPath="yes" />
             </Component>
           </Directory>
+          <Directory Id="SkillWritingGradeDir" Name="waterfree-writing-grade">
+            <Component Id="SkillWritingGradePayload" Guid="{2B65DD12-2C96-4C75-BE28-36D861053171}">
+              <File Id="SkillWritingGradeFile" Source="$(var.PayloadDir)\skills\waterfree-writing-grade\SKILL.md" KeyPath="no" />
+              <RegistryValue Root="HKCU" Key="Software\WaterFree\Components" Name="SkillWritingGradePayload" Type="string" Value="1" KeyPath="yes" />
+            </Component>
+          </Directory>
           <Directory Id="SkillTestingDir" Name="waterfree-testing">
             <Component Id="SkillTestingPayload" Guid="{D6BFE79F-C0D1-4240-854F-2D8D9B72C3EE}">
               <File Id="SkillTestingFile" Source="$(var.PayloadDir)\skills\waterfree-testing\SKILL.md" KeyPath="no" />
@@ -97,6 +103,7 @@
           <RemoveFolder Id="RemoveSkillIndexDir" Directory="SkillIndexDir" On="uninstall" />
           <RemoveFolder Id="RemoveSkillKnowledgeDir" Directory="SkillKnowledgeDir" On="uninstall" />
           <RemoveFolder Id="RemoveSkillQaSummaryDir" Directory="SkillQaSummaryDir" On="uninstall" />
+          <RemoveFolder Id="RemoveSkillWritingGradeDir" Directory="SkillWritingGradeDir" On="uninstall" />
           <RemoveFolder Id="RemoveSkillTestingDir" Directory="SkillTestingDir" On="uninstall" />
           <RemoveFolder Id="RemoveSkillTodosDir" Directory="SkillTodosDir" On="uninstall" />
           <RemoveFolder Id="RemoveSkillsDir" Directory="SkillsDir" On="uninstall" />
@@ -116,6 +123,7 @@
       <ComponentRef Id="SkillIndexPayload" />
       <ComponentRef Id="SkillKnowledgePayload" />
       <ComponentRef Id="SkillQaSummaryPayload" />
+      <ComponentRef Id="SkillWritingGradePayload" />
       <ComponentRef Id="SkillTestingPayload" />
       <ComponentRef Id="SkillTodosPayload" />
       <ComponentRef Id="InstallerLogFolder" />

@@ -24,7 +24,8 @@ export type ProviderStage =
   // Reader stages -- see READER_STAGES below.
   | "qa_summary"
   | "tutorial"
-  | "testing";
+  | "testing"
+  | "creative_writing";
 export type ProviderReloadMode = "manual" | "on_change";
 
 // ── Model abstraction types ───────────────────────────────────────────────
@@ -91,7 +92,7 @@ export const DEFAULT_PROVIDER_STAGES: ProviderStage[] = [
  * to sit first in the fallback order. A provider must name a reader stage in
  * routing.useForStages to claim it; otherwise readers stay on local Ollama.
  */
-export const READER_STAGES: ProviderStage[] = ["qa_summary", "tutorial", "testing"];
+export const READER_STAGES: ProviderStage[] = ["qa_summary", "tutorial", "testing", "creative_writing"];
 
 /**
  * Pseudo-model ids accepted wherever a model id is, for OpenRouter only.
@@ -493,8 +494,10 @@ const DEFAULT_STAGE_MODELS: Record<Exclude<ProviderType, "mock">, Record<string,
     annotation: "anthropic/claude-haiku-4.5",
     execution: "anthropic/claude-sonnet-4.5",
     debug: "anthropic/claude-haiku-4.5",
-    qa_summary: "qwen/qwen3-coder",
-    tutorial: "qwen/qwen3-coder",
+    qa_summary: "auto:free",
+    tutorial: "auto:free",
+    testing: "auto:free",
+    creative_writing: "auto:free",
   },
   huggingface: {
     default: "",
@@ -1380,6 +1383,8 @@ function normalizeStage(value: unknown): ProviderStage | null {
     case "knowledge":
     case "qa_summary":
     case "tutorial":
+    case "testing":
+    case "creative_writing":
       return normalized;
     default:
       return null;

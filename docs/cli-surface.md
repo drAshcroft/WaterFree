@@ -13,7 +13,7 @@ waterfree <area> <action> [--workspace <path>] [flags] [positional]
 ```
 
 - **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`,
-  `vision`, `imagegen`
+  `writing-grade`, `vision`, `imagegen`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
   every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
@@ -164,9 +164,26 @@ CLI cannot read VS Code SecretStorage).
 |--------------|--------------|
 | `ask`        | `<file-or-url>`, `--question Q` (or `-q`), `--workspace PATH` |
 
+## Area: writing-grade
+
+Implemented in `backend/writing_grade/core.py`. It grades one local creative-
+writing file on six genre-aware dimensions, each scored from 0 through 20 with
+exactly one feedback sentence. The CLI computes the total and percentage rather
+than trusting the model's arithmetic. Short files are graded directly; long
+files use ordered map/reduce evidence.
+
+| Action       | Flags / args |
+|--------------|--------------|
+| `grade`      | `<file>`, `--workspace PATH` |
+
+The success response is always a JSON object containing `genre`, six entries in
+`dimensions`, `overall` (score out of 120 and percentage), routing metadata,
+source size, and chunk count. It routes through the `creative_writing` stage.
+
 ## Reader-stage model selection
 
-`qa_summary`, `tutorial`, and `testing` are the *reader* stages. A provider must
+`qa_summary`, `tutorial`, `testing`, and `creative_writing` are the *reader*
+stages. A provider must
 name one in `routing.useForStages` to claim it; otherwise readers stay on local
 Ollama.
 
@@ -183,7 +200,7 @@ for a day in `.waterfree/openrouter-models.json` (a stale cache is served if the
 refresh fails, so an offline run still works). Each expands to an ordered
 *chain* of candidates ending at local Ollama: a rate-limited free endpoint falls
 through to the next candidate per request rather than failing the run. These are
-the defaults for the three reader stages on OpenRouter — set a concrete model id
+the defaults for the reader stages on OpenRouter — set a concrete model id
 to opt out. See `backend/llm/openrouter_catalog.py`.
 
 Exit code `4` if the resolved provider is unavailable — Ollama not running, the

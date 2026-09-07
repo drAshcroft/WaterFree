@@ -40,6 +40,19 @@ _MODELS = openrouter_catalog.parse_models({"data": [
 
 
 class ExpansionTests(unittest.TestCase):
+    def test_creative_writing_auto_free_uses_the_cost_ordered_chain(self) -> None:
+        document = _profile("auto:free", stages=["creative_writing"])
+
+        with mock.patch.object(openrouter_catalog, "load_models", return_value=_MODELS):
+            target = chat_client.resolve_chat_target(
+                stage="creative_writing", document=document, fallback_model="local-model",
+            )
+
+        self.assertEqual(
+            [entry.model for entry in target.chain()],
+            ["v/free-a:free", "v/free-b:free", "v/cheap", "local-model"],
+        )
+
     def test_auto_free_expands_into_a_chain_ending_at_local(self) -> None:
         document = _profile("auto:free", stages=["qa_summary"])
 

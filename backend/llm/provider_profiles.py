@@ -29,6 +29,7 @@ DEFAULT_SUMMARIZATION_THRESHOLDS: dict[str, int] = {
     "QA_SUMMARY": 20_000,
     "TUTORIAL": 20_000,
     "TESTING": 20_000,
+    "CREATIVE_WRITING": 20_000,
 }
 DEFAULT_PROVIDER_STAGES: tuple[str, ...] = (
     "planning",
@@ -52,6 +53,8 @@ READER_STAGES: tuple[str, ...] = (
     # Intelligent summarization of a test run: `waterfree testing run --summary`
     # feeds pass/fail counts and failure output through the same map/reduce path.
     "testing",
+    # Genre-aware grading via `waterfree writing-grade grade <file>`.
+    "creative_writing",
 )
 ALL_PROVIDER_STAGES: tuple[str, ...] = DEFAULT_PROVIDER_STAGES + READER_STAGES
 DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
@@ -103,6 +106,7 @@ DEFAULT_STAGE_MODELS: dict[str, dict[str, str]] = {
         "qa_summary": "auto:free",
         "tutorial": "auto:free",
         "testing": "auto:free",
+        "creative_writing": "auto:free",
     },
     "qwen": {
         "default": "qwen-plus",

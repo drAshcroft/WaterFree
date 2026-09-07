@@ -13,6 +13,7 @@ from backend.cli import qa_summary as area_qa_summary
 from backend.cli import testing as area_testing
 from backend.cli import todos as area_todos
 from backend.cli import vision as area_vision
+from backend.cli import writing_grade as area_writing_grade
 from backend.cli._common import EXIT_USAGE
 from backend.cli.areas import CLI_AREAS  # noqa: F401 -- re-exported for main.py's gate
 
@@ -30,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     area_index.register(sub)
     area_testing.register(sub)
     area_qa_summary.register(sub)
+    area_writing_grade.register(sub)
     area_vision.register(sub)
     area_imagegen.register(sub)
 

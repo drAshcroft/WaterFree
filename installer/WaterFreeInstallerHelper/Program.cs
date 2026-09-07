@@ -304,6 +304,7 @@ internal static class Program
             "waterfree-index",
             "waterfree-knowledge",
             "waterfree-qa-summary",
+            "waterfree-writing-grade",
             "waterfree-testing",
             "waterfree-todos"
         };
