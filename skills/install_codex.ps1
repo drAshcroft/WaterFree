@@ -86,5 +86,13 @@ foreach ($package in $selectedPackages) {
   Write-Host "Installed $($package.Name) -> $targetPath"
 }
 
+if ($selectedPackages.Name -contains "waterfree-assets") {
+  Write-Host ""
+  Write-Host "Asset search includes local semantic modes:" -ForegroundColor Cyan
+  Write-Host '  assetsearch.cmd "heavy metal scrape" --semantic-audio'
+  Write-Host '  assetsearch.cmd "sword icon" --semantic-visual'
+  Write-Host "  See waterfree-assets/SKILL.md for rebuild and model commands." -ForegroundColor DarkCyan
+}
+
 Write-Host "Restart Codex to pick up new skills."
 Invoke-ExitPause

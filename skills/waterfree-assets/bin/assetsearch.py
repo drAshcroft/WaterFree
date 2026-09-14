@@ -32,6 +32,7 @@ import argparse
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -230,6 +231,10 @@ def main() -> int:
     ap.add_argument("--subjects", action="store_true",
                     help="group files by the thing they depict (collapses "
                          "texture map sets, LODs and resolution variants)")
+    ap.add_argument("--semantic-audio", action="store_true",
+                    help="delegate to the local CLAP enrichment index")
+    ap.add_argument("--semantic-visual", action="store_true",
+                    help="delegate to the local SigLIP 2 enrichment index")
     args = ap.parse_args()
 
     if not DB.exists():
@@ -237,6 +242,21 @@ def main() -> int:
         return 1
 
     query = " ".join(args.query)
+    if args.semantic_audio or args.semantic_visual:
+        if args.packs or args.subjects or (args.semantic_audio and args.semantic_visual):
+            ap.error("semantic modes cannot be combined with --packs, --subjects, or each other")
+        central = Path(r"C:\Projects\itch_assets\assetsearch.py")
+        python = Path(r"C:\Projects\.local\Scripts\python.exe")
+        if not central.is_file():
+            print(f"semantic asset index not found at {central}", file=sys.stderr)
+            return 1
+        mode = "--semantic-audio" if args.semantic_audio else "--semantic-visual"
+        command = [str(python if python.is_file() else sys.executable), str(central),
+                   query, mode, "--limit", str(args.limit)]
+        if args.json:
+            command.append("--json")
+        return subprocess.run(command, check=False).returncode
+
     f = parse(query)
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row

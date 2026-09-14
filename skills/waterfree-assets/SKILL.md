@@ -59,6 +59,57 @@ assetsearch.cmd "walk idle animation, imported"
 assetsearch.cmd "tree, cc0, godot, model" --packs
 ```
 
+### Natural-language audio search
+
+For sounds whose filenames are vague, the enrichment index has a local CLAP
+waveform embedding for every imported CC0 sound. It is a retrieval aid, not a
+transcript: query the sound you want to hear and inspect the returned paths.
+
+```bash
+assetsearch.cmd "heavy metal scrape" --semantic-audio --limit 15
+assetsearch.cmd "crowd cheering in a stadium" --semantic-audio --json
+```
+
+The current index covers 2,758 files and 5,099 sampled segments under
+`C:\Projects\itch_assets`. The score combines CLAP audio similarity with a
+small filename/pack-context boost. Rebuild it after adding CC0 sounds:
+
+```bash
+C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\build_search_index.py
+C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\enrich_assets.py audio-index --all
+```
+
+This is deliberately separate from Whisper transcription. Whisper is useful
+for speech, but it cannot identify most non-speech game effects as reliably as
+an audio-text embedding model.
+
+### Selective visual search
+
+Selected standalone icons and one representative preview per opaque folder are
+embedded locally with `google/siglip2-base-patch16-224`; prefab/mesh images,
+technical maps, well-labelled ordinary images, and source documents are
+excluded. SigLIP 2 provides text-to-image retrieval, while the local Qwen
+vision pass adds concise labels in numbered contact sheets. No image is
+uploaded. Search the selected visuals with:
+
+```bash
+assetsearch.cmd "sword icon" --semantic-visual --limit 15
+assetsearch.cmd "fantasy potion" --semantic-visual --json
+```
+
+To refresh after importing assets, audit the candidate scope first, then run:
+
+```bash
+C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\enrich_assets.py plan --visual-scope all-imported
+C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\enrich_assets.py visual-index --visual-scope all-imported
+C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\visual_label.py --visual-scope all-imported
+```
+
+The visual index and labels live in `asset-enrichment.db`, separate from the
+ordinary catalog, so a catalog rebuild does not discard model work. The label
+pass is resumable and sends 16-image contact sheets to the local
+`qwen2.5vl:7b` vision model.
+
 ## Reading results
 
 Filenames alone are usually meaningless (`Blaster_Albedo`, `1.png`), so each
