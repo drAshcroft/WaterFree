@@ -22,6 +22,12 @@
       - waterfree-<plat>-<arch>\waterfree.exe
       - waterfree-runtime.zip
       - waterfree.vsix
+      - skills\ (every skill package, plus the Claude/Codex installers)
+
+    The MSI's skill components are generated at build time from the staged
+    payload by installer\GenerateSkillComponents.ps1, so adding a skill needs
+    no installer edit. Stage 4 then asserts the built MSI really does carry
+    every skill in the repo.
 
     Halts on the first failure with the failing command's exit code. Prints a
     `==> Stage N: <name>` banner per stage and a total wall-clock time at the
@@ -57,7 +63,8 @@
       - dist\WaterFreeSetup-<version>.msi via `msiexec /i /qn` (perUser scope,
         so no elevation is required)
       - dist\waterfree.vsix via `code --install-extension --force`
-      - skills\install_claude.ps1 and skills\install_codex.ps1
+      - dist\skills via install_claude.ps1 and install_codex.ps1 (falling back
+        to the working tree's skills\ when dist has not been staged)
 
     Off by default: a plain build stays side-effect free.
 
@@ -213,6 +220,40 @@ function Test-Command([string]$name) {
     $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-Native {
+    <#
+    .SYNOPSIS
+    Run an external tool, judging it by its exit code alone.
+
+    .DESCRIPTION
+    Under $ErrorActionPreference = "Stop", a native executable that merely
+    writes to stderr raises a terminating error, so a tool that succeeded gets
+    reported as a build failure with an empty message.
+
+    That is what happened to Stage 2: `vsce package` prints
+    " WARNING  LICENSE, LICENSE.md, or LICENSE.txt not found" to stderr, exits
+    0, and writes a perfectly good waterfree.vsix -- and the build died with
+    "BUILD ERROR:" and a stack trace through npm.ps1 pointing at nothing.
+
+    Exit code is the only signal that means anything here. Cmdlet errors stay
+    terminating, because those we do want to stop on.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$Body)
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $global:LASTEXITCODE = 0
+        # Out-Host, not a bare call: the tool's stdout would otherwise land on
+        # this function's pipeline and be returned alongside the exit code, so
+        # the caller gets an Object[] where it expects an Int32.
+        & $Body | Out-Host
+        return $global:LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Test-PythonModule([string]$module) {
     # Run with errors non-terminating: on PowerShell 7+ a native command that
     # writes to stderr can otherwise throw under $ErrorActionPreference=Stop,
@@ -225,6 +266,68 @@ function Test-PythonModule([string]$module) {
     } finally {
         $ErrorActionPreference = $prev
     }
+}
+
+function Get-SkillPackageNames([string]$root) {
+    <#
+    The installable skills: a directory holding a SKILL.md. Matches the rule
+    used by install_claude.ps1, install_codex.ps1 and the MSI helper, so all
+    four agree on what "a skill" is.
+    #>
+    if (-not (Test-Path $root)) { return @() }
+    return @(Get-ChildItem -Path $root -Directory |
+        Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+        Select-Object -ExpandProperty Name |
+        Sort-Object)
+}
+
+function Assert-MsiSkillCoverage([string]$msiPath, [string[]]$expected) {
+    <#
+    Fail the build if the MSI does not carry every skill in the repo.
+
+    The skill components are generated from the staged payload now, so this
+    should never fire -- which is exactly why it is worth asserting. The
+    hand-maintained list it replaced silently dropped four skills across four
+    releases, and every one of those builds was green. A missing skill has no
+    other symptom: the MSI installs fine and the feature simply is not there.
+    #>
+    if (-not (Test-Path $msiPath)) {
+        Write-Host "    SKIP skill coverage check: $msiPath not found." -ForegroundColor Yellow
+        return
+    }
+
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    try {
+        $db = $installer.GetType().InvokeMember(
+            "OpenDatabase", "InvokeMethod", $null, $installer, @($msiPath, 0))
+        $view = $db.GetType().InvokeMember(
+            "OpenView", "InvokeMethod", $null, $db, @("SELECT Directory, DefaultDir FROM Directory"))
+        $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+
+        $found = New-Object System.Collections.Generic.HashSet[string]
+        while ($true) {
+            $rec = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+            if ($null -eq $rec) { break }
+            $id = $rec.GetType().InvokeMember("StringData", "GetProperty", $null, $rec, @(1))
+            if ($id -notlike "sd_*") { continue }
+            $defaultDir = $rec.GetType().InvokeMember("StringData", "GetProperty", $null, $rec, @(2))
+            # DefaultDir is "shortname|longname" when the name needs an 8.3
+            # alias, which every hyphenated skill name does.
+            $long = if ($defaultDir -match '\|') { $defaultDir.Split('|')[-1] } else { $defaultDir }
+            [void]$found.Add($long)
+        }
+    } catch {
+        Write-Host "    SKIP skill coverage check: could not read the MSI ($($_.Exception.Message))." -ForegroundColor Yellow
+        return
+    }
+
+    $missing = @($expected | Where-Object { -not $found.Contains($_) })
+    if ($missing.Count -gt 0) {
+        Write-Host "FAILED: the MSI is missing $($missing.Count) skill(s): $($missing -join ', ')" -ForegroundColor Red
+        Write-Host "Check installer\GenerateSkillComponents.ps1 and the BuildPayload target." -ForegroundColor Yellow
+        Stop-Build 1
+    }
+    Write-Host "    Skill coverage: all $($expected.Count) skill(s) present in the MSI" -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------------------
@@ -314,7 +417,13 @@ if ($SkipExe) {
         if (Test-Path $LauncherPublishDir) {
             Remove-Item -Recurse -Force -Path $LauncherPublishDir
         }
-        & dotnet publish $LauncherProj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $LauncherPublishDir
+        $code = Invoke-Native {
+            & dotnet publish $LauncherProj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o $LauncherPublishDir
+        }
+        if ($code -ne 0) {
+            Write-Host "FAILED: dotnet publish exited $code" -ForegroundColor Red
+            Stop-Build $code
+        }
         if ($LASTEXITCODE -ne 0) {
             Write-Host "FAILED: dotnet publish of the launcher returned $LASTEXITCODE." -ForegroundColor Red
             Stop-Build $LASTEXITCODE
@@ -397,7 +506,12 @@ if ($SkipVsix) {
     Invoke-Stage "Stage 2: npm run package -> waterfree.vsix" {
         Push-Location $RepoRoot
         try {
-            & npm run package
+            # Invoke-Native: vsce warns to stderr on success. See the helper.
+            $code = Invoke-Native { & npm run package }
+            if ($code -ne 0) {
+                Write-Host "FAILED: npm run package exited $code" -ForegroundColor Red
+                Stop-Build $code
+            }
         } finally {
             Pop-Location
         }
@@ -418,7 +532,13 @@ if ($SkipMsi) {
     Invoke-Stage "Stage 3: WiX -> WaterFreeSetup.msi" {
         Push-Location $WixDir
         try {
-            & dotnet build $WixProj -c Release -p:ProductVersion=$ProductVersion
+            $code = Invoke-Native {
+                & dotnet build $WixProj -c Release -p:ProductVersion=$ProductVersion
+            }
+            if ($code -ne 0) {
+                Write-Host "FAILED: WiX build exited $code" -ForegroundColor Red
+                Stop-Build $code
+            }
         } finally {
             Pop-Location
         }
@@ -445,6 +565,14 @@ Invoke-Stage "Stage 4: Staging artifacts into dist/" {
     Copy-Item -Recurse -Force $RuntimeDirPath (Join-Path $DistDir $RuntimeDirName)
     Copy-Item -Force $RuntimeZipPath (Join-Path $DistDir $RuntimeZipName)
     Copy-Item -Force $VsixPath (Join-Path $DistDir "waterfree.vsix")
+
+    # Skills ship as an artifact in their own right: -Deploy installs from here
+    # rather than from the working tree, so what lands on the machine is the
+    # same set the MSI carries rather than whatever the repo happens to hold.
+    $distSkills = Join-Path $DistDir "skills"
+    if (Test-Path $distSkills) { Remove-Item -Recurse -Force -Path $distSkills }
+    Copy-Item -Recurse -Force $SkillsDir $distSkills
+
     if (-not $SkipMsi) {
         $finalMsiName = "WaterFreeSetup-$ProductVersion.msi"
         Copy-Item -Force $msiCandidate.FullName (Join-Path $DistDir $finalMsiName)
@@ -453,6 +581,12 @@ Invoke-Stage "Stage 4: Staging artifacts into dist/" {
     Write-Host "    -> dist\$RuntimeDirName\"   -ForegroundColor Green
     Write-Host "    -> dist\$RuntimeZipName"    -ForegroundColor Green
     Write-Host "    -> dist\waterfree.vsix"    -ForegroundColor Green
+
+    $skillNames = Get-SkillPackageNames $distSkills
+    Write-Host "    -> dist\skills\ ($($skillNames.Count) skills)" -ForegroundColor Green
+    if (-not $SkipMsi) {
+        Assert-MsiSkillCoverage (Join-Path $DistDir "WaterFreeSetup-$ProductVersion.msi") $skillNames
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -545,8 +679,24 @@ if (-not $Deploy) {
         if ($SkipSkillsDeploy) {
             Write-Host "    SKIP skill installers (-SkipSkillsDeploy)." -ForegroundColor Yellow
         } else {
+            # Prefer the staged copy so a deploy installs the artifact that was
+            # just built and verified, not the working tree, which may have
+            # moved on since Stage 4.
+            $deploySkills = Join-Path $DistDir "skills"
+            if (-not (Test-Path (Join-Path $deploySkills "install_claude.ps1"))) {
+                $deploySkills = $SkillsDir
+            }
+
+            $skillNames = Get-SkillPackageNames $deploySkills
+            if ($skillNames.Count -eq 0) {
+                Write-Host "FAILED: no installable skills found under $deploySkills." -ForegroundColor Red
+                Stop-Build 1
+            }
+            Write-Host "    Installing $($skillNames.Count) skill(s) from $deploySkills" -ForegroundColor DarkGray
+            Write-Host "      $($skillNames -join ', ')" -ForegroundColor DarkGray
+
             foreach ($installer in @("install_claude.ps1", "install_codex.ps1")) {
-                $code = Invoke-SkillInstaller (Join-Path $SkillsDir $installer)
+                $code = Invoke-SkillInstaller (Join-Path $deploySkills $installer)
                 if ($code -ne 0) {
                     Write-Host "FAILED: $installer returned $code." -ForegroundColor Red
                     Stop-Build $code

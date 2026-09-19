@@ -19,12 +19,17 @@ from io import StringIO
 from pathlib import Path
 from typing import Protocol
 
+from backend.testing.dotnet import DotnetRunner, is_dotnet_project
+from backend.testing.errors import NoFrameworkError, NoTestsDiscoveredError
 from backend.testing.godot import GodotRunner, is_godot_project
+from backend.testing.npm_scripts import NpmScriptRunner, is_npm_scripts_project
+from backend.testing.playwright_e2e import PlaywrightRunner
 
 # Re-exported: these used to be defined here, and callers import them from this
 # module. They now live in `results` so framework adapters can share them
 # without importing each other.
 from backend.testing.results import TestResult, TestRunResult
+from backend.testing.toolchain import check_filter_arg, node_tool, run_tool
 
 __all__ = [
     "TestResult",
@@ -35,6 +40,9 @@ __all__ = [
     "JestRunner",
     "VitestRunner",
     "GodotRunner",
+    "NpmScriptRunner",
+    "DotnetRunner",
+    "PlaywrightRunner",
     "RUNNERS",
     "detect_runner",
     "log_dir",
@@ -55,25 +63,43 @@ def _run_command(
     workspace_path: str,
     timeout: int,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a test command without inheriting the caller's stdio."""
-    return subprocess.run(
-        cmd,
-        cwd=workspace_path,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        stdin=subprocess.DEVNULL,
-    )
+    """Run a test command without inheriting the caller's stdio.
+
+    Goes through `run_tool` so a command that cannot be spawned surfaces as a
+    ToolchainError with install advice, not a bare OSError traceback.
+    """
+    return run_tool(cmd, workspace_path=workspace_path, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
 # Unittest
 # ---------------------------------------------------------------------------
 
+# Conventional locations for a Python unittest suite, most specific first.
+# `backend/tests` is WaterFree's own layout and used to be hard-coded here,
+# which meant the runner could be *selected* for a project that keeps its tests
+# in `tests/` and then discover nothing in it.
+UNITTEST_DIR_CANDIDATES = ("backend/tests", "tests", "test")
+
+
+def unittest_start_dir(workspace_path: str) -> str | None:
+    """The directory `unittest discover` should start from, or None.
+
+    A candidate only counts when it actually contains `test_*.py`; an empty
+    `tests/` directory is not a suite.
+    """
+    root = Path(workspace_path)
+    for relative in UNITTEST_DIR_CANDIDATES:
+        candidate = root.joinpath(*relative.split("/"))
+        if candidate.is_dir() and any(candidate.rglob("test_*.py")):
+            return relative
+    return None
+
+
 _UNITTEST_LIST_SCRIPT = """\
-import unittest
+import unittest, sys
 loader = unittest.TestLoader()
-suite = loader.discover(start_dir='backend/tests', pattern='test_*.py')
+suite = loader.discover(start_dir=sys.argv[1], pattern='test_*.py')
 def _names(s):
     for item in s:
         if hasattr(item, '__iter__'):
@@ -87,7 +113,8 @@ for name in sorted(_names(suite)):
 _UNITTEST_RUN_ONE_SCRIPT = """\
 import unittest, sys
 
-pattern = sys.argv[1].lower()
+start_dir = sys.argv[1]
+pattern = sys.argv[2].lower()
 
 def _items(s):
     for item in s:
@@ -97,11 +124,11 @@ def _items(s):
             yield item
 
 loader = unittest.TestLoader()
-suite = loader.discover(start_dir='backend/tests', pattern='test_*.py')
+suite = loader.discover(start_dir=start_dir, pattern='test_*.py')
 matched = unittest.TestSuite(t for t in _items(suite) if pattern in str(t).lower())
 
 if matched.countTestCases() == 0:
-    print(f"No tests found matching '{sys.argv[1]}'", file=sys.stderr)
+    print(f"No tests found matching '{sys.argv[2]}'", file=sys.stderr)
     sys.exit(2)
 
 runner = unittest.TextTestRunner(verbosity=2, stream=sys.stderr)
@@ -201,7 +228,7 @@ class UnittestRunner:
             suite = _discover_unittest_suite(workspace_path)
             return sorted(str(item) for item in _iter_unittest_cases(suite))
         r = _run_command(
-            [sys.executable, "-c", _UNITTEST_LIST_SCRIPT],
+            [sys.executable, "-c", _UNITTEST_LIST_SCRIPT, _start_dir(workspace_path)],
             workspace_path=workspace_path,
             timeout=30,
         )
@@ -213,7 +240,7 @@ class UnittestRunner:
             return _run_unittest_suite(suite)
         r = _run_command(
             [sys.executable, "-m", "unittest", "discover",
-             "-s", "backend/tests", "-p", "test_*.py", "-v"],
+             "-s", _start_dir(workspace_path), "-p", "test_*.py", "-v"],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -240,7 +267,8 @@ class UnittestRunner:
                 )
             return _run_unittest_suite(matched)
         r = _run_command(
-            [sys.executable, "-c", _UNITTEST_RUN_ONE_SCRIPT, name_substr],
+            [sys.executable, "-c", _UNITTEST_RUN_ONE_SCRIPT,
+             _start_dir(workspace_path), name_substr],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -261,10 +289,19 @@ def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _start_dir(workspace_path: str) -> str:
+    """Resolve the unittest start dir, or raise rather than search nothing."""
+    relative = unittest_start_dir(workspace_path)
+    if relative is None:
+        raise NoTestsDiscoveredError(
+            f"No Python unittest directory found under {workspace_path} "
+            f"(looked for {', '.join(UNITTEST_DIR_CANDIDATES)} containing test_*.py)."
+        )
+    return relative
+
+
 def _discover_unittest_suite(workspace_path: str) -> unittest.TestSuite:
-    start_dir = Path(workspace_path) / "backend" / "tests"
-    if not start_dir.exists():
-        return unittest.TestSuite()
+    start_dir = Path(workspace_path) / _start_dir(workspace_path)
     loader = unittest.TestLoader()
     return loader.discover(start_dir=str(start_dir), pattern="test_*.py")
 
@@ -417,7 +454,7 @@ def _parse_jest_json(raw: str) -> TestRunResult:
 class JestRunner:
     def list_tests(self, workspace_path: str) -> list[str]:
         r = _run_command(
-            ["npx", "jest", "--json", "--passWithNoTests"],
+            node_tool(workspace_path, "jest") + ["--json", "--passWithNoTests"],
             workspace_path=workspace_path,
             timeout=60,
         )
@@ -426,7 +463,7 @@ class JestRunner:
 
     def run_all(self, workspace_path: str) -> TestRunResult:
         r = _run_command(
-            ["npx", "jest", "--json"],
+            node_tool(workspace_path, "jest") + ["--json"],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -435,8 +472,9 @@ class JestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
+        check_filter_arg(name_substr)
         r = _run_command(
-            ["npx", "jest", "-t", name_substr, "--json"],
+            node_tool(workspace_path, "jest") + ["-t", name_substr, "--json"],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -490,7 +528,7 @@ class VitestRunner:
 
     def list_tests(self, workspace_path: str) -> list[str]:
         r = _run_command(
-            ["npx", "vitest", "list"],
+            node_tool(workspace_path, "vitest") + ["list"],
             workspace_path=workspace_path,
             timeout=30,
         )
@@ -506,7 +544,8 @@ class VitestRunner:
     def run_all(self, workspace_path: str) -> TestRunResult:
         tmp = self._json_output_path(workspace_path)
         r = _run_command(
-            ["npx", "vitest", "run", "--reporter=json", f"--outputFile={tmp}"],
+            node_tool(workspace_path, "vitest")
+            + ["run", "--reporter=json", f"--outputFile={tmp}"],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -520,10 +559,11 @@ class VitestRunner:
         return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
+        check_filter_arg(name_substr)
         tmp = self._json_output_path(workspace_path)
         r = _run_command(
-            ["npx", "vitest", "run", "-t", name_substr,
-             "--reporter=json", f"--outputFile={tmp}"],
+            node_tool(workspace_path, "vitest")
+            + ["run", "-t", name_substr, "--reporter=json", f"--outputFile={tmp}"],
             workspace_path=workspace_path,
             timeout=120,
         )
@@ -554,17 +594,39 @@ RUNNERS: dict[str, type] = {
     "jest": JestRunner,
     "vitest": VitestRunner,
     "godot": GodotRunner,
+    "npm-scripts": NpmScriptRunner,
+    "dotnet": DotnetRunner,
+    "playwright": PlaywrightRunner,
 }
+
+
+def _has_unittest_layout(root: Path) -> bool:
+    """True when there is a directory `unittest discover` would find tests in.
+
+    Checked before falling back to the unittest runner. Without this, every
+    workspace with no recognisable framework got a runner that discovers
+    nothing and reports `0 passed, 0 failed` with exit 0, which every caller
+    reads as a green suite. See NoFrameworkError.
+    """
+    return unittest_start_dir(str(root)) is not None
 
 
 def detect_runner(workspace_path: str) -> TestRunner:
     """Auto-detect the appropriate test runner.
 
-    Detection order: godot → pytest → jest → vitest → unittest (fallback).
+    Detection order: godot → pytest → jest → vitest → unittest → npm scripts
+    → dotnet. Most specific signal first; each step requires positive evidence.
 
-    Godot goes first because it is the most specific signal — it requires both
-    a project.godot and an installed test-framework addon, so it never fires on
-    a project that merely happens to sit next to one.
+    Godot goes first because it is the most specific — it requires both a
+    project.godot and an installed test-framework addon, so it never fires on a
+    project that merely happens to sit next to one.
+
+    Playwright is deliberately absent: projects that have it almost always have
+    a unit suite too, and that is the faster, server-free default gate. Ask for
+    it with `--runner playwright`.
+
+    Raises NoFrameworkError when nothing matches, rather than returning a runner
+    that is guaranteed to find nothing.
     """
     root = Path(workspace_path)
 
@@ -584,33 +646,57 @@ def detect_runner(workspace_path: str) -> TestRunner:
     for marker in ("jest.config.js", "jest.config.ts", "jest.config.mjs", "jest.config.cjs"):
         if (root / marker).exists():
             return JestRunner()
-    pkg_json = root / "package.json"
-    if pkg_json.exists():
-        try:
-            # utf-8-sig: package.json is authored outside WaterFree and a BOM
-            # would otherwise make framework detection silently fail.
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
-            deps = {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
-            if "jest" in deps:
-                return JestRunner()
-        except json.JSONDecodeError:
-            pass
+
+    # utf-8-sig: package.json is authored outside WaterFree and a BOM would
+    # otherwise make framework detection silently fail.
+    deps = _package_deps(root)
+    if "jest" in deps:
+        return JestRunner()
 
     for marker in ("vitest.config.ts", "vitest.config.js", "vitest.config.mts"):
         if (root / marker).exists():
             return VitestRunner()
-    if pkg_json.exists():
-        try:
-            # utf-8-sig: package.json is authored outside WaterFree and a BOM
-            # would otherwise make framework detection silently fail.
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
-            deps = {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
-            if "vitest" in deps:
-                return VitestRunner()
-        except json.JSONDecodeError:
-            pass
+    if "vitest" in deps:
+        return VitestRunner()
 
-    return UnittestRunner()
+    # Python before npm scripts. `test:*` scripts are the weakest signal we
+    # accept: plenty of projects carry a couple of smoke scripts alongside a
+    # real suite in another language. WaterFree itself is the example — it has
+    # `test:acp` and `test:sidebar` next to 344 Python tests, and checking npm
+    # first handed its own suite to the wrong runner.
+    if _has_unittest_layout(root):
+        return UnittestRunner()
+
+    # No JS framework, but the project still ships test scripts (Paradoxia's 48
+    # hand-rolled `tsx` suites). Better than pretending there are no tests.
+    if is_npm_scripts_project(workspace_path):
+        return NpmScriptRunner()
+
+    if is_dotnet_project(workspace_path):
+        return DotnetRunner()
+
+    raise NoFrameworkError(
+        f"No supported test framework detected in {workspace_path}. Looked for: "
+        "a Godot project with addons/gdUnit4 or addons/gut; pytest.ini / "
+        "conftest.py / [tool.pytest]; a jest or vitest config or dependency; "
+        "npm `test` / `test:*` scripts; a .NET solution or test project; or "
+        "Python tests under tests/ or backend/tests/. "
+        "Force one with --runner <name> if detection is wrong."
+    )
+
+
+def _package_deps(root: Path) -> dict:
+    """dependencies + devDependencies from package.json, or {} when absent."""
+    pkg_json = root / "package.json"
+    if not pkg_json.exists():
+        return {}
+    try:
+        pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(pkg, dict):
+        return {}
+    return {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
 
 
 # ---------------------------------------------------------------------------

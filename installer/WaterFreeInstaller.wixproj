@@ -7,6 +7,7 @@
     <RuntimeZip>$(MSBuildProjectDirectory)\..\bin\waterfree-runtime.zip</RuntimeZip>
     <VsixPath>$(MSBuildProjectDirectory)\..\waterfree.vsix</VsixPath>
     <SkillsDir>$(MSBuildProjectDirectory)\..\skills</SkillsDir>
+    <GeneratedSkillsWxs>$(MSBuildProjectDirectory)\obj\Skills.generated.wxs</GeneratedSkillsWxs>
     <DefineConstants>PayloadDir=$(PayloadDir);ProductVersion=$(ProductVersion)</DefineConstants>
   </PropertyGroup>
 
@@ -28,5 +29,24 @@
     </ItemGroup>
     <Copy SourceFiles="@(SkillPayload)"
           DestinationFiles="@(SkillPayload->'$(PayloadDir)\skills\%(RecursiveDir)%(Filename)%(Extension)')" />
+
+    <!-- Derive the skill authoring from what was just staged, rather than from
+         a list maintained by hand in the .wxs. That list drifted twice and
+         silently dropped four skills; a skill missing from it is never laid
+         down under INSTALLDIR\skills, and the installer helper only enumerates
+         directories that exist there, so the build stays green and the feature
+         is simply absent. Runs on every build so a new skill folder ships with
+         no installer edit at all. -->
+    <Exec Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\GenerateSkillComponents.ps1&quot; -PayloadSkillsDir &quot;$(PayloadDir)\skills&quot; -OutputFile &quot;$(GeneratedSkillsWxs)&quot;" />
+  </Target>
+
+  <!-- Added to Compile inside a target: the generated file does not exist on a
+       clean tree when MSBuild first evaluates the project, and a static
+       ItemGroup entry would fail the build before BuildPayload could create
+       it. -->
+  <Target Name="IncludeGeneratedSkills" AfterTargets="BuildPayload" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Compile Include="$(GeneratedSkillsWxs)" />
+    </ItemGroup>
   </Target>
 </Project>

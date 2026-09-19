@@ -25,7 +25,7 @@ four of its HIGH findings did not survive verification.
 | Model interface | Numbered element list + short page text in, one constrained-text action out | SWE-agent's lesson: the agent-computer interface matters more than the model. Small models parse and emit this reliably; tool-calling is flakier under Ollama. |
 | Driver model | `qwen3.5:9b` default, `qwen2.5:14b` fallback, env-overridable | Both already pulled. Nothing is ever downloaded implicitly (same rule as vision). |
 | Vision role | Verification, not navigation | Every N steps and at every finding, `qwen2.5vl:7b` is asked whether the screenshot matches what the DOM claims. Cheap insurance against DOM-says-visible, screen-says-blank. |
-| Canvas games | Out of scope for phase 1, explicit fallback in phase 3 | Paradoxia is a Phaser canvas with an empty DOM. DOM-first covers goblinchess (`to_dom`) and the party client today. |
+| Canvas games | Out of scope for phase 1, explicit fallback in phase 3 (not built) | Paradoxia is a Phaser canvas with an empty DOM. DOM-first covers goblinchess (`to_dom`) and the party client today. |
 | Bug finding split | Harness finds technical bugs deterministically; model finds confusion | Console errors, failed requests, clipped controls and axe violations need no model. The model's confusion is the UX signal, so being "a little dumb" is a feature. |
 | Personas | Files, caller-chosen by name | Each is a system-prompt fragment plus viewport and pacing. The caller stacks any number. |
 | Hints | `QA.md` in the target repo + `--goal` / `--hint` on the command line | Same role as the old goblinchess harness README's "Map of the app". Goal and hints on the CLI stack on top. |
@@ -182,15 +182,49 @@ commands, mirroring how vision handles a missing model.
 
 ## Phases
 
-- **Phase 1 — DOM harness.** Snapshot, actions, browser, driver loop,
-  collectors, findings, `qa run`, `qa personas`, `qa doctor`, two personas,
+- **Phase 1 — DOM harness.** ✅ Built. Snapshot, actions, browser, driver loop,
+  collectors, findings, `qa run`, `qa personas`, `qa doctor`, all six personas,
   smoke against goblinchess `to_dom`.
-- **Phase 2 — Judgement.** Vision check, remaining personas, `QA.md` hints,
-  playbooks in the knowledge base, `qa verify`, `qa report`, skill file,
-  installer wiring.
-- **Phase 3 — Canvas fallback.** When a snapshot has no interactive elements,
-  switch to vision-described regions and `CLICK AT x y`. Slower and weaker;
-  Paradoxia is the test target. Flagged: expect low completion rates here.
+- **Phase 2 — Judgement.** ✅ Built. Vision check, `QA.md` hints, playbooks in
+  the knowledge base, `qa verify`, `qa report`, skill file, spec wiring.
+- **Phase 3 — Canvas fallback.** Not built. When a snapshot has no interactive
+  elements, switch to vision-described regions and `CLICK AT x y`. Slower and
+  weaker; Paradoxia is the test target. Flagged: expect low completion rates
+  here.
+
+### What the phase 1/2 smoke runs found
+
+Three harness bugs, each caught only by running against a real app rather than
+a fixture. All three are now covered by tests.
+
+1. **Stale element stamps.** `snapshot.py` cleared `data-wfqa` against every
+   node the selector matched, including ones skipped for being hidden. A
+   control that had just been hidden kept the number a newly visible control
+   was given, `locator('[data-wfqa="1"]').first` resolved to the invisible one,
+   and the click timed out. Any show/hide app hit this on the second screen.
+   Fixed by tracking the nodes actually numbered.
+2. **Hydration race.** `domcontentloaded` fires before an SPA renders. The
+   first snapshot of goblinchess was empty, so the model opened every run by
+   reporting "no interactive elements" as HIGH — a false positive manufactured
+   by the harness. `goto` now waits briefly for the first control, and still
+   reports a genuinely empty page as empty.
+3. **`BACK` onto `about:blank`.** A fresh context's history starts there, so
+   going back from the app's first page "succeeded" onto a blank tab and wasted
+   the rest of the run. Now treated as a no-op.
+
+Two quality fixes came out of the same runs: repeated identical `NOTE`s are
+recorded once (a stuck model re-reports the same problem every turn), and
+over-long titles are trimmed, because a small model pours the whole explanation
+into the title slot.
+
+### Verified working
+
+- goblinchess `to_dom`: 16 steps deep through Play → difficulty → draft →
+  board select → Play → Continue, driven by `qwen3.5:9b`, finding the four real
+  console/network errors from its absent `:6001` backend.
+- A fixture app: found a genuine `window.name` shadowing bug, `qa verify`
+  replayed it to `confirmed`, and `qa report` grouped the same finding across
+  two personas.
 
 ---
 

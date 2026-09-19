@@ -147,6 +147,16 @@ datas_extra += _collect_data_tree(
     "backend/llm/personas/initial_personas",
 )
 
+# The QA agent's built-in personas are markdown, not Python, so the module
+# sweep above does not see them. Without this the frozen build ships with no
+# personas at all: `waterfree qa personas` returns [] and every `qa run` fails
+# with "Unknown persona 'first-timer'", while the same command works from
+# source. Same failure mode as the CLI_AREAS drift documented in cli/areas.py.
+datas_extra += _collect_data_tree(
+    _ROOT / "backend" / "qa" / "personas",
+    "backend/qa/personas",
+)
+
 # Collect graphify package — includes skill*.md and always_on/*.md data files
 try:
     d, b, h = collect_all("backend.graph.graphify")

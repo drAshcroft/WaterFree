@@ -16,7 +16,8 @@ from backend.cli._common import (
     resolve_workspace,
 )
 from backend.llm.chat_client import ChatUnavailable
-from backend.testing.godot import GodotError, GodotRunner
+from backend.testing.errors import NoTestsDiscoveredError, TestingError
+from backend.testing.godot import GodotRunner
 from backend.testing.runners import RUNNERS, detect_runner, read_log, write_log
 from backend.testing.summary import summarize_log, summarize_run
 
@@ -121,9 +122,10 @@ def run(args: Namespace) -> int:
     try:
         runner = _build_runner(args, workspace)
         return _dispatch(runner, workspace, args, action)
-    except GodotError as exc:
-        # Missing engine / project / framework is a setup problem, not a test
-        # failure — keep it distinguishable from "your tests are red".
+    except TestingError as exc:
+        # A missing engine, absent toolchain, undetectable framework or empty
+        # discovery is a setup problem, not a test failure — keep it
+        # distinguishable from "your tests are red", which is exit 1.
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
 
 
@@ -131,6 +133,7 @@ def _dispatch(runner, workspace: str, args: Namespace, action: str) -> int:
     if action == "run":
         result = runner.run_all(workspace)
         write_log(workspace, result.raw_output)
+        _reject_empty_run(runner, result, workspace)
         emit_json(_result_payload(result, workspace, args))
         return EXIT_OK if result.failed == 0 else 1
 
@@ -141,10 +144,37 @@ def _dispatch(runner, workspace: str, args: Namespace, action: str) -> int:
         return EXIT_OK if result.failed == 0 and result.passed > 0 else 1
 
     if action == "list":
-        emit_json(runner.list_tests(workspace))
+        names = runner.list_tests(workspace)
+        if not names:
+            raise NoTestsDiscoveredError(
+                f"{_runner_name(runner)} found no tests in {workspace}. "
+                "An empty list is not evidence that a suite is green — check "
+                "the framework is installed and the tests are where it looks."
+            )
+        emit_json(names)
         return EXIT_OK
 
     return emit_error(f"unknown action: {action}", exit_code=EXIT_USAGE)
+
+
+def _reject_empty_run(runner, result, workspace: str) -> None:
+    """Refuse to report a zero-test run as a success.
+
+    `passed=0, failed=0, exit 0` is indistinguishable from a green suite to
+    every caller, and it is what the old fallback produced for Paradoxia and
+    for .NET solutions. Zero discovered tests is a setup failure.
+    """
+    if result.passed or result.failed:
+        return
+    raise NoTestsDiscoveredError(
+        f"{_runner_name(runner)} ran but discovered no tests in {workspace}. "
+        "Treat this as a setup failure, not a passing suite. "
+        "Run `waterfree testing logs` for the runner's own output."
+    )
+
+
+def _runner_name(runner) -> str:
+    return type(runner).__name__.replace("Runner", "") or "The runner"
 
 
 def _result_payload(result, workspace: str = "", args: Namespace | None = None) -> dict:

@@ -29,6 +29,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from backend.testing.errors import TestingError
 from backend.testing.results import TestResult, TestRunResult
 
 # Environment variables consulted for the Godot executable, highest first.
@@ -41,14 +42,22 @@ CONFIG_RELPATH = (".waterfree", "config.json")
 # Names worth trying on PATH. Ordered plain-first.
 PATH_CANDIDATES = ("godot", "godot4", "Godot")
 
-DEFAULT_TIMEOUT_SECONDS = 600
+# 30 minutes. Engine boot alone is ~40s on a warm cache, and a real gdUnit4
+# suite (C:\Projects\dungeon) runs well past the old 600s default — which meant
+# the runner reported a timeout for a suite that was working fine. A timeout is
+# reported clearly and is overridable, so erring long is the cheaper mistake.
+DEFAULT_TIMEOUT_SECONDS = 1800
 
 # Conventional test roots, checked in order. Both frameworks default to res://test.
 TEST_DIR_CANDIDATES = ("test", "tests")
 
 
-class GodotError(RuntimeError):
-    """Raised when the engine, project, or test framework cannot be resolved."""
+class GodotError(TestingError):
+    """Raised when the engine, project, or test framework cannot be resolved.
+
+    A TestingError so the CLI can treat every "could not get as far as running
+    your tests" case the same way, whatever the framework.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +66,17 @@ class GodotError(RuntimeError):
 
 
 def _config_godot_path(workspace_path: str) -> str | None:
-    """Read `godotPath` from the workspace's .waterfree/config.json, if present."""
+    """Read the Godot path from a workspace's .waterfree/config.json.
+
+    Three spellings are accepted, because all three are what people actually
+    write. The extension mirrors the bare `godotPath`, but the *setting* is
+    advertised everywhere as `waterfree.godotPath`, so hand-edited configs
+    normally use the dotted name — either flat as a literal key, or nested
+    under a `waterfree` object. Accepting only the bare key is what produced
+    the knowledge-base entry "Waterfree Godot tests may ignore flat .waterfree
+    config paths": a correct, readable setting silently ignored, and a "could
+    not find Godot" error pointing at nothing.
+    """
     config_file = Path(workspace_path).joinpath(*CONFIG_RELPATH)
     if not config_file.exists():
         return None
@@ -70,8 +89,36 @@ def _config_godot_path(workspace_path: str) -> str | None:
         data = json.loads(config_file.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         return None
-    value = data.get("godotPath") if isinstance(data, dict) else None
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    if not isinstance(data, dict):
+        return None
+
+    nested = data.get("waterfree")
+    candidates = [
+        data.get("godotPath"),
+        data.get("waterfree.godotPath"),
+        nested.get("godotPath") if isinstance(nested, dict) else None,
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _config_search_roots(workspace_path: str) -> list[str]:
+    """Directories whose .waterfree/config.json is worth consulting.
+
+    The workspace root first, then the Godot project directory — a repo that
+    keeps the game one level down (VoxelGames/game) may carry the setting in
+    either place, and the caller should not have to know which.
+    """
+    roots = [workspace_path]
+    try:
+        project = str(find_godot_project(workspace_path))
+    except (GodotError, OSError):
+        return roots
+    if project not in roots:
+        roots.append(project)
+    return roots
 
 
 def resolve_godot_binary(workspace_path: str, override: str | None = None) -> str:
@@ -89,9 +136,10 @@ def resolve_godot_binary(workspace_path: str, override: str | None = None) -> st
     if override and override.strip():
         configured.append(("--godot-path", override.strip()))
 
-    from_config = _config_godot_path(workspace_path)
-    if from_config:
-        configured.append(("waterfree.godotPath", from_config))
+    for root in _config_search_roots(workspace_path):
+        from_config = _config_godot_path(root)
+        if from_config:
+            configured.append((f"waterfree.godotPath ({root})", from_config))
 
     for var in GODOT_ENV_VARS:
         value = os.environ.get(var, "").strip()

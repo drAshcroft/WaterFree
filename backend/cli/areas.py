@@ -18,6 +18,7 @@ CLI_AREAS: tuple[str, ...] = (
     "knowledge",
     "index",
     "testing",
+    "qa",
     "qa-summary",
     "writing-grade",
     "vision",

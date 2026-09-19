@@ -275,16 +275,68 @@ def run_checks(exe: Path) -> list[tuple[str, bool, str]]:
         else:
             record("index build (process pool)", False, f"exit={r.returncode} stderr={r.stderr[:300]}")
 
-        # 7. testing list on a fresh workspace - empty array but valid JSON.
+        # 7a. testing list on a workspace with no test framework.
+        #
+        # This used to assert exit 0 with an empty array. That was the bug: a
+        # confident `[]` with a success code is indistinguishable from a green
+        # suite to every caller. Zero discovered tests is now a setup failure
+        # (exit 4, EXIT_DEP_MISSING) with nothing on stdout.
         r = _run(exe, ["testing", "list"], workspace=ws)
+        record(
+            "testing list (no framework) -> exit 4",
+            r.returncode == 4 and not r.stdout.strip(),
+            f"exit={r.returncode} stdout={r.stdout[:80]!r}",
+        )
+
+        # 7b. testing list on a workspace that really has tests.
+        #
+        # The other half of the contract, and the half that exercises the
+        # frozen build's own discovery path: the exe must find a suite laid out
+        # the ordinary way, not just WaterFree's own backend/tests.
+        suite_ws = ws / "with-tests"
+        (suite_ws / "tests").mkdir(parents=True, exist_ok=True)
+        (suite_ws / "tests" / "test_smoke_example.py").write_text(
+            "import unittest\n"
+            "\n"
+            "class ExampleTests(unittest.TestCase):\n"
+            "    def test_it(self) -> None:\n"
+            "        self.assertTrue(True)\n",
+            encoding="utf-8",
+        )
+        r = _run(exe, ["testing", "list"], workspace=suite_ws)
         if r.returncode == 0:
             try:
                 data = _check_json(r.stdout, "testing list")
-                record("testing list (fresh)", isinstance(data, list), f"len={len(data) if isinstance(data, list) else '?'}")
+                record(
+                    "testing list (real suite)",
+                    isinstance(data, list) and len(data) > 0,
+                    f"len={len(data) if isinstance(data, list) else '?'}",
+                )
             except AssertionError as exc:
-                record("testing list (fresh)", False, str(exc))
+                record("testing list (real suite)", False, str(exc))
         else:
-            record("testing list (fresh)", False, f"exit={r.returncode} stderr={r.stderr[:200]}")
+            record("testing list (real suite)", False, f"exit={r.returncode} stderr={r.stderr[:200]}")
+
+        # 7c. The QA agent's personas are markdown data files, not modules, so
+        # they need explicit spec wiring. Without it the frozen exe reports zero
+        # personas and every `qa run` dies with "Unknown persona 'first-timer'"
+        # while the same command works from source -- the CLI_AREAS drift
+        # failure mode all over again. Needs no browser and no model.
+        r = _run(exe, ["qa", "personas"], workspace=ws)
+        if r.returncode == 0:
+            try:
+                data = _check_json(r.stdout, "qa personas")
+                names = {p.get("name") for p in data} if isinstance(data, list) else set()
+                record(
+                    "qa personas (packaged data files)",
+                    "first-timer" in names,
+                    f"found={sorted(names) if names else 'none'}",
+                )
+            except AssertionError as exc:
+                record("qa personas (packaged data files)", False, str(exc))
+        else:
+            record("qa personas (packaged data files)", False,
+                   f"exit={r.returncode} stderr={r.stderr[:200]}")
 
         # 8. Unknown subcommand returns usage exit code (2).
         r = _run(exe, ["bogus", "action"], workspace=ws)

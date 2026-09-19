@@ -41,7 +41,19 @@ $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $DistDir    = Join-Path $RepoRoot "dist"
 $InstallDir = Join-Path $env:LOCALAPPDATA "WaterFree"
 $ExpectedExe = Join-Path $InstallDir "bin\waterfree.exe"
-$ExpectedCodexSkill = Join-Path $HOME ".codex\skills\waterfree-index\SKILL.md"
+$CodexSkillsDir  = Join-Path $HOME ".codex\skills"
+$ClaudeSkillsDir = Join-Path $HOME ".claude\skills"
+$ExpectedCodexSkill = Join-Path $CodexSkillsDir "waterfree-index\SKILL.md"
+
+# Every skill in the repo must survive the whole trip: repo -> MSI payload ->
+# INSTALLDIR\skills -> the agent's skills directory. Checking one hard-coded
+# skill is what let waterfree-assets, waterfree-imagegen, waterfree-vision and
+# waterfree-qa be dropped from four releases without a single red build.
+$RepoSkillsDir = Join-Path $RepoRoot "skills"
+$ExpectedSkills = @(Get-ChildItem -Path $RepoSkillsDir -Directory |
+    Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+    Select-Object -ExpandProperty Name |
+    Sort-Object)
 
 function Assert([bool]$cond, [string]$msg) {
     if (-not $cond) {
@@ -107,6 +119,32 @@ try {
     $skillText = Get-Content -Raw -Path $ExpectedCodexSkill
     Assert ($skillText -match "waterfree index") "Codex index skill points at the waterfree CLI"
     Assert ($skillText -notmatch "mcp__|MCP tools|MCP server") "Codex index skill does not point at MCP tools"
+
+    # The MSI must lay every skill down under INSTALLDIR\skills. This is the
+    # check that fails when a skill is added but the installer is not updated.
+    $installedSkills = @(Get-ChildItem -Path (Join-Path $InstallDir "skills") -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+        Select-Object -ExpandProperty Name |
+        Sort-Object)
+    $missingFromMsi = @($ExpectedSkills | Where-Object { $installedSkills -notcontains $_ })
+    Assert ($missingFromMsi.Count -eq 0) `
+        "MSI installed all $($ExpectedSkills.Count) skill(s)$(if ($missingFromMsi.Count) { ' - missing: ' + ($missingFromMsi -join ', ') })"
+
+    # waterfree-assets ships scripts as well as its SKILL.md; a skill that
+    # arrives with only its front matter is half-installed, not installed.
+    $assetsBin = Join-Path $InstallDir "skills\waterfree-assets\bin"
+    Assert (Test-Path $assetsBin) "waterfree-assets ships its bin\ scripts, not just SKILL.md"
+
+    # The installer helper copies from INSTALLDIR\skills into the agents'
+    # directories, gating nothing. Anything the MSI laid down should arrive.
+    foreach ($agent in @(@{ Name = "Codex"; Dir = $CodexSkillsDir }, @{ Name = "Claude"; Dir = $ClaudeSkillsDir })) {
+        $deployed = @(Get-ChildItem -Path $agent.Dir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
+            Select-Object -ExpandProperty Name)
+        $notDeployed = @($installedSkills | Where-Object { $deployed -notcontains $_ })
+        Assert ($notDeployed.Count -eq 0) `
+            "$($agent.Name) received all $($installedSkills.Count) skill(s)$(if ($notDeployed.Count) { ' - missing: ' + ($notDeployed -join ', ') })"
+    }
 } finally {
     Remove-Item -Recurse -Force $tmpWs.FullName -ErrorAction SilentlyContinue
 }

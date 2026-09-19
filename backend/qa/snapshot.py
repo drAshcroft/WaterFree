@@ -37,6 +37,12 @@ SNAPSHOT_JS = r"""
   ].join(',');
   const dialogSel = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
   const seen = new Set();
+  // Nodes that actually received a number this pass. Kept apart from `seen`,
+  // which holds every node the selector matched including the ones skipped for
+  // being hidden: clearing stale stamps against `seen` left a hidden element
+  // holding the number a visible one had just been given, and the click landed
+  // on the invisible one. Any app that hides and shows controls hit this.
+  const numbered = new Set();
   const nodes = Array.from(document.querySelectorAll(SELECTOR));
   const rows = [];
   const isHidden = (n, cs, r) =>
@@ -84,10 +90,11 @@ SNAPSHOT_JS = r"""
       flags,
     });
     n.setAttribute('data-wfqa', String(rows.length));
+    numbered.add(n);
   }
-  // Clear stale numbering on nodes no longer listed.
+  // Clear stale numbering on every node that did NOT get a number this pass.
   for (const stale of document.querySelectorAll('[data-wfqa]')) {
-    if (!seen.has(stale)) stale.removeAttribute('data-wfqa');
+    if (!numbered.has(stale)) stale.removeAttribute('data-wfqa');
   }
   const dialogs = Array.from(document.querySelectorAll(dialogSel))
     .filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; })

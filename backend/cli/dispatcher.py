@@ -9,6 +9,7 @@ from typing import Sequence
 from backend.cli import imagegen as area_imagegen
 from backend.cli import index as area_index
 from backend.cli import knowledge as area_knowledge
+from backend.cli import qa as area_qa
 from backend.cli import qa_summary as area_qa_summary
 from backend.cli import testing as area_testing
 from backend.cli import todos as area_todos
@@ -30,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     area_knowledge.register(sub)
     area_index.register(sub)
     area_testing.register(sub)
+    area_qa.register(sub)
     area_qa_summary.register(sub)
     area_writing_grade.register(sub)
     area_vision.register(sub)

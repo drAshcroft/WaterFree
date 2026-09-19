@@ -7,7 +7,12 @@ description: Use the `waterfree testing` CLI to run tests, inspect failures, and
 
 Provides a clean interface for running tests in any supported framework via the
 `waterfree` CLI. Auto-detects the framework from the project
-(godot → pytest → jest → vitest → unittest).
+(godot → pytest → jest → vitest → npm scripts → dotnet → unittest).
+
+**Zero discovered tests is never a pass.** If no framework can be detected, or a
+runner runs and finds nothing, the command exits **4** with an explanation
+instead of reporting `0 passed, 0 failed` and exit 0. Treat exit 4 as "these
+tests did not run", never as evidence that anything is green.
 
 Each invocation is a short shell command — run it in whatever shell you have
 (Bash or PowerShell). `waterfree` is on PATH, so the command text is identical
@@ -29,8 +34,9 @@ commands also accept `--full` for cross-area CLI compatibility.
 
 `run`, `run-one` and `list` additionally accept:
 
-- `--runner {godot,jest,pytest,unittest,vitest}` — skip auto-detection and force
-  a framework. Useful in a polyglot repo where detection picks the wrong one.
+- `--runner {dotnet,godot,jest,npm-scripts,playwright,pytest,unittest,vitest}` —
+  skip auto-detection and force a framework. Useful in a polyglot repo where
+  detection picks the wrong one, and the only way to select `playwright`.
 - `--godot-path <exe>` — the Godot executable to use. See *Godot* below.
 
 ### Run all tests
@@ -122,10 +128,54 @@ waterfree testing run --workspace .                  # Verify nothing else broke
 | pytest    | `pytest.ini`, `conftest.py`, `[tool.pytest]` in pyproject.toml |
 | Jest      | `jest.config.*`, `"jest"` in package.json |
 | Vitest    | `vitest.config.*`, `"vitest"` in package.json |
-| unittest  | fallback (default for WaterFree itself) |
+| npm scripts | `test:*` (or a bare `test`) script in package.json, with **no** jest/vitest/mocha/playwright dependency |
+| .NET      | a `*.sln`, or a `*.csproj` referencing Microsoft.NET.Test.Sdk / xunit / NUnit / MSTest |
+| Playwright | **never auto-detected** — select it with `--runner playwright` |
+| unittest  | `tests/` or `backend/tests/` containing `test_*.py` (default for WaterFree itself) |
 
 Godot is checked first because it needs two signals at once, so it never fires
 on a project that merely sits next to a Godot install.
+
+If nothing matches, the command exits 4 with the full list of what it looked
+for. It does **not** fall back to a runner that is guaranteed to find nothing.
+
+### npm scripts
+
+For JS projects with a hand-rolled harness rather than a framework — Paradoxia,
+for example, has 48 `test:*` scripts each running one `tsx` suite. Each script
+is one unit and they run **in parallel** (the `&&` chain in the aggregate `test`
+script would stop at the first failure and hide the rest).
+
+Per-test detail is recovered when the harness prints recognisable `✓` / `✗`
+lines; otherwise you get one result per script. Either way the script's exit
+code is authoritative — a suite that exits non-zero is reported failed even if
+every line parsed looked like a pass.
+
+Tune with `WATERFREE_NPM_WORKERS` (default 6) and `WATERFREE_NPM_TIMEOUT`
+(default 300s, per script).
+
+### .NET
+
+Runs `dotnet test` against the solution when there is one, otherwise against
+each test project, and parses the TRX log rather than console output — the TRX
+schema is stable across SDK and framework versions, console formatting is not.
+
+`list` reads the C# sources for `[Fact]` / `[Theory]` / `[Test]` / `[TestMethod]`
+attributes instead of building, so it is instant.
+
+Slow suites: `WATERFREE_DOTNET_TIMEOUT=<seconds>` (default 900).
+
+### Playwright
+
+Opt-in only, via `--runner playwright`. Projects that have Playwright almost
+always have a unit suite too (goblinchess has both Vitest and Playwright), and
+the unit suite is the faster gate that needs no dev server. Results come from
+the JSON reporter written to a file, so app stdout cannot corrupt the report.
+
+**You must start the dev server yourself** unless the project's
+`playwright.config` has a `webServer` block.
+
+Slow suites: `WATERFREE_PLAYWRIGHT_TIMEOUT=<seconds>` (default 900).
 
 ## Godot
 
@@ -148,7 +198,9 @@ Godot ships many differently named builds (`godot.windows.editor.double.x86_64.e
 order:
 
 1. `--godot-path <exe>`
-2. the `waterfree.godotPath` VS Code setting (mirrored to `.waterfree/config.json`)
+2. `.waterfree/config.json`, checked at the workspace root **and** in the Godot
+   project directory. All three spellings are accepted: `"godotPath"`,
+   `"waterfree.godotPath"`, and `{"waterfree": {"godotPath": ...}}`
 3. `$WATERFREE_GODOT`, `$GODOT_BIN`, `$GODOT`
 4. `godot`, `godot4`, or `Godot` on PATH
 
@@ -160,7 +212,8 @@ Godot 4 is the target. A Godot 3 binary is detected via `--version` and driven
 with `--no-window` instead of `--headless`, but neither modern GUT nor gdUnit4
 supports Godot 3, so this is a courtesy rather than a supported path.
 
-Slow suites: raise the 600s default with `WATERFREE_GODOT_TIMEOUT=<seconds>`.
+Slow suites: raise the 1800s default with `WATERFREE_GODOT_TIMEOUT=<seconds>`.
+A real gdUnit4 suite can run for many minutes; engine boot alone is ~40s.
 
 Setup problems (no engine, no `project.godot`, no test addon) exit **4**, so
 they stay distinguishable from "your tests are red" (exit 1).
@@ -178,4 +231,4 @@ command from the project root. Test logs are stored at
 | 0    | All tests passed |
 | 1    | One or more tests failed |
 | 2    | Usage / validation error |
-| 4    | Runner setup problem (e.g. Godot engine, project, or test addon not found) |
+| 4    | Runner setup problem — **the tests did not run**. Missing engine or toolchain (Godot, node, npx, dotnet), no detectable framework, or zero tests discovered. Never read this as a pass. |
