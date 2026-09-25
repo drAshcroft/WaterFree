@@ -8,6 +8,7 @@ current session goal, then formats them as a compact markdown section.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from backend.knowledge.models import KnowledgeEntry
@@ -34,16 +35,42 @@ def search_for_context(
     if _store is None:
         return ""
 
+    started = time.perf_counter()
     try:
         entries = _store.search(query, limit=limit)
     except Exception as exc:
         log.warning("knowledge retriever search failed: %s", exc)
         return ""
 
-    if not entries:
-        return ""
+    section = _format_entries(entries) if entries else ""
+    _log_injection(query, entries, section, (time.perf_counter() - started) * 1000.0)
+    return section
 
-    return _format_entries(entries)
+
+def _log_injection(query: str, entries: list[KnowledgeEntry], section: str, duration_ms: float) -> None:
+    """Count automatic prompt injection alongside explicit CLI searches.
+
+    Records area=knowledge action=inject with source=extension, so
+    `waterfree usage summary` shows how much of the store reaches a prompt
+    without an agent ever asking for it.
+    """
+    try:
+        from backend.cli import usage_log
+
+        usage_log.append(usage_log.build_record(
+            area="knowledge",
+            action="inject",
+            argv=[usage_log._clip(query)],
+            workspace="",
+            exit_code=0,
+            duration_ms=duration_ms,
+            result_bytes=len(section),
+            payload={"entries": [{"id": e.id} for e in entries], "total": len(entries)},
+            source="extension",
+            agent="extension",
+        ))
+    except Exception:  # pragma: no cover
+        pass
 
 
 def _format_entries(entries: list[KnowledgeEntry]) -> str:

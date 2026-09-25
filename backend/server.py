@@ -42,6 +42,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any, Optional
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -84,6 +85,7 @@ def _log_uncaught_exception(exc_type, exc_value, exc_traceback) -> None:
 
 sys.excepthook = _log_uncaught_exception
 
+from backend.cli import usage_log
 from backend.graph.client import GraphClient
 from backend.graph.index_state_store import IndexStateStore
 from backend.knowledge.store import KnowledgeStore
@@ -517,13 +519,22 @@ class Server:
         if not handler:
             return _error(req_id, -32601, f"Method not found: {method}")
 
+        started = time.perf_counter()
         try:
             log.info("Handling request id=%s method=%s", req_id, method)
             result = handler(self, params)
             log.info("Completed request id=%s method=%s", req_id, method)
+            usage_log.log_server_call(
+                method=method, params=params, result=result, ok=True,
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return {"id": req_id, "result": result}
         except Exception as e:
             log.exception("Error handling %s", method)
+            usage_log.log_server_call(
+                method=method, params=params, result=None, ok=False,
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return _error(req_id, -32000, str(e))
 
 

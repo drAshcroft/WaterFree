@@ -12,12 +12,24 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from backend.knowledge.models import KnowledgeEntry, KnowledgeRepo, normalize_hierarchy_path
+from backend.knowledge.models import (
+    SCOPES,
+    KnowledgeEntry,
+    KnowledgeRepo,
+    compute_content_hash,
+    default_scope,
+    normalize_hierarchy_path,
+)
+
+# Search scope selectors. "default" is what a project session wants: shared
+# lessons plus its own project's, never the asset catalog.
+SEARCH_SCOPES = ("default", "all", "global", "project", "assets")
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +40,16 @@ _DB_PATH = _GLOBAL_DIR / "knowledge.db"
 def _global_db_path() -> Path:
     _GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
     return _DB_PATH
+
+
+_UPDATABLE_FIELDS = frozenset({
+    "title", "description", "code", "snippet_type", "tags", "context",
+    "source_repo", "source_file", "source_repo_url", "hierarchy_path", "scope",
+})
+
+
+class DuplicateContentError(ValueError):
+    """An update would give an entry the same content hash as another entry."""
 
 
 class KnowledgeStore:
@@ -87,6 +109,14 @@ class KnowledgeStore:
                 INSERT INTO knowledge_fts(knowledge_fts, rowid, title, description, tags, code)
                 VALUES ('delete', old.rowid, old.title, old.description, old.tags, old.code);
             END;
+
+            CREATE TRIGGER IF NOT EXISTS knowledge_fts_au
+            AFTER UPDATE ON knowledge_entries BEGIN
+                INSERT INTO knowledge_fts(knowledge_fts, rowid, title, description, tags, code)
+                VALUES ('delete', old.rowid, old.title, old.description, old.tags, old.code);
+                INSERT INTO knowledge_fts(rowid, title, description, tags, code)
+                VALUES (new.rowid, new.title, new.description, new.tags, new.code);
+            END;
         """)
         self._conn.commit()
 
@@ -101,7 +131,49 @@ class KnowledgeStore:
             self._conn.execute(
                 "ALTER TABLE knowledge_entries ADD COLUMN hierarchy_path TEXT NOT NULL DEFAULT ''"
             )
+        if "updated_at" not in cols:
+            self._conn.execute(
+                "ALTER TABLE knowledge_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+            )
+        if "revision" not in cols:
+            self._conn.execute(
+                "ALTER TABLE knowledge_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+            )
+        if "scope" not in cols:
+            self._conn.execute(
+                "ALTER TABLE knowledge_entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'"
+            )
+            self._conn.commit()
+            self._backfill_scopes()
         self._conn.commit()
+
+    def _backfill_scopes(self) -> None:
+        """One-time classification of pre-scope rows.
+
+        Asset-catalog rows are recognised by their `assets/` hierarchy. A lesson
+        whose title starts with its own repo's name ("Paradoxia: shop card hit
+        zone ...") was written about that project, so it becomes project-scoped;
+        everything else stays global. Both rules are conservative: a wrong
+        `project` only hides an entry from other repos' default searches, and
+        `search --scope all` still finds it.
+        """
+        self._conn.execute(
+            "UPDATE knowledge_entries SET scope = 'assets' "
+            "WHERE hierarchy_path = 'assets' OR hierarchy_path LIKE 'assets/%'"
+        )
+        rows = self._conn.execute(
+            "SELECT id, title, source_repo FROM knowledge_entries WHERE scope = 'global'"
+        ).fetchall()
+        project_ids = [
+            row["id"] for row in rows
+            if _repo_key(row["source_repo"]) and _title_names_repo(row["title"], row["source_repo"])
+        ]
+        for start in range(0, len(project_ids), 500):
+            chunk = project_ids[start:start + 500]
+            self._conn.execute(
+                f"UPDATE knowledge_entries SET scope = 'project' WHERE id IN ({','.join('?' * len(chunk))})",
+                chunk,
+            )
 
     # ------------------------------------------------------------------
     # Write
@@ -114,8 +186,8 @@ class KnowledgeStore:
                 """
                 INSERT INTO knowledge_entries
                     (id, source_repo, source_file, snippet_type, title, description,
-                     code, tags, content_hash, created_at, source_repo_url, context, hierarchy_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     code, tags, content_hash, created_at, source_repo_url, context, hierarchy_path, scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry.id,
@@ -131,6 +203,7 @@ class KnowledgeStore:
                     entry.source_repo_url,
                     entry.context,
                     normalize_hierarchy_path(entry.hierarchy_path),
+                    default_scope(entry.hierarchy_path, entry.scope),
                 ),
             )
             self._conn.commit()
@@ -138,6 +211,61 @@ class KnowledgeStore:
         except sqlite3.IntegrityError:
             # Duplicate content_hash — skip silently
             return False
+
+    def update_entry(self, entry_id: str, **fields: object) -> KnowledgeEntry:
+        """Revise an entry in place, keeping its id.
+
+        Accepts any of: title, description, code, snippet_type, tags, context,
+        source_repo, source_file, source_repo_url, hierarchy_path. The content
+        hash is recomputed, `revision` is bumped and `updated_at` stamped.
+        Raises KeyError if the id is unknown, ValueError for an unknown field,
+        and DuplicateContentError if the revised body already exists elsewhere.
+        """
+        unknown = set(fields) - _UPDATABLE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown field(s): {', '.join(sorted(unknown))}")
+        current = self.get_entry(entry_id)
+        if current is None:
+            raise KeyError(entry_id)
+
+        merged = {name: getattr(current, name) for name in _UPDATABLE_FIELDS}
+        merged.update({k: v for k, v in fields.items() if v is not None})
+        merged["hierarchy_path"] = normalize_hierarchy_path(merged["hierarchy_path"])
+        merged["scope"] = default_scope(merged["hierarchy_path"], str(merged["scope"]) or None)
+        tags = [str(t) for t in (merged["tags"] or [])]
+        content_hash = compute_content_hash(
+            str(merged["code"]),
+            title=str(merged["title"]),
+            description=str(merged["description"]),
+            context=str(merged["context"]),
+        )
+        updated_at = datetime.now(timezone.utc).isoformat()
+        try:
+            self._conn.execute(
+                """
+                UPDATE knowledge_entries SET
+                    title = ?, description = ?, code = ?, snippet_type = ?, tags = ?,
+                    context = ?, source_repo = ?, source_file = ?, source_repo_url = ?,
+                    hierarchy_path = ?, scope = ?, content_hash = ?, updated_at = ?,
+                    revision = revision + 1
+                WHERE id = ?
+                """,
+                (
+                    merged["title"], merged["description"], merged["code"],
+                    merged["snippet_type"], json.dumps(tags), merged["context"],
+                    merged["source_repo"], merged["source_file"], merged["source_repo_url"],
+                    merged["hierarchy_path"], merged["scope"], content_hash, updated_at, entry_id,
+                ),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            self._conn.rollback()
+            raise DuplicateContentError(
+                f"another entry already has this exact content; entry {entry_id} left unchanged"
+            ) from exc
+        revised = self.get_entry(entry_id)
+        assert revised is not None
+        return revised
 
     def upsert_repo(self, name: str, local_path: str, remote_url: str = "") -> None:
         count = self._entry_count_for_repo(name)
@@ -182,29 +310,119 @@ class KnowledgeStore:
     # Read
     # ------------------------------------------------------------------
 
-    def search(self, query: str, limit: int = 10) -> list[KnowledgeEntry]:
-        """BM25-ranked FTS5 search over title + description + tags + code."""
-        if not query.strip():
-            return self._recent(limit)
+    def get_entry(self, entry_id: str) -> Optional[KnowledgeEntry]:
+        """Fetch one entry by id, or None."""
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_entries WHERE id = ?", (entry_id,)
+        ).fetchone()
+        return _row_to_entry(row) if row else None
 
-        # Escape FTS5 special characters to avoid syntax errors
-        safe_query = _escape_fts_query(query)
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        repo: str = "",
+        prefer_repo: str = "",
+        scope: str = "default",
+        require_all_terms: bool = False,
+    ) -> list[KnowledgeEntry]:
+        """Full-text search over title + description + tags + code.
+
+        `require_all_terms` returns only the all-terms tier: the precision gate
+        for anything that injects results unasked (the prompt hook, the add-time
+        duplicate check), where a weak any-term match costs more than it gives.
+
+        `scope` selects which entries are eligible: `default` = global entries
+        plus project entries whose repo is `prefer_repo` (or every project entry
+        when no repo is known), never assets; `all`; or exactly one of
+        `global` / `project` / `assets`.
+
+        Ranking is precision-first: entries containing *every* query term come
+        back first (BM25 order within that tier), and only when that tier is
+        smaller than `limit` is it topped up with any-term matches. The old
+        any-term-only ranking let one common word ("column", "add") pull in
+        unrelated entries ahead of the exact match, and low-precision hits
+        cost an agent more context than they return.
+
+        `repo` restricts results to one `source_repo` (exact, case-insensitive,
+        basename-tolerant). `prefer_repo` keeps the ranking but moves entries
+        from that repo ahead of the rest inside each tier, so a project's own
+        lessons surface before another project's.
+        """
+        if scope not in SEARCH_SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(SEARCH_SCOPES)} (got {scope!r})")
+        if not query.strip():
+            return [e for e in self._recent(limit * 3) if _in_scope(e, scope, _repo_key(prefer_repo))][:limit]
+
+        repo_key = _repo_key(repo)
+        prefer_key = _repo_key(prefer_repo)
+        prefer = (lambda e: 0 if _repo_key(e.source_repo) == prefer_key else 1) if prefer_key else None
+        eligible = lambda e: _in_scope(e, scope, prefer_key)
         try:
-            rows = self._conn.execute(
-                """
-                SELECT e.*
-                FROM knowledge_fts f
-                JOIN knowledge_entries e ON e.rowid = f.rowid
-                WHERE knowledge_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (safe_query, limit),
-            ).fetchall()
-            return [_row_to_entry(r) for r in rows]
+            entries = self._fts_tier(_fts_query(query, "AND"), limit, repo_key, eligible)
+            if prefer:
+                entries.sort(key=prefer)
+            if len(entries) < limit and not require_all_terms:
+                seen = {entry.id for entry in entries}
+                # Any-term candidates, re-ranked by how many distinct query
+                # terms each one actually contains, so a three-of-four match
+                # beats a one-word BM25 favourite. Preferred repo breaks ties.
+                terms = _query_terms(query)
+                rest = [
+                    e for e in self._fts_tier(_fts_query(query, "OR"), limit * 5, repo_key, eligible)
+                    if e.id not in seen
+                ]
+                rest.sort(key=lambda e: (
+                    tuple(-n for n in _term_coverage(e, terms)),
+                    prefer(e) if prefer else 0,
+                ))
+                entries.extend(rest[: limit - len(entries)])
         except sqlite3.OperationalError as exc:
             log.warning("FTS search failed (%s), falling back to LIKE", exc)
-            return self._fallback_search(query, limit)
+            entries = [e for e in self._fallback_search(query, limit * 4) if eligible(e)]
+            if repo_key:
+                entries = [e for e in entries if _repo_key(e.source_repo) == repo_key]
+            if prefer:
+                entries.sort(key=prefer)
+        return entries[:limit]
+
+    def _fts_tier(self, match: str, limit: int, repo_key: str, eligible=None) -> list[KnowledgeEntry]:
+        # Over-fetch: scope and repo filters run in Python after BM25 ranking,
+        # and the asset catalog alone is a fifth of the store.
+        rows = self._conn.execute(
+            """
+            SELECT e.*
+            FROM knowledge_fts f
+            JOIN knowledge_entries e ON e.rowid = f.rowid
+            WHERE knowledge_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (match, limit * 6),
+        ).fetchall()
+        entries = [_row_to_entry(r) for r in rows]
+        if eligible is not None:
+            entries = [e for e in entries if eligible(e)]
+        if repo_key:
+            entries = [e for e in entries if _repo_key(e.source_repo) == repo_key]
+        return entries[:limit]
+
+    def entries_for_repo(self, repo: str) -> list[KnowledgeEntry]:
+        """Every non-asset entry filed from `repo` (name or path), any scope, newest first."""
+        key = _repo_key(repo)
+        if not key:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM knowledge_entries WHERE scope != 'assets' ORDER BY created_at DESC"
+        ).fetchall()
+        return [e for e in (_row_to_entry(r) for r in rows) if _repo_key(e.source_repo) == key]
+
+    def scope_counts(self) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT scope, COUNT(*) AS n FROM knowledge_entries GROUP BY scope"
+        ).fetchall()
+        return {str(r["scope"]): int(r["n"]) for r in rows}
 
     def _recent(self, limit: int) -> list[KnowledgeEntry]:
         rows = self._conn.execute(
@@ -309,17 +527,76 @@ def _row_to_entry(row: sqlite3.Row) -> KnowledgeEntry:
         hierarchy_path=normalize_hierarchy_path(
             row["hierarchy_path"] if "hierarchy_path" in row.keys() else ""
         ),
+        updated_at=(row["updated_at"] or "") if "updated_at" in row.keys() else "",
+        revision=int(row["revision"] or 1) if "revision" in row.keys() else 1,
+        scope=(row["scope"] or "global") if "scope" in row.keys() else "global",
     )
 
 
-def _escape_fts_query(query: str) -> str:
-    """
-    Wrap each token in double quotes so FTS5 treats them as phrase searches,
-    avoiding syntax errors from special characters like hyphens or colons.
-    """
+def _in_scope(entry: KnowledgeEntry, scope: str, prefer_key: str) -> bool:
+    if scope == "all":
+        return True
+    if scope in ("global", "project", "assets"):
+        return entry.scope == scope
+    # default: shared lessons + this project's own; other projects' private
+    # notes and the asset catalog stay out unless asked for.
+    if entry.scope == "global":
+        return True
+    if entry.scope == "project":
+        return not prefer_key or _repo_key(entry.source_repo) == prefer_key
+    return False
+
+
+def _title_names_repo(title: str, source_repo: str) -> bool:
+    key = _repo_key(source_repo)
+    if not key:
+        return False
+    head = title.casefold().lstrip()
+    for prefix in ("resolved:", "complaint:", "issue:", "fix:"):
+        if head.startswith(prefix):
+            head = head[len(prefix):].lstrip()
+    return head.startswith(key) and (len(head) == len(key) or not head[len(key)].isalnum())
+
+
+def _fts_query(query: str, joiner: str) -> str:
+    """Quote every token (so hyphens/colons cannot break FTS5 syntax) and join
+    them with AND or OR."""
     tokens = query.strip().split()
     escaped = [f'"{t.replace(chr(34), "")}"' for t in tokens if t]
-    return " OR ".join(escaped) if escaped else '""'
+    return f" {joiner} ".join(escaped) if escaped else '""'
+
+
+def _escape_fts_query(query: str) -> str:
+    """Kept for callers that still want the any-term form."""
+    return _fts_query(query, "OR")
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9_]+")
+
+
+def _query_terms(query: str) -> list[str]:
+    return sorted({t for t in _TOKEN_RE.findall(query.casefold()) if len(t) > 1})
+
+
+def _term_coverage(entry: KnowledgeEntry, terms: list[str]) -> tuple[int, int]:
+    """(terms found in title/description/tags, terms found in code).
+
+    The prose fields say what an entry is *about*; a long code body mentions
+    hundreds of incidental identifiers, so it only breaks ties.
+    """
+    if not terms:
+        return (0, 0)
+    prose = set(_TOKEN_RE.findall(" ".join((entry.title, entry.description, " ".join(entry.tags))).casefold()))
+    code = set(_TOKEN_RE.findall(entry.code.casefold()))
+    return (sum(1 for t in terms if t in prose), sum(1 for t in terms if t in code))
+
+
+def _repo_key(repo: str) -> str:
+    """`c:/projects/Voxel_Build`, `Voxel_Build` and `voxel_build` all name one repo."""
+    text = (repo or "").strip().replace("\\", "/").rstrip("/")
+    if not text:
+        return ""
+    return text.rsplit("/", 1)[-1].casefold()
 
 
 def _is_in_subtree(path_segments: list[str], root_segments: list[str]) -> bool:

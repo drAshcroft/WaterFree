@@ -13,7 +13,7 @@ waterfree <area> <action> [--workspace <path>] [flags] [positional]
 ```
 
 - **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`,
-  `writing-grade`, `vision`, `imagegen`
+  `writing-grade`, `vision`, `imagegen`, `usage`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
   every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
@@ -43,24 +43,50 @@ Mirrors `backend/mcp_todos.py`. Backed by `.waterfree/tasks.db` via
 
 | Action       | Flags / args                                                                       | MCP equivalent |
 |--------------|------------------------------------------------------------------------------------|----------------|
-| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--limit N`, `--full` | `list_tasks` |
-| `search`     | `<query>` (positional), `--limit N`, `--full`                                      | `search_tasks` |
+| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--limit N`, `--offset N`, `--full` | `list_tasks` |
+| `search`     | `<query>` (positional), `--limit N`, `--phrase`, `--full`                          | `search_tasks` |
+| `get`        | `<task-id\|key>`, `--full`                                                        | - (single task lookup) |
 | `get-next`   | `--owner NAME`, `--full`                                                           | `get_next_task` |
 | `get-ready`  | `--limit N`, `--full`                                                              | `get_ready_tasks` |
 | `schema`     | `--workspace`                                                                      | - (task schema) |
 | `task-types` | `--workspace`                                                                      | - (enum discovery) |
 | `validate`   | `--workspace`                                                                      | - (backlog validation) |
 | `add`        | `--title T`, `--description D`, `--key`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--json-file <path\|->`, `--full` | `add_task` |
-| `update`     | `<task-id>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--patch-file <path\|->`, `--full` | `update_task` |
-| `delete`     | `<task-id>`                                                                        | `delete_task` |
+| `update`     | `<task-id\|key>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--append-ai-notes`, `--append-human-notes`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--patch-file <path\|->`, `--full` | `update_task` |
+| `delete`     | `<task-id\|key>`                                                                   | `delete_task` |
 | `import`     | `--file <path\|->`, `--upsert`, `--dry-run`, `--full`                             | — (bulk `add_task`/`update_task`) |
 
 All actions accept `--workspace` (default: CWD). Read/write actions emit
 **compact** JSON (null/empty/default fields omitted) unless `--full` is passed.
 `list`, `search`, and `get-ready` all return `{ "tasks": [...], "total": N }`
-envelopes; `list` also includes `phases`. On `update`, discrete flags cover the
+envelopes; `list` also includes `phases`. Wherever an action takes a task id,
+the task's stable `key` is accepted too (case-insensitive): `get`, `update`,
+`delete`.
+
+`list` pages: `total` is always the unpaged count for the given filters, and
+the envelope also carries `returned`, `offset`, `limit` and `truncated`. When
+the page was cut it adds `nextOffset` and prints a one-line note on stderr, so
+a capped dump is never mistaken for the whole backlog.
+
+`search` matches **terms**: every whitespace-separated word must appear
+somewhere in the task, in any field and any order. `_` and `-` are treated as
+spaces on both sides (`mode lever` finds `mode_lever`). A double-quoted run
+inside the query must be contiguous; `--phrase` makes the whole query one
+contiguous phrase. A task whose `key` equals the query sorts first. Searched
+fields: key, title, description, rationale, acceptanceCriteria, trigger,
+aiNotes, humanNotes, targetCoord file/class/method, owner name, phase. The
+default row is a summary (`id`, `key`, `title`, `status`, `priority`, `phase`,
+`owner`, plus a `match` snippet naming the field that hit); `--full` emits whole
+tasks. The envelope adds `returned`, `mode`, `terms`, and a `hint` whenever
+nothing matched ("0 tasks contain all N terms; M contain at least one") or the
+limit truncated the result.
+
+On `update`, discrete flags cover the
 common edits without JSON; `--patch` is for fields without a flag and discrete
-flags win on conflict. `add --json-file` reads one complete task object, while
+flags win on conflict. `--append-ai-notes` / `--append-human-notes` add a
+paragraph to the existing notes; `--ai-notes` / `--human-notes` replace them
+and warn on stderr when the replacement is less than half the length of what
+it discarded. The replace and append flags for one field are mutually exclusive. `add --json-file` reads one complete task object, while
 `update --patch-file` reads one JSON patch object; both accept `-` for stdin.
 All JSON file and stdin inputs use UTF-8 (with an optional UTF-8 BOM); malformed
 UTF-8 and invalid Unicode return a usage error before any task is persisted.
@@ -103,16 +129,86 @@ muscle-memory compatibility but does not change the global store location.
 
 | Action          | Flags / args |
 |-----------------|--------------|
-| `search`        | `<query>`, `--limit N`, `--workspace`, `--full` |
+| `search`        | `<query>`, `--limit N`, `--repo NAME`, `--scope default\|all\|global\|project\|assets`, `--workspace` (its basename is the preferred repo), `--full` |
 | `browse`        | `--path P`, `--depth N`, `--include-entries`, `--entry-limit N`, `--workspace`, `--full` |
-| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin), `--snippet-type`, `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context`, `--source-repo-url`, `--hierarchy-path`, `--workspace` |
+| `get`           | `<entry-id>`, `--workspace` |
+| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin; both optional), `--snippet-type` (required with code, defaults to `convention` without), `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context`, `--source-repo-url`, `--hierarchy-path`, `--scope global\|project\|assets`, `--no-check`, `--workspace` |
+| `update`        | `<entry-id>`, any of `--title`, `--description`, `--code` / `--code-file`, `--snippet-type`, `--tag T` (repeatable; replaces the list), `--context`, `--source-repo`, `--source-file`, `--source-repo-url`, `--hierarchy-path`, `--workspace` |
+| `hook-context`  | reads a Claude Code `UserPromptSubmit` event on stdin; `--max-rows N` (3), `--min-terms N` (2), `--max-terms N` (12), `--workspace`. Prints `hookSpecificOutput.additionalContext` only when an entry contains every key term (identifiers first) of the prompt; otherwise prints nothing. Fragment: `skills/waterfree-knowledge/hooks/claude-settings.hooks.json`, installed with `install_claude.ps1 -InstallHooks`. |
+| `hook-session`  | reads a `SessionStart` event on stdin; `--max-rows N` (3), `--workspace`. Prints one orientation line (shared-lesson count, this project's count, its most-retrieved entries); nothing for an empty store. |
+| `hook-stop`     | reads a `Stop` event on stdin; `--workspace`. When `last_assistant_message` carries a lesson marker (several attempts, workaround, root cause, turned out, gotcha, did not work) and `stop_hook_active` is false, prints `decision: block` with a one-paragraph reason asking for the insight to be filed; otherwise nothing. |
+| `consolidate`   | `--window N` (days of retrieval history, 90), `--min-age N` (30), `--threshold F` (0.5), `--max-groups N` (25), `--max-group-size N` (5), `--include-assets`, `--no-llm`, `--model M`, `--apply`, `--report-file PATH`, `--workspace` |
 | `delete`        | `<entry-id>`, `--workspace` |
 | `list-sources`  | `--workspace`, `--full` |
 | `stats`         | `--workspace`, `--full` |
 
 Note: `--code-file` is the preferred way to pass a snippet body; shell-escaping
-multi-line code through argv is painful. `--code -` reads from stdin.
-`knowledge search` returns `{ "entries": [...], "total": N }`.
+multi-line code through argv is painful. `--code -` reads from stdin. Code is
+optional: a lesson, decision or convention with nothing to paste is stored with
+an empty `code` and is deduplicated on title + description + context instead of
+on the code hash. `knowledge search` returns `{ "entries": [...], "total": N, "preferred_repo": ..., "hint"? }`.
+Ranking is precision-first: entries containing every query word come first
+(BM25 order within the tier), then any-word matches re-ranked by how many
+distinct query words their title/description/tags contain (code only breaks
+ties). Entries whose `source_repo` basename equals the `--workspace` basename
+sort first within each tier; `--repo` restricts to one repo. Default rows omit
+`code` and `context` (they carry `code_chars`/`context_chars`); `--full`
+restores them and `get <id>` returns one entry.
+Every entry carries a `scope`: `global` (default), `project` (visible only to searches
+whose `--workspace`/cwd basename matches its `source_repo`) or `assets` (automatic for
+`assets/*` hierarchy paths). `search --scope` defaults to global + own-project; `all`
+or a single scope override it. Existing databases are backfilled once on open:
+`assets/*` rows become `assets`, entries whose title starts with their own repo name
+become `project`, the rest stay `global`. `stats` reports `by_scope`.
+`add` runs a non-blocking quality gate unless `--no-check`: `warnings` lists a
+`near_duplicate` (an entry already contains every word of the title, with its ids),
+`no_hierarchy`, and `reads_like_a_trace` (narrative rather than instruction); each is
+also printed on stderr.
+`get` returns one entry (exit 3 when unknown). `update` revises an entry in
+place: the id is kept, `revision` is incremented, `updated_at` is stamped, the
+full-text index is refreshed, and only the passed fields change; it exits 2 when
+no field was given or when the revised content would collide with another entry.
+`consolidate` is the store's maintenance pass: it groups near-duplicate entries
+(title vocabulary overlap, or title+description overlap within one hierarchy),
+asks the local model on the `knowledge_consolidate` stage for one merged entry per
+group, finds relative-date phrases and rewrites them against the entry's creation
+date, lists entries never retrieved within the window (from the usage log) and
+entries with no hierarchy path. It only reports unless `--apply`, which updates the
+oldest id of each mergeable group, deletes the others, and applies date rewrites;
+stale entries are never deleted. Oversized groups and asset rows are excluded.
+
+`trace`, `detect-changes` and `architecture` fit their output to `--budget-tokens`
+(approximate, 4 chars per token): rows are dropped least-important-first (edges
+before nodes, module graph before god nodes, lowest degree first) and a `budget`
+block reports `estimated_tokens`, `dropped` per list, `truncated` and a hint.
+
+## Area: usage
+
+The CLI's own usage log. Every dispatch of any other area appends one JSON
+record to `~/.waterfree/global/usage.jsonl` (override with
+`WATERFREE_USAGE_LOG=<path>`, disable with `WATERFREE_USAGE_LOG=0`): `ts`,
+`source` (`cli` | `transcript`), `area`, `action`, `workspace`, clipped `argv`,
+`query`, `exit_code`, `duration_ms`, `result_bytes`, and when the action emitted
+an envelope its `hits` (`total`), `returned`, `truncated`, `hint` and the first
+ten `hit_ids`; plus `agent` (`AI_AGENT` env) and `session`
+(`CLAUDE_CODE_SESSION_ID`). Logging is fail-silent and never alters a command's
+output or exit code. `usage` actions are not logged.
+
+| Action               | Flags / args |
+|----------------------|--------------|
+| `summary`            | `--since 30d\|7d\|12h\|2w\|all`, `--area A`, `--workspace P`, `--source cli\|transcript`, `--top N` |
+| `tail`               | `-n N`, `--area A`, `--workspace P` |
+| `path`               | — |
+| `import-transcripts` | `--claude-projects DIR` (default `~/.claude/projects`) |
+
+`summary` aggregates per action: calls, sessions, workspaces, error rate,
+median/p90/total result bytes, zero-hit rate and median hits for search-like
+actions; plus `by_area`, `by_agent`, `by_workspace`, `by_day`, a `knowledge`
+block (searches, adds, adds_per_search, distinct entries ever retrieved, top
+retrieved) and top / top-empty queries. `import-transcripts` pairs every
+`waterfree` shell call in Claude Code's local transcripts with its tool result
+and rewrites `usage-transcripts.jsonl` wholesale (idempotent), so history from
+before the log existed is included. See docs/20_HARNESS_HELPERS_RESEARCH.md.
 
 ## Area: index
 
@@ -126,9 +222,9 @@ graph DB.
 | `search-code`        | `<query>`, `--max N` |
 | `search-graph`       | `<query>`, `--node-type T`, `--limit N` |
 | `get-snippet`        | `<qualified-name>`, `--scope procedure|neighbors|class` |
-| `trace`              | `<function>`, `--direction callers|callees|both`, `--depth N` |
-| `detect-changes`     | `--scope all|<files>`, `--depth N` |
-| `architecture`       | — |
+| `trace`              | `<function>`, `--direction callers|callees|both`, `--depth N`, `--budget-tokens N` (1500; 0 = unlimited) |
+| `detect-changes`     | `--scope all|<files>`, `--depth N`, `--budget-tokens N` (1500) |
+| `architecture`       | `--aspect a,b,c` (default `languages,layers,god_nodes`), `--all-aspects`, `--budget-tokens N` (2500) |
 | `list-projects`      | — (no `--workspace`) |
 
 All actions except `list-projects` accept `--workspace`.

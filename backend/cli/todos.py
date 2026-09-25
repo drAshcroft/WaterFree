@@ -31,7 +31,14 @@ from backend.session.models import (
     TaskTiming,
     TaskType,
 )
-from backend.todo.store import DuplicateKeyError, TaskNotFoundError, TaskStore
+from backend.todo.store import (
+    SEARCH_MODES,
+    DuplicateKeyError,
+    TaskNotFoundError,
+    TaskSearchResult,
+    TaskStore,
+    normalize_search_text,
+)
 
 # Statuses/priorities accepted by the discrete `update` flags, derived from the
 # enums so a new member widens the CLI automatically rather than silently failing
@@ -111,6 +118,109 @@ def _compact_task(task: dict) -> dict:
 
 def _present(task: dict, full: bool) -> dict:
     return task if full else _compact_task(task)
+
+
+# Fields a search summary row quotes a snippet from, most descriptive first.
+# `title` is already on the row, so it is only reported as "title" with no text.
+_SNIPPET_FIELDS = (
+    "description", "rationale", "acceptanceCriteria", "trigger",
+    "aiNotes", "humanNotes", "key", "phase",
+)
+_SNIPPET_WIDTH = 120
+
+
+def _field_text(task: dict, field: str) -> str:
+    if field == "targetCoord.file":
+        coord = task.get("targetCoord") or {}
+        return str(coord.get("file") or "")
+    if field == "owner.name":
+        owner = task.get("owner") or {}
+        return str(owner.get("name") or "")
+    value = task.get(field)
+    return "" if value is None else str(value)
+
+
+def _match_snippet(task: dict, terms: list[str]) -> str:
+    """Name the first field a term matched and quote a window of text around it."""
+    if not terms:
+        return ""
+    if any(term in normalize_search_text(task.get("title")) for term in terms):
+        return "title"
+    for field in (*_SNIPPET_FIELDS, "targetCoord.file", "owner.name"):
+        text = " ".join(_field_text(task, field).split())
+        haystack = normalize_search_text(text)
+        positions = [haystack.find(term) for term in terms]
+        hits = [pos for pos in positions if pos >= 0]
+        if not hits:
+            continue
+        # normalize_search_text only swaps characters 1:1, so offsets line up.
+        start = max(0, min(hits) - _SNIPPET_WIDTH // 4)
+        window = text[start:start + _SNIPPET_WIDTH]
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if start + _SNIPPET_WIDTH < len(text) else ""
+        return f"{field}: {prefix}{window}{suffix}"
+    return ""
+
+
+def _search_row(task: dict, terms: list[str]) -> dict:
+    """The compact search shape: enough to pick a task, never its body."""
+    row: dict[str, Any] = {"id": task.get("id")}
+    if task.get("key"):
+        row["key"] = task["key"]
+    row["title"] = task.get("title")
+    row["status"] = task.get("status")
+    row["priority"] = task.get("priority")
+    if task.get("phase"):
+        row["phase"] = task["phase"]
+    owner = task.get("owner") or {}
+    if owner.get("name"):
+        row["owner"] = owner["name"]
+    snippet = _match_snippet(task, terms)
+    if snippet:
+        row["match"] = snippet
+    return row
+
+
+def _search_envelope(result: TaskSearchResult, *, full: bool, limit: int) -> dict[str, Any]:
+    tasks = [task.to_dict() for task in result.tasks]
+    presented = [_present(t, True) for t in tasks] if full else [_search_row(t, result.terms) for t in tasks]
+    envelope: dict[str, Any] = {
+        "tasks": presented,
+        "total": result.total,
+        "returned": len(presented),
+        "mode": result.mode,
+        "terms": result.terms,
+    }
+    if result.total > len(presented):
+        envelope["truncated"] = True
+        envelope["hint"] = f"{result.total} tasks match; showing {len(presented)}. Raise --limit (was {limit})."
+    elif result.total == 0 and result.terms:
+        if result.mode == "phrase":
+            envelope["hint"] = (
+                "0 tasks contain that exact phrase; drop --phrase to match the words in any order."
+            )
+        elif len(result.terms) > 1 and result.any_term_total:
+            envelope["hint"] = (
+                f"0 tasks contain all {len(result.terms)} terms; {result.any_term_total} contain at least one. "
+                "Try fewer or different words."
+            )
+        else:
+            envelope["hint"] = "0 tasks match. Search is across every text field; try a different word."
+    return envelope
+
+
+def _append_note(existing: str | None, addition: str) -> str:
+    base = (existing or "").rstrip()
+    return f"{base}\n\n{addition}" if base else addition
+
+
+def _warn_if_note_shrinks(field: str, existing: str | None, replacement: str, flag: str) -> None:
+    before = len(existing or "")
+    if before and len(replacement) < before / 2:
+        sys.stderr.write(
+            f"warning: {field} shrank from {before} to {len(replacement)} characters; "
+            f"earlier notes were replaced. Use --{flag} to keep them.\n"
+        )
 
 
 def _tasks_envelope(tasks: list[dict], *, full: bool, **extra: Any) -> dict[str, Any]:
@@ -259,14 +369,33 @@ def register(sub: _SubParsersAction) -> None:
     p_list.add_argument("--phase", default="")
     p_list.add_argument("--owner", default="")
     p_list.add_argument("--ready-only", action="store_true")
-    p_list.add_argument("--limit", type=int, default=50)
+    p_list.add_argument("--limit", type=int, default=50,
+                        help="Page size (default 50). 'total' always reports the unpaged count.")
+    p_list.add_argument("--offset", type=int, default=0, help="Skip this many tasks (paging).")
     _add_full_flag(p_list)
 
-    p_search = actions.add_parser("search", help="Full-text search across tasks")
+    p_search = actions.add_parser(
+        "search",
+        help="Search every text field of every task. Words match in any order; "
+             "quote a run of words to require them contiguous.",
+    )
     add_workspace_arg(p_search)
     p_search.add_argument("query")
     p_search.add_argument("--limit", type=int, default=20)
-    _add_full_flag(p_search)
+    p_search.add_argument(
+        "--phrase", action="store_true",
+        help="Match the whole query as one contiguous phrase instead of separate words.",
+    )
+    p_search.add_argument(
+        "--full", action="store_true",
+        help="Emit whole task objects. Default rows carry id, key, title, status, "
+             "priority and a match snippet only.",
+    )
+
+    p_get = actions.add_parser("get", help="Fetch one task by id or key")
+    add_workspace_arg(p_get)
+    p_get.add_argument("task_ref", help="Task id (uuid) or stable key (e.g. GOV-001).")
+    _add_full_flag(p_get)
 
     p_next = actions.add_parser("get-next", help="Highest-priority unblocked task")
     add_workspace_arg(p_next)
@@ -311,15 +440,31 @@ def register(sub: _SubParsersAction) -> None:
              "fields without a flag.",
     )
     add_workspace_arg(p_update)
-    p_update.add_argument("task_id")
+    p_update.add_argument("task_id", help="Task id (uuid) or stable key (e.g. GOV-001).")
     # Discrete flags cover the common writes without JSON — no shell-quoting pain.
     p_update.add_argument("--status", choices=_STATUSES, default=None)
     p_update.add_argument("--priority", choices=_PRIORITIES, default=None)
     p_update.add_argument("--phase", default=None)
     p_update.add_argument("--owner-type", choices=("human", "agent", "unassigned"), default=None)
     p_update.add_argument("--owner-name", default=None)
-    p_update.add_argument("--ai-notes", default=None, help="Replace aiNotes.")
-    p_update.add_argument("--human-notes", default=None, help="Replace humanNotes.")
+    ai_notes = p_update.add_mutually_exclusive_group()
+    ai_notes.add_argument(
+        "--ai-notes", default=None,
+        help="Replace aiNotes wholesale (warns when the earlier notes were longer).",
+    )
+    ai_notes.add_argument(
+        "--append-ai-notes", default=None, metavar="AI_NOTES",
+        help="Add a paragraph to aiNotes, keeping what is already there.",
+    )
+    human_notes = p_update.add_mutually_exclusive_group()
+    human_notes.add_argument(
+        "--human-notes", default=None,
+        help="Replace humanNotes wholesale (warns when the earlier notes were longer).",
+    )
+    human_notes.add_argument(
+        "--append-human-notes", default=None, metavar="HUMAN_NOTES",
+        help="Add a paragraph to humanNotes, keeping what is already there.",
+    )
     p_update.add_argument("--actual-minutes", type=int, default=None)
     p_update.add_argument(
         "--patch", default=None,
@@ -331,9 +476,9 @@ def register(sub: _SubParsersAction) -> None:
     )
     _add_full_flag(p_update)
 
-    p_delete = actions.add_parser("delete", help="Remove a task by id")
+    p_delete = actions.add_parser("delete", help="Remove a task by id or key")
     add_workspace_arg(p_delete)
-    p_delete.add_argument("task_id")
+    p_delete.add_argument("task_id", help="Task id (uuid) or stable key (e.g. GOV-001).")
 
     p_import = actions.add_parser(
         "import",
@@ -372,20 +517,44 @@ def run(args: Namespace) -> int:
     store = TaskStore(resolve_workspace(args))
 
     if action == "list":
-        data = store.list_tasks(
+        filters = dict(
             status=args.status,
             owner_name=args.owner,
             priority=args.priority,
             phase=args.phase,
             ready_only=args.ready_only,
-            limit=args.limit,
         )
-        emit_json(_tasks_envelope([t.to_dict() for t in data.tasks], full=args.full, phases=data.phases))
+        data = store.list_tasks(**filters, limit=args.limit, offset=args.offset)
+        total = store.count_tasks(**filters)
+        envelope = _tasks_envelope([t.to_dict() for t in data.tasks], full=args.full, phases=data.phases)
+        returned = envelope["total"]
+        envelope["total"] = total
+        envelope["returned"] = returned
+        envelope["offset"] = args.offset
+        envelope["limit"] = args.limit
+        truncated = args.offset + returned < total
+        envelope["truncated"] = truncated
+        if truncated:
+            envelope["nextOffset"] = args.offset + returned
+            sys.stderr.write(
+                f"note: {total} tasks match but only {returned} were returned "
+                f"(--limit {args.limit}, --offset {args.offset}); pass a larger --limit "
+                f"or --offset {args.offset + returned} for the rest.\n"
+            )
+        emit_json(envelope)
         return EXIT_OK
 
     if action == "search":
-        tasks = store.search_tasks(query=args.query, limit=args.limit)
-        emit_json(_tasks_envelope([t.to_dict() for t in tasks], full=args.full))
+        mode = "phrase" if args.phrase else "terms"
+        result = store.search_tasks_result(args.query, limit=args.limit, mode=mode)
+        emit_json(_search_envelope(result, full=args.full, limit=args.limit))
+        return EXIT_OK
+
+    if action == "get":
+        task = store.get_task(args.task_ref)
+        if task is None:
+            return emit_error(f"Task not found: {args.task_ref}", exit_code=EXIT_NOT_FOUND)
+        emit_json(_present(task.to_dict(), args.full))
         return EXIT_OK
 
     if action == "get-next":
@@ -471,10 +640,19 @@ def run(args: Namespace) -> int:
             patch["priority"] = args.priority
         if args.phase is not None:
             patch["phase"] = args.phase
+        existing = store.get_task(args.task_id)
+        if existing is None:
+            return emit_error(f"Task not found: {args.task_id}", exit_code=EXIT_NOT_FOUND)
         if args.ai_notes is not None:
+            _warn_if_note_shrinks("aiNotes", existing.ai_notes, args.ai_notes, "append-ai-notes")
             patch["aiNotes"] = args.ai_notes
+        if args.append_ai_notes is not None:
+            patch["aiNotes"] = _append_note(existing.ai_notes, args.append_ai_notes)
         if args.human_notes is not None:
+            _warn_if_note_shrinks("humanNotes", existing.human_notes, args.human_notes, "append-human-notes")
             patch["humanNotes"] = args.human_notes
+        if args.append_human_notes is not None:
+            patch["humanNotes"] = _append_note(existing.human_notes, args.append_human_notes)
         if args.actual_minutes is not None:
             patch["actualMinutes"] = args.actual_minutes
         if args.owner_type is not None or args.owner_name is not None:
@@ -489,7 +667,7 @@ def run(args: Namespace) -> int:
                 exit_code=EXIT_USAGE,
             )
         try:
-            task = store.update_task(task_id=args.task_id, patch=patch)
+            task = store.update_task(task_id=existing.id, patch=patch)
         except TaskNotFoundError as exc:
             return emit_error(str(exc), exit_code=EXIT_NOT_FOUND)
         except DuplicateKeyError as exc:
@@ -500,8 +678,9 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "delete":
-        deleted = store.delete_task(args.task_id)
-        emit_json({"deleted": deleted, "task_id": args.task_id})
+        existing = store.get_task(args.task_id)
+        deleted = store.delete_task(existing.id) if existing else False
+        emit_json({"deleted": deleted, "task_id": existing.id if existing else args.task_id})
         return EXIT_OK if deleted else EXIT_NOT_FOUND
 
     if action == "import":

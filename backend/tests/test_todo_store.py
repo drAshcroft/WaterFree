@@ -4,7 +4,7 @@ from pathlib import Path
 
 from backend.session.models import PlanDocument, Task, TaskDependency, TaskStatus
 from backend.test_support import make_temp_dir as make_test_dir
-from backend.todo.store import DuplicateKeyError, TaskStore
+from backend.todo.store import DuplicateKeyError, TaskStore, parse_search_terms
 
 
 class TaskStoreTests(unittest.TestCase):
@@ -409,6 +409,57 @@ class TaskStoreTests(unittest.TestCase):
 
         self.assertEqual(len(result.created), 1)
         self.assertEqual(store.load().tasks, [])
+
+
+class TaskStoreSearchTests(unittest.TestCase):
+    def make_workspace(self) -> Path:
+        return make_test_dir(self, prefix="todo-store-search-")
+
+    def make_store(self) -> TaskStore:
+        store = TaskStore(str(self.make_workspace()))
+        store.add_task({"title": "DIQ: the difficulty evaluator", "description": "x", "key": "FAM-WTR",
+                        "aiNotes": "2026-09-23 lever pulled"})
+        store.add_task({"title": "human rating loop", "description": "the text says mode_lever"})
+        return store
+
+    def test_parse_search_terms_modes(self) -> None:
+        self.assertEqual(parse_search_terms('"human rating" loop'), ["human rating", "loop"])
+        self.assertEqual(parse_search_terms("Mode_Lever  diq"), ["mode lever", "diq"])
+        self.assertEqual(parse_search_terms("human loop", mode="phrase"), ["human loop"])
+        self.assertEqual(parse_search_terms("   "), [])
+        with self.assertRaises(ValueError):
+            parse_search_terms("x", mode="fuzzy")
+
+    def test_terms_are_anded_across_fields(self) -> None:
+        store = self.make_store()
+        result = store.search_tasks_result("DIQ lever")
+        self.assertEqual(result.total, 1)
+        self.assertEqual(result.tasks[0].key, "FAM-WTR")
+
+        result = store.search_tasks_result("human diq")
+        self.assertEqual(result.total, 0)
+        self.assertEqual(result.any_term_total, 2)
+
+    def test_like_wildcards_in_the_query_are_literal(self) -> None:
+        store = self.make_store()
+        store.add_task({"title": "done 100%", "description": "d"})
+        self.assertEqual(store.search_tasks_result("100%").total, 1)
+        self.assertEqual(store.search_tasks_result("%").total, 1)
+
+    def test_get_task_by_id_or_key(self) -> None:
+        store = self.make_store()
+        by_key = store.get_task("fam-wtr")
+        self.assertIsNotNone(by_key)
+        self.assertEqual(store.get_task(by_key.id).id, by_key.id)
+        self.assertIsNone(store.get_task("missing"))
+        self.assertIsNone(store.get_task(""))
+
+    def test_count_and_offset(self) -> None:
+        store = self.make_store()
+        self.assertEqual(store.count_tasks(), 2)
+        self.assertEqual(len(store.list_tasks(limit=1).tasks), 1)
+        self.assertEqual(len(store.list_tasks(limit=1, offset=1).tasks), 1)
+        self.assertEqual(store.list_tasks(limit=1, offset=2).tasks, [])
 
 
 if __name__ == "__main__":

@@ -55,14 +55,25 @@ waterfree index build --workspace .
 ```bash
 waterfree index architecture --workspace .
 ```
-Returns the full picture: `languages`, `entry_points`, `hotspots`, `layers`,
-`clusters`, `module_graph`, `god_nodes`, `surprising_connections`,
-`import_cycles`, and `adr`. This is a large payload — to pull just what you
-need, use `--aspect` with a comma-separated subset:
+By default returns the smallest useful overview: `languages`, `layers` and
+`god_nodes`. The full picture (`entry_points`, `hotspots`, `clusters`,
+`module_graph`, `surprising_connections`, `import_cycles`, `adr` as well) is
+`--all-aspects`, and it is large. Pull just what you need with `--aspect`:
 ```bash
 waterfree index architecture --workspace . --aspect languages,layers
 waterfree index architecture --workspace . --aspect god_nodes,import_cycles
 ```
+
+### Token budgets
+
+`trace`, `detect-changes` and `architecture` fit their output to an
+approximate token budget (`--budget-tokens`, defaults 1500 / 1500 / 2500;
+`0` = unlimited). Rows past the budget are dropped least-important-first
+(edges before nodes, module graph before god nodes, lowest degree first) and
+the response carries a `budget` block: `estimated_tokens`, `dropped` per list,
+`truncated`, and a `hint`. Structural context is worth most when it is small;
+if you see `truncated: true`, narrow the query (`--depth`, `--scope`,
+`--aspect`) before raising the budget.
 
 ### God nodes (core abstractions / refactor risks)
 ```bash

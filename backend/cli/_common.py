@@ -40,17 +40,37 @@ def resolve_workspace(args: Namespace) -> str:
     return os.path.abspath(ws)
 
 
+# The dispatcher's usage log needs to know what an action wrote to stdout
+# (size, and the envelope's total/returned/ids) without every area threading
+# that back through its return value. emit_json/emit_raw note it here; the
+# dispatcher collects it with `take_last_output()` after the runner returns.
+_last_output: dict[str, Any] = {"bytes": 0, "payload": None}
+
+
+def take_last_output() -> tuple[int, Any]:
+    """(bytes written, last JSON payload) since the previous call; then reset."""
+    out = (int(_last_output["bytes"]), _last_output["payload"])
+    _last_output["bytes"] = 0
+    _last_output["payload"] = None
+    return out
+
+
 def emit_json(obj: Any) -> None:
     """Print a JSON value to stdout, indented for human inspection."""
-    sys.stdout.write(json.dumps(obj, indent=2))
+    text = json.dumps(obj, indent=2)
+    sys.stdout.write(text)
     sys.stdout.write("\n")
+    _last_output["bytes"] += len(text) + 1
+    _last_output["payload"] = obj
 
 
 def emit_raw(text: str) -> None:
     """Print plain text to stdout (for tools that return non-JSON, e.g. logs)."""
     sys.stdout.write(text)
+    _last_output["bytes"] += len(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")
+        _last_output["bytes"] += 1
 
 
 def emit_error(message: str, *, code: str = "error", exit_code: int = EXIT_INTERNAL) -> int:

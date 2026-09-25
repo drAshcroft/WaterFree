@@ -5,6 +5,7 @@ Workspace-local todo store backed by `.waterfree/tasks.db`.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -52,6 +53,83 @@ class TaskNotFoundError(ValueError):
 
 class DuplicateKeyError(ValueError):
     """Raised when a task's stable `key` collides with another task's key."""
+
+
+# Columns / payload paths consulted by `search_tasks`, with the task-dict field
+# name each one surfaces as. Order matters: it is the order a match snippet is
+# looked for, so the more descriptive fields come first.
+_SEARCH_FIELDS: tuple[tuple[str, str], ...] = (
+    ("key", "key"),
+    ("title", "title"),
+    ("description", "description"),
+    ("rationale", "rationale"),
+    ("json_extract(payload, '$.acceptanceCriteria')", "acceptanceCriteria"),
+    ("json_extract(payload, '$.trigger')", "trigger"),
+    ("json_extract(payload, '$.aiNotes')", "aiNotes"),
+    ("json_extract(payload, '$.humanNotes')", "humanNotes"),
+    ("target_file", "targetCoord.file"),
+    ("target_class", "targetCoord.class"),
+    ("target_method", "targetCoord.method"),
+    ("owner_name", "owner.name"),
+    ("phase", "phase"),
+)
+
+SEARCH_MODES = ("terms", "phrase")
+
+# Matches either a double-quoted run (kept together as one contiguous term) or
+# a bare whitespace-delimited word.
+_TERM_RE = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def normalize_search_text(text: object) -> str:
+    """Casefold and treat `_`/`-` as spaces so `mode lever` finds `mode_lever`."""
+    return str(text or "").casefold().replace("_", " ").replace("-", " ")
+
+
+def _search_sql_haystack(expr: str) -> str:
+    """SQL mirror of `normalize_search_text` for one column/expression."""
+    return f"replace(replace(lower(coalesce({expr}, '')), '_', ' '), '-', ' ')"
+
+
+def _like_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%")
+    return f"%{escaped}%"
+
+
+def parse_search_terms(query: str, *, mode: str = "terms") -> list[str]:
+    """Split a query into normalized terms.
+
+    `terms` mode: whitespace-separated words, each of which must appear
+    somewhere in the task (AND). A double-quoted run stays together as one
+    contiguous term, so `"human rating" loop` needs the phrase *and* the word.
+    `phrase` mode: the whole query is one contiguous term.
+    """
+    if mode not in SEARCH_MODES:
+        raise ValueError(f"unknown search mode: {mode!r}; expected one of {', '.join(SEARCH_MODES)}")
+    text = query.strip()
+    if not text:
+        return []
+    if mode == "phrase":
+        raw = [text.strip('"')]
+    else:
+        raw = [quoted if quoted else bare for quoted, bare in _TERM_RE.findall(text)]
+    terms: list[str] = []
+    for item in raw:
+        normalized = " ".join(normalize_search_text(item).split())
+        if normalized and normalized not in terms:
+            terms.append(normalized)
+    return terms
+
+
+@dataclass
+class TaskSearchResult:
+    """Outcome of `search_tasks_result`: the page plus what it took to get it."""
+
+    tasks: list[Task]
+    total: int                 # tasks matching every term, before `limit`
+    mode: str                  # "terms" | "phrase"
+    terms: list[str]           # normalized terms actually matched against
+    any_term_total: int = 0    # tasks matching at least one term (zero-hit hints)
 
 
 class TaskValidationError(ValueError):
@@ -159,6 +237,7 @@ class TaskStore:
         phase: str = "",
         ready_only: bool = False,
         limit: int = 100,
+        offset: int = 0,
     ) -> TaskStoreData:
         metadata = self._load_metadata()
         tasks = self._query_tasks(
@@ -169,8 +248,8 @@ class TaskStore:
             phase=phase,
             ready_only=ready_only,
             limit=limit,
+            offset=offset,
         )
-        tasks = tasks[: max(0, limit)]
         return TaskStoreData(
             version=int(metadata.get("version", 1)),
             tasks=tasks,
@@ -179,32 +258,90 @@ class TaskStore:
             velocity_log=json_loads(metadata.get("velocity_log"), []),
         )
 
-    def search_tasks(self, query: str, limit: int = 20) -> list[Task]:
-        if not query.strip():
-            return self._query_tasks(limit=limit)
+    def count_tasks(
+        self,
+        *,
+        status: str = "",
+        owner_name: str = "",
+        owner_type: str = "",
+        priority: str = "",
+        phase: str = "",
+        ready_only: bool = False,
+    ) -> int:
+        """Number of tasks matching the same filters `list_tasks` takes, ignoring any limit."""
+        where_sql, params = self._filter_sql(
+            status=status,
+            owner_name=owner_name,
+            owner_type=owner_type,
+            priority=priority,
+            phase=phase,
+            ready_only=ready_only,
+        )
+        row = self._conn.execute(f"SELECT COUNT(*) FROM tasks {where_sql}", params).fetchone()
+        return int(row[0]) if row else 0
 
-        pattern = f"%{query.casefold()}%"
+    def get_task(self, ref: str) -> Optional[Task]:
+        """Fetch one task by id, or by its stable key (case-insensitive)."""
+        ref = (ref or "").strip()
+        if not ref:
+            return None
+        row = self._conn.execute(
+            "SELECT payload FROM tasks WHERE id = ? OR (key != '' AND lower(key) = ?) "
+            "ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END LIMIT 1",
+            (ref, ref.casefold(), ref),
+        ).fetchone()
+        if not row:
+            return None
+        return Task.from_dict(json.loads(row["payload"]))
+
+    def search_tasks(self, query: str, limit: int = 20, *, mode: str = "terms") -> list[Task]:
+        return self.search_tasks_result(query, limit=limit, mode=mode).tasks
+
+    def search_tasks_result(self, query: str, limit: int = 20, *, mode: str = "terms") -> TaskSearchResult:
+        """Search every text field of every task.
+
+        Default `terms` mode requires each whitespace-separated word to appear
+        somewhere in the task (any field, any order). Underscores and hyphens
+        count as spaces on both sides, so `mode lever` matches `mode_lever`.
+        Quote a run of words to require them contiguous; `mode="phrase"` treats
+        the whole query that way. A task whose key equals the query sorts first.
+        """
+        terms = parse_search_terms(query, mode=mode)
+        if not terms:
+            tasks = self._query_tasks(limit=limit)
+            return TaskSearchResult(tasks=tasks, total=self.count_tasks(), mode=mode, terms=[])
+
+        haystack = " || ' | ' || ".join(_search_sql_haystack(expr) for expr, _ in _SEARCH_FIELDS)
+        term_clauses = [f"({haystack}) LIKE ? ESCAPE '\\'" for _ in terms]
+        patterns = [_like_pattern(term) for term in terms]
+        all_where = " AND ".join(term_clauses)
+        any_where = " OR ".join(term_clauses)
+
         rows = self._conn.execute(
-            """
+            f"""
             SELECT payload
             FROM tasks
-            WHERE lower(key) LIKE ?
-               OR lower(title) LIKE ?
-               OR lower(description) LIKE ?
-               OR lower(rationale) LIKE ?
-               OR lower(target_file) LIKE ?
-               OR lower(target_class) LIKE ?
-               OR lower(target_method) LIKE ?
-               OR lower(owner_name) LIKE ?
-               OR lower(phase) LIKE ?
-               OR lower(json_extract(payload, '$.acceptanceCriteria')) LIKE ?
-               OR lower(json_extract(payload, '$.trigger')) LIKE ?
-            ORDER BY sort_index ASC, id ASC
+            WHERE {all_where}
+            ORDER BY CASE WHEN lower(key) = ? THEN 0 ELSE 1 END, sort_index ASC, id ASC
             LIMIT ?
             """,
-            (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, max(0, limit)),
+            (*patterns, query.strip().casefold(), max(0, limit)),
         ).fetchall()
-        return [Task.from_dict(json.loads(row["payload"])) for row in rows]
+        total = self._conn.execute(
+            f"SELECT COUNT(*) FROM tasks WHERE {all_where}", patterns
+        ).fetchone()[0]
+        any_total = total
+        if len(terms) > 1:
+            any_total = self._conn.execute(
+                f"SELECT COUNT(*) FROM tasks WHERE {any_where}", patterns
+            ).fetchone()[0]
+        return TaskSearchResult(
+            tasks=[Task.from_dict(json.loads(row["payload"])) for row in rows],
+            total=int(total),
+            mode=mode,
+            terms=terms,
+            any_term_total=int(any_total),
+        )
 
     def get_tasks_by_priority(self, priority: TaskPriority | str) -> list[Task]:
         value = priority.value if isinstance(priority, TaskPriority) else str(priority)
@@ -862,7 +999,7 @@ class TaskStore:
             (key, value),
         )
 
-    def _query_tasks(
+    def _filter_sql(
         self,
         *,
         status: str = "",
@@ -871,8 +1008,7 @@ class TaskStore:
         priority: str = "",
         phase: str = "",
         ready_only: bool = False,
-        limit: int = 100,
-    ) -> list[Task]:
+    ) -> tuple[str, list[object]]:
         clauses: list[str] = []
         params: list[object] = []
         if status:
@@ -894,17 +1030,38 @@ class TaskStore:
             clauses.append(self._deps.ready_condition_sql())
             clauses.append("status NOT IN (?, ?)")
             params.extend([TaskStatus.COMPLETE.value, TaskStatus.SKIPPED.value])
-
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where_sql, params
+
+    def _query_tasks(
+        self,
+        *,
+        status: str = "",
+        owner_name: str = "",
+        owner_type: str = "",
+        priority: str = "",
+        phase: str = "",
+        ready_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Task]:
+        where_sql, params = self._filter_sql(
+            status=status,
+            owner_name=owner_name,
+            owner_type=owner_type,
+            priority=priority,
+            phase=phase,
+            ready_only=ready_only,
+        )
         rows = self._conn.execute(
             f"""
             SELECT payload
             FROM tasks
             {where_sql}
             ORDER BY {self._default_order_sql()}
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            [*params, max(0, limit)],
+            [*params, max(0, limit), max(0, offset)],
         ).fetchall()
         return [Task.from_dict(json.loads(row["payload"])) for row in rows]
 

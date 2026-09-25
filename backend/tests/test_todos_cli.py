@@ -1,12 +1,12 @@
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from backend.cli.dispatcher import dispatch
-from backend.cli._common import EXIT_OK, EXIT_USAGE
+from backend.cli._common import EXIT_NOT_FOUND, EXIT_OK, EXIT_USAGE
 from backend.cli.todos import _PRIORITIES, _STATUSES
 from backend.session.models import TaskPriority, TaskStatus
 from backend.test_support import make_temp_dir as make_test_dir
@@ -418,6 +418,201 @@ class TodosValidateCliTests(unittest.TestCase):
         self.assertEqual(exit_code, EXIT_OK)
         self.assertTrue(result["ok"])
         self.assertEqual(result["issues"], [])
+
+
+class TodosSearchCliTests(unittest.TestCase):
+    """Search matches words in any order, reports counts, and keeps rows small."""
+
+    def make_workspace(self) -> Path:
+        return make_test_dir(self, prefix="todos-cli-search-")
+
+    def seed(self, workspace: Path) -> None:
+        for args in (
+            ["--title", "DIQ: the difficulty evaluator credits no puzzle",
+             "--description", "body " * 40, "--key", "FAM-WTR"],
+            ["--title", "human rating loop",
+             "--description", "the text says mode_lever and starting-mode"],
+            ["--title", "census sweep planning", "--description", "count everything"],
+        ):
+            exit_code, _ = _run(["todos", "add", "--workspace", str(workspace), *args])
+            self.assertEqual(exit_code, EXIT_OK)
+
+    def test_terms_match_in_any_order_and_any_field(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        for query in ("DIQ difficulty evaluator", "evaluator DIQ"):
+            _, result = _run(["todos", "search", "--workspace", str(workspace), query])
+            self.assertEqual(result["total"], 1, query)
+            self.assertEqual(result["tasks"][0]["key"], "FAM-WTR")
+            self.assertEqual(result["mode"], "terms")
+            self.assertEqual(result["terms"], ["diq", "difficulty", "evaluator"] if query.startswith("DIQ")
+                             else ["evaluator", "diq"])
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "rating human loop"])
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["tasks"][0]["title"], "human rating loop")
+
+    def test_underscore_and_hyphen_count_as_spaces(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        for query in ("mode lever", "starting mode", "mode_lever", "starting-mode"):
+            _, result = _run(["todos", "search", "--workspace", str(workspace), query])
+            self.assertEqual(result["total"], 1, query)
+            self.assertTrue(result["tasks"][0]["match"].startswith("description:"), query)
+
+    def test_quoted_run_and_phrase_flag_require_contiguity(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "\"rating loop\""])
+        self.assertEqual(result["total"], 1)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "human loop", "--phrase"])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["mode"], "phrase")
+        self.assertIn("drop --phrase", result["hint"])
+
+    def test_zero_hits_explain_how_many_tasks_matched_some_terms(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "census zzz"])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["tasks"], [])
+        self.assertIn("0 tasks contain all 2 terms; 1 contain at least one", result["hint"])
+
+    def test_default_rows_carry_no_bodies_and_full_restores_them(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "FAM-WTR"])
+        row = result["tasks"][0]
+        self.assertEqual(set(row), {"id", "key", "title", "status", "priority", "match"})
+        self.assertEqual(row["match"], "title" if "fam" in row["title"].lower() else "key: FAM-WTR")
+        self.assertNotIn("description", row)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "FAM-WTR", "--full"])
+        self.assertIn("description", result["tasks"][0])
+        self.assertIn("aiNotes", result["tasks"][0])
+
+    def test_exact_key_sorts_first_and_limit_reports_truncation(self) -> None:
+        workspace = self.make_workspace()
+        self.seed(workspace)
+
+        _, result = _run(["todos", "search", "--workspace", str(workspace), "body", "--limit", "0"])
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["returned"], 0)
+        self.assertTrue(result["truncated"])
+        self.assertIn("Raise --limit", result["hint"])
+
+
+class TodosListPagingCliTests(unittest.TestCase):
+    def make_workspace(self) -> Path:
+        return make_test_dir(self, prefix="todos-cli-list-")
+
+    def test_total_is_the_unpaged_count_and_truncation_is_flagged(self) -> None:
+        workspace = self.make_workspace()
+        for index in range(3):
+            _run(["todos", "add", "--workspace", str(workspace), "--title", f"T{index}", "--description", "d"])
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _, page = _run(["todos", "list", "--workspace", str(workspace), "--limit", "2"])
+        self.assertEqual(page["total"], 3)
+        self.assertEqual(page["returned"], 2)
+        self.assertTrue(page["truncated"])
+        self.assertEqual(page["nextOffset"], 2)
+        self.assertIn("only 2 were returned", err.getvalue())
+
+        _, rest = _run(["todos", "list", "--workspace", str(workspace), "--limit", "2", "--offset", "2"])
+        self.assertEqual(rest["total"], 3)
+        self.assertEqual(rest["returned"], 1)
+        self.assertFalse(rest["truncated"])
+        self.assertNotIn("nextOffset", rest)
+        seen = {t["title"] for t in page["tasks"]} | {t["title"] for t in rest["tasks"]}
+        self.assertEqual(seen, {"T0", "T1", "T2"})
+
+    def test_total_respects_filters(self) -> None:
+        workspace = self.make_workspace()
+        _run(["todos", "add", "--workspace", str(workspace), "--title", "A", "--description", "d", "--priority", "P1"])
+        _run(["todos", "add", "--workspace", str(workspace), "--title", "B", "--description", "d", "--priority", "P3"])
+
+        _, result = _run(["todos", "list", "--workspace", str(workspace), "--priority", "P1"])
+        self.assertEqual(result["total"], 1)
+        self.assertFalse(result["truncated"])
+
+
+class TodosGetAndNotesCliTests(unittest.TestCase):
+    def make_workspace(self) -> Path:
+        return make_test_dir(self, prefix="todos-cli-get-")
+
+    def add(self, workspace: Path, **extra: str) -> dict:
+        args = ["todos", "add", "--workspace", str(workspace), "--title", "Task", "--description", "d"]
+        for flag, value in extra.items():
+            args += [f"--{flag}", value]
+        exit_code, task = _run(args)
+        self.assertEqual(exit_code, EXIT_OK)
+        return task
+
+    def test_get_resolves_id_and_key_case_insensitively(self) -> None:
+        workspace = self.make_workspace()
+        task = self.add(workspace, key="GOV-001")
+
+        for ref in (task["id"], "GOV-001", "gov-001"):
+            exit_code, result = _run(["todos", "get", "--workspace", str(workspace), ref])
+            self.assertEqual(exit_code, EXIT_OK, ref)
+            self.assertEqual(result["id"], task["id"])
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = dispatch(["todos", "get", "--workspace", str(workspace), "GOV-999"])
+        self.assertEqual(exit_code, EXIT_NOT_FOUND)
+        self.assertIn("Task not found: GOV-999", err.getvalue())
+
+    def test_update_and_delete_accept_a_key(self) -> None:
+        workspace = self.make_workspace()
+        self.add(workspace, key="GOV-002")
+
+        exit_code, result = _run(["todos", "update", "--workspace", str(workspace), "GOV-002", "--status", "executing"])
+        self.assertEqual(exit_code, EXIT_OK)
+        self.assertEqual(result["status"], "executing")
+
+        exit_code, result = _run(["todos", "delete", "--workspace", str(workspace), "gov-002"])
+        self.assertEqual(exit_code, EXIT_OK)
+        self.assertTrue(result["deleted"])
+
+    def test_append_notes_keeps_history_and_replace_warns_when_shrinking(self) -> None:
+        workspace = self.make_workspace()
+        task = self.add(workspace)
+        ws = ["--workspace", str(workspace)]
+
+        _, result = _run(["todos", "update", *ws, task["id"], "--append-ai-notes", "2026-09-23 measured 41"])
+        self.assertEqual(result["aiNotes"], "2026-09-23 measured 41")
+        _, result = _run(["todos", "update", *ws, task["id"], "--append-ai-notes", "2026-09-24 measured 39"])
+        self.assertEqual(result["aiNotes"], "2026-09-23 measured 41\n\n2026-09-24 measured 39")
+        _, result = _run(["todos", "update", *ws, task["id"], "--append-human-notes", "looks right"])
+        self.assertEqual(result["humanNotes"], "looks right")
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _, result = _run(["todos", "update", *ws, task["id"], "--ai-notes", "short"])
+        self.assertEqual(result["aiNotes"], "short")
+        self.assertIn("aiNotes shrank", err.getvalue())
+        self.assertIn("--append-ai-notes", err.getvalue())
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            _, result = _run(["todos", "update", *ws, task["id"], "--ai-notes", "short but a bit longer"])
+        self.assertEqual(err.getvalue(), "")
+
+    def test_replace_and_append_for_the_same_field_are_exclusive(self) -> None:
+        workspace = self.make_workspace()
+        task = self.add(workspace)
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            dispatch(["todos", "update", "--workspace", str(workspace), task["id"],
+                      "--ai-notes", "a", "--append-ai-notes", "b"])
 
 
 if __name__ == "__main__":

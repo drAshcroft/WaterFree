@@ -41,6 +41,7 @@ param(
     [string]$Destination = (Join-Path $HOME ".claude\skills"),
     [string[]]$Skill,
     [switch]$IncludeOllamaSkills,
+    [switch]$InstallHooks,
     [switch]$NoPause
 )
 
@@ -134,5 +135,46 @@ if ($selectedPackages.Name -contains "waterfree-assets") {
 
 Write-Host ""
 Write-Host "Installed $($selectedPackages.Count) skill(s) to $Destination"
+
+if ($InstallHooks) {
+    # Merge each installed skill's hooks/claude-settings.hooks.json into the
+    # user's settings.json. Idempotent: a hook whose command already exists is
+    # left alone, so re-running never duplicates entries.
+    $settingsPath = Join-Path (Split-Path -Parent $Destination) "settings.json"
+    $settings = @{}
+    if (Test-Path $settingsPath) {
+        $raw = Get-Content $settingsPath -Raw -Encoding UTF8
+        if ($raw.Trim()) { $settings = $raw | ConvertFrom-Json }
+    }
+    $hooksTable = @{}
+    if ($settings.PSObject.Properties["hooks"]) {
+        foreach ($prop in $settings.hooks.PSObject.Properties) { $hooksTable[$prop.Name] = @($prop.Value) }
+    }
+    $added = 0
+    foreach ($package in $selectedPackages) {
+        $fragmentPath = Join-Path $package.FullName "hooks\claude-settings.hooks.json"
+        if (-not (Test-Path $fragmentPath)) { continue }
+        $fragment = Get-Content $fragmentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($eventProp in $fragment.hooks.PSObject.Properties) {
+            $eventName = $eventProp.Name
+            $existing = @()
+            if ($hooksTable.ContainsKey($eventName)) { $existing = @($hooksTable[$eventName]) }
+            foreach ($group in @($eventProp.Value)) {
+                $commands = @($group.hooks | ForEach-Object { $_.command })
+                $present = $false
+                foreach ($e in $existing) {
+                    foreach ($h in @($e.hooks)) { if ($commands -contains $h.command) { $present = $true } }
+                }
+                if (-not $present) { $existing += $group; $added++ }
+            }
+            $hooksTable[$eventName] = $existing
+        }
+    }
+    if ($settings -is [hashtable]) { $settings = [pscustomobject]$settings }
+    if ($settings.PSObject.Properties["hooks"]) { $settings.hooks = [pscustomobject]$hooksTable }
+    else { $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]$hooksTable) }
+    $settings | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsPath -Encoding UTF8
+    Write-Host "Merged $added hook(s) into $settingsPath"
+}
 Write-Host "Restart Claude Code to pick up new skills."
 Invoke-ExitPause

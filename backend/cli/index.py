@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from argparse import Namespace, _SubParsersAction
 
 from backend.cli._common import (
@@ -14,6 +17,94 @@ from backend.cli._common import (
     resolve_workspace,
 )
 from backend.graph.client import GraphClient
+
+
+# Structural context earns its keep under a small token budget (Agent Retrieval
+# Bench, 2026: repo-map style context led on yield at 8K tokens; CodeGrep, 2026:
+# low-precision payloads cost more than they return). These actions therefore
+# fit their output to an approximate token budget instead of dumping the whole
+# graph, dropping the least important rows first and saying so.
+_DEFAULT_ASPECTS = ("languages", "layers", "god_nodes")
+_CHARS_PER_TOKEN = 4
+# Per-payload list keys in the order they should be trimmed (least valuable first).
+_TRIM_ORDER = {
+    "trace": ("edges", "nodes"),
+    "detect-changes": ("impacted_callers", "changed_symbols", "changed_files"),
+    "architecture": ("module_graph", "clusters", "surprising_connections", "hotspots", "entry_points",
+                     "import_cycles", "layers", "god_nodes", "languages"),
+}
+
+
+def _add_budget_flag(parser, default: int) -> None:
+    parser.add_argument(
+        "--budget-tokens", type=int, default=default,
+        help=f"Approximate token budget for the output (default {default}); 0 = unlimited. "
+             "Rows past the budget are dropped, least important first, and reported in `budget`.",
+    )
+
+
+def _estimate_tokens(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False)) // _CHARS_PER_TOKEN
+
+
+def _rank_rows(rows: list) -> list:
+    """Most important rows first, so trimming from the tail keeps the signal.
+
+    Rows with a degree/score/confidence sort on it; rows without (a BFS trace,
+    a changed-file list) keep their natural order, which is already nearest-first.
+    """
+    def key(row):
+        if not isinstance(row, dict):
+            return 0.0
+        for field in ("degree", "score", "confidence", "count", "in_degree", "out_degree"):
+            value = row.get(field)
+            if isinstance(value, (int, float)):
+                return -float(value)
+        return 0.0
+    if any(isinstance(r, dict) and any(k in r for k in ("degree", "score", "confidence", "count")) for r in rows):
+        return sorted(rows, key=key)
+    return list(rows)
+
+
+def fit_budget(payload: dict, *, action: str, budget_tokens: int) -> dict:
+    """Trim list-valued fields of `payload` until it fits `budget_tokens`.
+
+    Returns the payload with a `budget` block: the budget, the estimated size
+    before and after, and how many rows each list lost. A budget of 0 leaves
+    the payload untouched (the block still reports the estimate).
+    """
+    if not isinstance(payload, dict):
+        return payload
+    before = _estimate_tokens(payload)
+    dropped: dict[str, int] = {}
+    if budget_tokens > 0 and before > budget_tokens:
+        order = [k for k in _TRIM_ORDER.get(action, ()) if isinstance(payload.get(k), list)]
+        order += [k for k, v in payload.items() if isinstance(v, list) and k not in order]
+        for key in order:
+            payload[key] = _rank_rows(payload[key])
+        # Drop rows one at a time from the least valuable list; move to the
+        # next list only once that one is empty, so the important lists keep
+        # their rows for as long as possible.
+        for key in order:
+            rows = payload.get(key)
+            while isinstance(rows, list) and rows and _estimate_tokens(payload) > budget_tokens:
+                rows.pop()
+                dropped[key] = dropped.get(key, 0) + 1
+            if _estimate_tokens(payload) <= budget_tokens:
+                break
+    payload["budget"] = {
+        "tokens": budget_tokens,
+        "estimated_tokens_before": before,
+        "estimated_tokens": _estimate_tokens(payload),
+        "dropped": dropped,
+        "truncated": bool(dropped),
+    }
+    if dropped:
+        payload["budget"]["hint"] = (
+            "Rows were dropped to fit --budget-tokens; raise it or narrow the query "
+            "(smaller --depth, a specific --scope, fewer --aspect values)."
+        )
+    return payload
 
 
 def register(sub: _SubParsersAction) -> None:
@@ -51,6 +142,7 @@ def register(sub: _SubParsersAction) -> None:
     p_trace.add_argument("--direction", default="both",
                          choices=("callers", "callees", "both"))
     p_trace.add_argument("--depth", type=int, default=3)
+    _add_budget_flag(p_trace, 1500)
 
     p_detect = actions.add_parser("detect-changes",
                                   help="Symbols affected by recent diff")
@@ -58,16 +150,19 @@ def register(sub: _SubParsersAction) -> None:
     p_detect.add_argument("--scope", default="all",
                           help="'all' (git diff) or comma-separated file paths")
     p_detect.add_argument("--depth", type=int, default=3)
+    _add_budget_flag(p_detect, 1500)
 
     p_arch = actions.add_parser("architecture", help="High-level overview")
     add_workspace_arg(p_arch)
     p_arch.add_argument(
         "--aspect",
         default="",
-        help="Comma-separated subset: languages, entry_points, hotspots, layers, "
-             "clusters, module_graph, god_nodes, surprising_connections, "
-             "import_cycles, adr. Default: all.",
+        help="Comma-separated subset of: languages, entry_points, hotspots, layers, clusters, "
+             "module_graph, adr, god_nodes, surprising_connections, import_cycles, all. "
+             f"Default: {','.join(_DEFAULT_ASPECTS)} (the smallest useful overview).",
     )
+    _add_budget_flag(p_arch, 2500)
+    p_arch.add_argument("--all-aspects", action="store_true", help="Same as --aspect all.")
 
     p_god = actions.add_parser("god-nodes",
                                help="Most-connected symbols (core abstractions / refactor risks)")
@@ -142,20 +237,26 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "trace":
-        emit_json(client.trace_call_path(
+        result = client.trace_call_path(
             function_name=args.function,
             direction=args.direction,
             depth=args.depth,
-        ))
+        )
+        emit_json(fit_budget(result, action="trace", budget_tokens=args.budget_tokens))
         return EXIT_OK
 
     if action == "detect-changes":
-        emit_json(client.detect_changes(scope=args.scope, depth=args.depth))
+        result = client.detect_changes(scope=args.scope, depth=args.depth)
+        emit_json(fit_budget(result, action="detect-changes", budget_tokens=args.budget_tokens))
         return EXIT_OK
 
     if action == "architecture":
-        aspects = [a.strip() for a in args.aspect.split(",") if a.strip()] or None
-        emit_json(client.get_architecture(aspects=aspects))
+        if args.all_aspects:
+            aspects = ["all"]
+        else:
+            aspects = [a.strip() for a in args.aspect.split(",") if a.strip()] or list(_DEFAULT_ASPECTS)
+        result = client.get_architecture(aspects=aspects)
+        emit_json(fit_budget(result, action="architecture", budget_tokens=args.budget_tokens))
         return EXIT_OK
 
     if action == "god-nodes":
