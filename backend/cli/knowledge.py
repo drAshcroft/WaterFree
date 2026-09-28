@@ -36,6 +36,7 @@ def register(sub: _SubParsersAction) -> None:
     add_workspace_arg(p_search)
     p_search.add_argument("query")
     p_search.add_argument("--limit", type=int, default=10)
+    p_search.add_argument("--path", default="", help="Limit results to this hierarchy path and its descendants (case-insensitive).")
     p_search.add_argument("--repo", default="",
                           help="Only entries from this source repo (name or path).")
     p_search.add_argument(
@@ -55,10 +56,11 @@ def register(sub: _SubParsersAction) -> None:
     p_browse.add_argument("--path", default="")
     p_browse.add_argument("--depth", type=int, default=2)
     p_browse.add_argument("--include-entries", action="store_true")
+    p_browse.add_argument("--list", action="store_true", help="Include compact entry summaries for the selected branch.")
     p_browse.add_argument("--entry-limit", type=int, default=10)
     add_full_arg(p_browse)
 
-    p_get = actions.add_parser("get", help="Fetch one knowledge entry by id")
+    p_get = actions.add_parser("get", help="Fetch one knowledge entry by id or exact title")
     add_workspace_arg(p_get)
     p_get.add_argument("entry_id")
 
@@ -86,6 +88,7 @@ def register(sub: _SubParsersAction) -> None:
         "--no-check", action="store_true",
         help="Skip the quality gate (near-duplicate title, missing hierarchy path, trace-like description).",
     )
+    p_add.add_argument("--force", action="store_true", help="Allow a near-duplicate title after reviewing its warning.")
     p_add.add_argument(
         "--scope", default=None, choices=SCOPES,
         help="global (default: any project may see it), project (only searches from its own "
@@ -184,6 +187,7 @@ def register(sub: _SubParsersAction) -> None:
 
     p_stats = actions.add_parser("stats", help="Summary statistics")
     add_workspace_arg(p_stats)
+    p_stats.add_argument("--depth", type=int, default=1, help="Include hierarchy categories to this depth.")
     add_full_arg(p_stats)
 
     p.set_defaults(_runner=run)
@@ -521,7 +525,7 @@ def run(args: Namespace) -> int:
     if action == "search":
         prefer = Path(args.workspace).name if getattr(args, "workspace", None) else Path.cwd().name
         entries = store.search(args.query, limit=args.limit, repo=args.repo, prefer_repo=prefer,
-                               scope=args.scope)
+                               scope=args.scope, path=args.path)
         shape = _entry_to_dict if args.full else _entry_summary
         payload = [shape(e) for e in entries]
         envelope = {"entries": payload, "total": len(payload), "preferred_repo": prefer, "scope": args.scope}
@@ -536,16 +540,27 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "browse":
-        emit_json(store.browse_hierarchy(
+        payload = store.browse_hierarchy(
             path=args.path,
             depth=args.depth,
             include_entries=args.include_entries,
             entry_limit=args.entry_limit,
-        ))
+            list_entries=args.list,
+        )
+        if args.list and not args.include_entries:
+            payload["entries"] = [
+                {k: v for k, v in row.items() if k not in ("code", "context", "description")}
+                | {"description": " ".join(row["description"].split())[:_SUMMARY_DESCRIPTION_CHARS]}
+                for row in payload.get("entries", [])
+            ]
+        emit_json(payload)
         return EXIT_OK
 
     if action == "get":
-        entry = store.get_entry(args.entry_id)
+        try:
+            entry = store.get_entry(args.entry_id)
+        except ValueError as exc:
+            return emit_error(str(exc), exit_code=EXIT_USAGE)
         if entry is None:
             return emit_error(f"Entry {args.entry_id} not found.", exit_code=EXIT_NOT_FOUND)
         emit_json(_entry_to_dict(entry))
@@ -583,6 +598,10 @@ def run(args: Namespace) -> int:
             return emit_error(f"Entry {args.entry_id} not found.", exit_code=EXIT_NOT_FOUND)
         except DuplicateContentError as exc:
             return emit_error(str(exc), exit_code=EXIT_USAGE)
+        except ValueError as exc:
+            return emit_error(str(exc), exit_code=EXIT_USAGE)
+        if args.hierarchy_path and args.hierarchy_path.replace("\\", "/").strip("/") != entry.effective_hierarchy_path():
+            sys.stderr.write(f"note: hierarchy path normalized to lowercase: {entry.effective_hierarchy_path()}\n")
         if args.source_repo is not None:
             store.upsert_repo(args.source_repo, args.source_file or args.source_repo,
                               args.source_repo_url or "")
@@ -621,6 +640,9 @@ def run(args: Namespace) -> int:
             hierarchy_path=args.hierarchy_path or None,
             scope=args.scope,
         )
+        normalized_path = entry.effective_hierarchy_path()
+        if args.hierarchy_path and args.hierarchy_path.replace("\\", "/").strip("/") != normalized_path:
+            sys.stderr.write(f"note: hierarchy path normalized to lowercase: {normalized_path}\n")
         warnings: list[dict] | None = None
         if not args.no_check:
             prefer = Path(args.workspace).name if getattr(args, "workspace", None) else Path.cwd().name
@@ -633,6 +655,12 @@ def run(args: Namespace) -> int:
                 sys.stderr.write(f"warning ({label}): {warning['message']}\n")
                 for entry_id, title in zip(warning.get("ids", []), warning.get("titles", [])):
                     sys.stderr.write(f"    {entry_id}  {title}\n")
+            exact_duplicate = store.has_content_hash(entry.content_hash)
+            if (any(w["kind"] == "near_duplicate" for w in warnings)
+                    and not exact_duplicate and not args.force):
+                emit_json({"added": False, "blocked": True, "warnings": warnings,
+                           "message": "near-duplicate title; use `knowledge update <id>` or pass --force after review"})
+                return EXIT_USAGE
         added = store.add_entry(entry)
         store.upsert_repo(args.source_repo,
                           args.source_file or args.source_repo,
@@ -716,12 +744,13 @@ def run(args: Namespace) -> int:
 
     if action == "stats":
         repos = store.list_repos()
-        hierarchy = store.browse_hierarchy(depth=1)
+        hierarchy = store.browse_hierarchy(depth=args.depth)
         emit_json({
             "total_entries": store.total_entries(),
             "by_scope": store.scope_counts(),
             "source_count": len(repos),
             "top_level_category_count": len(hierarchy["nodes"]),
+            "hierarchy": hierarchy["nodes"],
         })
         return EXIT_OK
 

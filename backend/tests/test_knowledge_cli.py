@@ -81,6 +81,16 @@ class KnowledgeAddWithoutCodeTests(KnowledgeCliTestCase):
 
 
 class KnowledgeGetAndUpdateTests(KnowledgeCliTestCase):
+    def test_get_and_update_accept_exact_title(self) -> None:
+        entry_id = self.add_prose("Title addressable", "initial body")
+        code, entry, _ = self.run_cli(["get", "Title addressable"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(entry["id"], entry_id)
+        code, revised, _ = self.run_cli(["update", "Title addressable", "--description", "revised body"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(revised["id"], entry_id)
+        self.assertEqual(revised["revision"], 2)
+
     def test_get_unknown_id_exits_not_found(self) -> None:
         exit_code, result, err = self.run_cli(["get", "nope"])
         self.assertEqual(exit_code, EXIT_NOT_FOUND)
@@ -292,20 +302,58 @@ class KnowledgeHookContextTests(KnowledgeCliTestCase):
 
 
 class KnowledgeAddQualityGateTests(KnowledgeCliTestCase):
-    def test_near_duplicate_title_is_reported_but_the_add_still_happens(self) -> None:
+    def test_near_duplicate_title_blocks_unless_forced(self) -> None:
         first = self.add_prose("Phaser container buttons drop taps when press-scale runs",
                                "Guard setScale against a destroyed container.")
         exit_code, result, err = self.run_cli([
             "add", "--title", "Phaser container buttons drop taps on press scale",
             "--description", "Same lesson, filed again.", "--source-repo", "demo",
         ])
-        self.assertEqual(exit_code, EXIT_OK)
-        self.assertTrue(result["added"])
+        self.assertEqual(exit_code, EXIT_USAGE)
+        self.assertFalse(result["added"])
+        self.assertTrue(result["blocked"])
         warnings = result["warnings"]
         self.assertTrue(any(w["kind"] == "near_duplicate" and first in w["ids"] for w in warnings), warnings)
         self.assertTrue(any(w["kind"] == "no_hierarchy" for w in warnings))
         self.assertIn("near-duplicate", err)
         self.assertIn("knowledge update", err)
+
+        exit_code, result, _ = self.run_cli([
+            "add", "--title", "Phaser container buttons drop taps on press scale",
+            "--description", "Same lesson, filed again.", "--source-repo", "demo", "--force",
+        ])
+        self.assertEqual(exit_code, EXIT_OK)
+        self.assertTrue(result["added"])
+
+
+class KnowledgePathListingTests(KnowledgeCliTestCase):
+    def seed(self) -> tuple[str, str]:
+        store = self.open_store()
+        first = KnowledgeEntry.create(source_repo="demo", source_file="", snippet_type="convention",
+                                     title="Biome thresholds", description="threshold rule", code="",
+                                     tags=[], hierarchy_path="Procedural/Biomes")
+        second = KnowledgeEntry.create(source_repo="demo", source_file="", snippet_type="convention",
+                                      title="Combat rules", description="combat rule", code="",
+                                      tags=[], hierarchy_path="procedural/combat")
+        store.add_entry(first)
+        store.add_entry(second)
+        return first.id, second.id
+
+    def test_search_path_filters_by_case_insensitive_subtree(self) -> None:
+        first, second = self.seed()
+        code, result, _ = self.run_cli(["search", "rule", "--scope", "all", "--path", "PROCEDURAL/BIOMES"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual([row["id"] for row in result["entries"]], [first])
+
+    def test_browse_list_returns_compact_rows_and_stats_depth(self) -> None:
+        first, second = self.seed()
+        code, result, _ = self.run_cli(["browse", "--path", "procedural", "--list"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual({row["id"] for row in result["entries"]}, {first, second})
+        self.assertNotIn("code", result["entries"][0])
+        code, stats, _ = self.run_cli(["stats", "--depth", "2"])
+        self.assertEqual(code, EXIT_OK)
+        self.assertTrue(stats["hierarchy"])
 
     def test_trace_like_description_is_flagged_and_insight_is_not(self) -> None:
         exit_code, result, _ = self.run_cli([

@@ -227,6 +227,7 @@ class KnowledgeStore:
         current = self.get_entry(entry_id)
         if current is None:
             raise KeyError(entry_id)
+        resolved_id = current.id
 
         merged = {name: getattr(current, name) for name in _UPDATABLE_FIELDS}
         merged.update({k: v for k, v in fields.items() if v is not None})
@@ -254,16 +255,16 @@ class KnowledgeStore:
                     merged["title"], merged["description"], merged["code"],
                     merged["snippet_type"], json.dumps(tags), merged["context"],
                     merged["source_repo"], merged["source_file"], merged["source_repo_url"],
-                    merged["hierarchy_path"], merged["scope"], content_hash, updated_at, entry_id,
+                    merged["hierarchy_path"], merged["scope"], content_hash, updated_at, resolved_id,
                 ),
             )
             self._conn.commit()
         except sqlite3.IntegrityError as exc:
             self._conn.rollback()
             raise DuplicateContentError(
-                f"another entry already has this exact content; entry {entry_id} left unchanged"
+                f"another entry already has this exact content; entry {resolved_id} left unchanged"
             ) from exc
-        revised = self.get_entry(entry_id)
+        revised = self.get_entry(resolved_id)
         assert revised is not None
         return revised
 
@@ -311,11 +312,25 @@ class KnowledgeStore:
     # ------------------------------------------------------------------
 
     def get_entry(self, entry_id: str) -> Optional[KnowledgeEntry]:
-        """Fetch one entry by id, or None."""
+        """Fetch by id, or by an exact unique title; None if absent."""
         row = self._conn.execute(
             "SELECT * FROM knowledge_entries WHERE id = ?", (entry_id,)
         ).fetchone()
+        if row is None:
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_entries WHERE title = ? COLLATE NOCASE ORDER BY created_at DESC",
+                (entry_id,),
+            ).fetchall()
+            if len(rows) > 1:
+                raise ValueError(f"title {entry_id!r} matches multiple entries; use an entry id")
+            row = rows[0] if rows else None
         return _row_to_entry(row) if row else None
+
+    def has_content_hash(self, content_hash: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM knowledge_entries WHERE content_hash = ? LIMIT 1", (content_hash,)
+        ).fetchone()
+        return row is not None
 
     def search(
         self,
@@ -326,6 +341,7 @@ class KnowledgeStore:
         prefer_repo: str = "",
         scope: str = "default",
         require_all_terms: bool = False,
+        path: str = "",
     ) -> list[KnowledgeEntry]:
         """Full-text search over title + description + tags + code.
 
@@ -352,15 +368,19 @@ class KnowledgeStore:
         """
         if scope not in SEARCH_SCOPES:
             raise ValueError(f"scope must be one of {', '.join(SEARCH_SCOPES)} (got {scope!r})")
+        path_key = normalize_hierarchy_path(path)
         if not query.strip():
-            return [e for e in self._recent(limit * 3) if _in_scope(e, scope, _repo_key(prefer_repo))][:limit]
+            return [e for e in self._recent(limit * 10)
+                    if _in_scope(e, scope, _repo_key(prefer_repo))
+                    and _is_in_subtree(e.effective_hierarchy_segments(), path_key.split("/") if path_key else [])][:limit]
 
         repo_key = _repo_key(repo)
         prefer_key = _repo_key(prefer_repo)
         prefer = (lambda e: 0 if _repo_key(e.source_repo) == prefer_key else 1) if prefer_key else None
-        eligible = lambda e: _in_scope(e, scope, prefer_key)
+        eligible = lambda e: (_in_scope(e, scope, prefer_key) and
+                              _is_in_subtree(e.effective_hierarchy_segments(), path_key.split("/") if path_key else []))
         try:
-            entries = self._fts_tier(_fts_query(query, "AND"), limit, repo_key, eligible)
+            entries = self._fts_tier(_fts_query(query, "AND"), limit, repo_key, eligible, path_key)
             if prefer:
                 entries.sort(key=prefer)
             if len(entries) < limit and not require_all_terms:
@@ -370,7 +390,7 @@ class KnowledgeStore:
                 # beats a one-word BM25 favourite. Preferred repo breaks ties.
                 terms = _query_terms(query)
                 rest = [
-                    e for e in self._fts_tier(_fts_query(query, "OR"), limit * 5, repo_key, eligible)
+                    e for e in self._fts_tier(_fts_query(query, "OR"), limit * 5, repo_key, eligible, path_key)
                     if e.id not in seen
                 ]
                 rest.sort(key=lambda e: (
@@ -387,19 +407,27 @@ class KnowledgeStore:
                 entries.sort(key=prefer)
         return entries[:limit]
 
-    def _fts_tier(self, match: str, limit: int, repo_key: str, eligible=None) -> list[KnowledgeEntry]:
+    def _fts_tier(self, match: str, limit: int, repo_key: str, eligible=None,
+                  path_key: str = "") -> list[KnowledgeEntry]:
         # Over-fetch: scope and repo filters run in Python after BM25 ranking,
         # and the asset catalog alone is a fifth of the store.
+        path_clause = ""
+        params: list[object] = [match]
+        if path_key:
+            path_clause = "AND (lower(e.hierarchy_path) = ? OR substr(lower(e.hierarchy_path), 1, length(?) + 1) = ? || '/')"
+            params.extend([path_key, path_key, path_key])
+        params.append(limit * 6)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT e.*
             FROM knowledge_fts f
             JOIN knowledge_entries e ON e.rowid = f.rowid
             WHERE knowledge_fts MATCH ?
+            {path_clause}
             ORDER BY rank
             LIMIT ?
             """,
-            (match, limit * 6),
+            params,
         ).fetchall()
         entries = [_row_to_entry(r) for r in rows]
         if eligible is not None:
@@ -467,6 +495,7 @@ class KnowledgeStore:
         depth: int = 2,
         include_entries: bool = False,
         entry_limit: int = 10,
+        list_entries: bool = False,
     ) -> dict:
         normalized_path = normalize_hierarchy_path(path)
         root_segments = [segment for segment in normalized_path.split("/") if segment]
@@ -486,8 +515,9 @@ class KnowledgeStore:
             "total_entries": len(entries),
             "nodes": _build_hierarchy_nodes(subtree_entries, root_segments, max(0, depth)),
         }
-        if include_entries:
+        if include_entries or list_entries:
             result["entries"] = [entry.to_dict() for entry in subtree_entries[:max(0, entry_limit)]]
+            result["entries_truncated"] = len(subtree_entries) > max(0, entry_limit)
         return result
 
     def close(self) -> None:
