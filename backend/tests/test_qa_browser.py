@@ -82,7 +82,7 @@ def _browser_available() -> bool:
         return False
     try:
         with sync_playwright() as pw:
-            pw.chromium.launch(headless=True, args=["--mute-audio"]).close()
+            pw.chromium.launch(headless=True, channel="chromium", args=["--mute-audio"]).close()
     except Exception:
         return False
     return True

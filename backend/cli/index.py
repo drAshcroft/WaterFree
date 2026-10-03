@@ -226,9 +226,9 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "search-graph":
-        kwargs: dict = {"query": args.query, "limit": args.limit}
+        kwargs: dict = {"name_pattern": args.query, "limit": args.limit}
         if args.node_type:
-            kwargs["node_type"] = args.node_type
+            kwargs["label"] = args.node_type.capitalize()
         emit_json(client.search_graph(**kwargs))
         return EXIT_OK
 

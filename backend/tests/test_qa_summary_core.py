@@ -2,8 +2,9 @@ import threading
 import time
 import unittest
 from unittest import mock
+from dataclasses import replace
 
-from backend.llm.chat_client import ChatTarget
+from backend.llm.chat_client import ChatTarget, ChatUnavailable
 from backend.qa_summary import core
 
 
@@ -28,6 +29,25 @@ def _remote_target(model: str = "anthropic/claude-sonnet-5") -> ChatTarget:
 
 
 class QaSummaryCoreTests(unittest.TestCase):
+    def test_run_reports_ollama_fallback_and_remote_errors(self) -> None:
+        target = replace(_remote_target("v/free:free"), alternates=(_local_target("local-reader"),))
+        def fake(messages, *, target, **kwargs):
+            if target.provider_type == "openrouter":
+                raise ChatUnavailable("HTTP 401 User not found")
+            return "local answer"
+        with (
+            mock.patch.object(core, "resolve_chat_target", return_value=target),
+            mock.patch.object(core, "preflight"),
+            mock.patch.object(core, "_read_source_text", return_value="source"),
+            mock.patch("backend.llm.chat_client._chat_once", side_effect=fake),
+        ):
+            result = core.run_qa_summary("source.txt", "Question")
+        self.assertEqual(result["provider"], "ollama")
+        self.assertEqual(result["model"], "local-reader")
+        self.assertTrue(result["routing"]["fallback_used"])
+        self.assertIn("401", str(result["routing"]["requests"]))
+        self.assertNotIn("api_key", str(result["routing"]))
+
     def test_chat_helper_forwards_target_and_token_budget(self) -> None:
         target = _local_target()
         with mock.patch("backend.qa_summary.core.chat", return_value="OK") as chat:

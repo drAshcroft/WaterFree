@@ -238,7 +238,8 @@ class JUnitParsingTests(unittest.TestCase):
         self.assertIn("test_movement.gd:14", jumps.error)
 
         skipped = by_name["MovementTest::test_skipped"]
-        self.assertTrue(skipped.passed)
+        self.assertFalse(skipped.passed)
+        self.assertTrue(skipped.skipped)
         self.assertEqual(skipped.error, "skipped")
 
     def test_malformed_xml_yields_nothing(self) -> None:
@@ -335,7 +336,8 @@ class RunnerTests(unittest.TestCase):
             (project / "test").mkdir()
             result, recorded = self._run_with_stub(project, tmp, xml=JUNIT_SAMPLE)
 
-            self.assertEqual(result.passed, 2)
+            self.assertEqual(result.passed, 1)
+            self.assertEqual(result.skipped, 1)
             self.assertEqual(result.failed, 1)
             self.assertIn("--headless", recorded["cmd"])
             self.assertIn("--path", recorded["cmd"])

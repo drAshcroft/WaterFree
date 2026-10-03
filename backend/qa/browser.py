@@ -135,6 +135,10 @@ class Session:
         try:
             self._browser = self._pw.chromium.launch(
                 headless=not self.headed,
+                # Full Chromium's new headless mode can use the system GPU.
+                # The headless shell defaults to SwiftShader on this host,
+                # which burns CPU while a continuously rendering game is open.
+                channel="chromium",
                 # Muted: a QA run should never make noise, and autoplay audio
                 # blocks page load in some browsers.
                 args=["--mute-audio"],
@@ -276,18 +280,34 @@ class Session:
         return snap
 
     def screenshot(self, path: Path) -> str:
+        path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            self.page.screenshot(path=str(path), full_page=False)
+            path.write_bytes(self._capture_screenshot())
         except Exception:
             return ""
         return path.name
 
     def screenshot_b64(self) -> str:
         try:
-            return base64.b64encode(self.page.screenshot(full_page=False)).decode("ascii")
+            return base64.b64encode(self._capture_screenshot()).decode("ascii")
         except Exception:
             return ""
+
+    def _capture_screenshot(self) -> bytes:
+        try:
+            return self.page.screenshot(full_page=False, timeout=10000)
+        except Exception as exc:
+            # Font readiness can block Playwright's screenshot while the
+            # already-painted canvas remains usable. CDP captures those pixels
+            # directly instead of hiding a missing image behind empty base64.
+            self.last_screenshot_error = str(exc)
+            connection = self._context.new_cdp_session(self.page)
+            try:
+                pixels = connection.send('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': False})
+                return base64.b64decode(pixels['data'])
+            finally:
+                connection.detach()
 
     # -- execution -----------------------------------------------------------
 
@@ -307,6 +327,17 @@ class Session:
 
     def _execute(self, action: Action, snapshot: Snapshot) -> Observation:
         verb = action.verb
+
+        if verb == "CLICKAT":
+            if not snapshot.is_canvas_only:
+                return self._drain("coordinate clicks require a canvas screen without DOM controls; use a numbered control")
+            width, height = self.viewport
+            if not (0 <= action.x < width and 0 <= action.y < height):
+                return self._drain(f"coordinate ({action.x:g}, {action.y:g}) is outside the {width}x{height} viewport")
+            before = self.page.url
+            self.page.mouse.click(action.x, action.y)
+            self._settle()
+            return self._drain(f"clicked viewport ({action.x:g}, {action.y:g})", navigated=self.page.url != before)
 
         if verb == "SCROLL":
             delta = int(self.viewport[1] * 0.8)
@@ -351,6 +382,8 @@ class Session:
     def _act_on_element(self, action: Action, snapshot: Snapshot) -> Observation:
         element = snapshot.element(action.target or -1)
         if element is None:
+            if snapshot.is_canvas_only:
+                return self._drain('This canvas screen has no numbered controls. Use CLICK AT from the vision candidate centers, or LOOK.')
             return self._drain(
                 f"there is no element {action.target} on this screen. "
                 "Use a number from the list."

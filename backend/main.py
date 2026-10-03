@@ -54,7 +54,9 @@ def _usage(exit_code: int = 1) -> None:
         "  waterfree serve\n"
         f"  waterfree <{areas}> <action> [flags]\n"
         "\n"
-        "Run `waterfree <area> --help` for area-specific options.",
+        "Run `waterfree <area> --help` for area-specific options.\n"
+        "Owned asset and prop lookup: use the waterfree-assets skill's assetsearch.py.\n"
+        "See docs/cli-surface.md for the catalog entry point.",
         file=sys.stderr,
     )
     sys.exit(exit_code)

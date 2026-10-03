@@ -6,6 +6,7 @@ Backed by backend.todo.store.TaskStore; mirrors the former waterfree-todos MCP.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from argparse import Namespace, _SubParsersAction
 from enum import Enum
@@ -264,10 +265,10 @@ def _task_schema() -> dict[str, Any]:
         "required": ["title", "description"],
         "properties": {
             "id": {"type": "string", "readOnly": True},
-            "key": {"type": "string"},
+            "key": {"type": "string", "description": "Explicit stable identifier, separate from title. Set with add --key."},
             "title": {"type": "string"},
             "description": {"type": "string"},
-            "rationale": {"type": "string"},
+            "rationale": {"type": "string", "description": "State prerequisite mechanics or architecture work and their cost before implementation."},
             "targetCoord": coord_schema,
             "contextCoords": {"type": "array", "items": {"$ref": "#/$defs/codeCoord"}},
             "priority": enum_schema["priority"],
@@ -301,7 +302,7 @@ def _task_schema() -> dict[str, Any]:
             "annotations": {"type": "array"},
             "startedAt": {"type": ["string", "null"]},
             "completedAt": {"type": ["string", "null"]},
-            "acceptanceCriteria": {"type": ["string", "null"]},
+            "acceptanceCriteria": {"type": ["string", "null"], "description": "Define observable completion criteria, including any prerequisite new mechanic."},
             "trigger": {"type": ["string", "null"]},
             "timing": enum_schema["timing"],
         },
@@ -373,6 +374,7 @@ def register(sub: _SubParsersAction) -> None:
                         help="Page size (default 50). 'total' always reports the unpaged count.")
     p_list.add_argument("--offset", type=int, default=0, help="Skip this many tasks (paging).")
     _add_full_flag(p_list)
+    p_list.add_argument("--fields", help="Comma-separated task fields, e.g. key,title,priority.")
 
     p_search = actions.add_parser(
         "search",
@@ -406,6 +408,7 @@ def register(sub: _SubParsersAction) -> None:
     add_workspace_arg(p_ready)
     p_ready.add_argument("--limit", type=int, default=20)
     _add_full_flag(p_ready)
+    p_ready.add_argument("--fields", help="Comma-separated task fields, e.g. key,title,priority.")
 
     p_schema = actions.add_parser("schema", help="Print the task JSON schema and enum values")
     add_workspace_arg(p_schema)
@@ -475,6 +478,7 @@ def register(sub: _SubParsersAction) -> None:
         help="Read a JSON patch object from a file; use '-' for stdin.",
     )
     _add_full_flag(p_update)
+    p_update.add_argument("--quiet", action="store_true", help="Print only the updated task id and status.")
 
     p_delete = actions.add_parser("delete", help="Remove a task by id or key")
     add_workspace_arg(p_delete)
@@ -505,6 +509,13 @@ def register(sub: _SubParsersAction) -> None:
 
 def run(args: Namespace) -> int:
     action = args.action
+    fields = None
+    if getattr(args, 'fields', None):
+        fields = [f.strip() for f in args.fields.split(',') if f.strip()]
+        allowed = set(_task_schema()['properties']) | {'id'}
+        invalid = set(fields) - allowed
+        if not fields or invalid:
+            return emit_error(f"Unknown or empty task fields: {', '.join(sorted(invalid))}. Use top-level schema fields.", exit_code=EXIT_USAGE)
 
     if action == "schema":
         emit_json(_task_schema())
@@ -514,7 +525,21 @@ def run(args: Namespace) -> int:
         emit_json({"taskTypes": _enum_values(TaskType)})
         return EXIT_OK
 
-    store = TaskStore(resolve_workspace(args))
+    raw_workspace = getattr(args, "workspace", None)
+    if raw_workspace and re.match(r"^[A-Za-z]:[^\\/]", raw_workspace):
+        return emit_error("--workspace must be an absolute drive path (use C:/Projects/name).", exit_code=EXIT_USAGE)
+    workspace = resolve_workspace(args)
+    if not Path(workspace).is_dir():
+        return emit_error(f"Workspace directory does not exist: {workspace}", exit_code=EXIT_USAGE)
+    store = TaskStore(workspace)
+    try:
+        return _run_store(args, store, fields)
+    finally:
+        store.close()
+
+
+def _run_store(args: Namespace, store: TaskStore, fields: list[str] | None) -> int:
+    action = args.action
 
     if action == "list":
         filters = dict(
@@ -527,6 +552,8 @@ def run(args: Namespace) -> int:
         data = store.list_tasks(**filters, limit=args.limit, offset=args.offset)
         total = store.count_tasks(**filters)
         envelope = _tasks_envelope([t.to_dict() for t in data.tasks], full=args.full, phases=data.phases)
+        if fields:
+            envelope['tasks'] = [{f: t.to_dict().get(f) for f in fields} for t in data.tasks]
         returned = envelope["total"]
         envelope["total"] = total
         envelope["returned"] = returned
@@ -564,7 +591,10 @@ def run(args: Namespace) -> int:
 
     if action == "get-ready":
         tasks = store.get_ready_tasks()[: args.limit]
-        emit_json(_tasks_envelope([t.to_dict() for t in tasks], full=args.full))
+        envelope = _tasks_envelope([t.to_dict() for t in tasks], full=args.full)
+        if fields:
+            envelope['tasks'] = [{f: t.to_dict().get(f) for f in fields} for t in tasks]
+        emit_json(envelope)
         return EXIT_OK
 
     if action == "validate":
@@ -593,6 +623,8 @@ def run(args: Namespace) -> int:
             )
         if args.key is not None:
             payload["key"] = args.key
+        if not payload.get('key') and re.search(r'\[[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+\]', str(payload.get('title', ''))):
+            sys.stderr.write("note: bracketed identifiers in titles are not task keys; set --key explicitly for get/update by key.\n")
         if args.priority is not None:
             payload["priority"] = args.priority
         if args.phase is not None:
@@ -674,7 +706,7 @@ def run(args: Namespace) -> int:
             return emit_error(str(exc), exit_code=EXIT_USAGE)
         except ValueError as exc:
             return emit_error(_validation_message(str(exc)), exit_code=EXIT_USAGE)
-        emit_json(_present(task.to_dict(), args.full))
+        emit_json({"id": task.id, "status": task.status.value} if getattr(args, "quiet", False) else _present(task.to_dict(), args.full))
         return EXIT_OK
 
     if action == "delete":

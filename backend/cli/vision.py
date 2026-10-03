@@ -31,6 +31,20 @@ def register(sub: _SubParsersAction) -> None:
 
     p_look = actions.add_parser("look", help="Analyze one or more images")
     p_look.add_argument("images", nargs="+", help="Image file path(s)")
+    p_web = actions.add_parser("web", help="Capture a URL with Playwright and analyze it locally")
+    p_web.add_argument("url", help="HTTP(S) website URL")
+    p_web.add_argument("--purpose", choices=sorted(PURPOSES), default=DEFAULT_PURPOSE)
+    p_web.add_argument("-q", "--question", default="")
+    p_web.add_argument("--model", default="")
+    p_web.add_argument("--tier", choices=sorted(TIERS), default="")
+    p_web.add_argument("--mobile", action="store_true", help="Also capture and analyze a 390px mobile viewport")
+    p_web.add_argument("--ready-selector", default="", help="Wait until this CSS selector is visible (useful for SPAs)")
+    p_web.add_argument("--wait-ms", type=int, default=750, help="Settle time after DOM/selector readiness")
+    p_web.add_argument("--timeout-ms", type=int, default=30000)
+    p_web.add_argument("--output-dir", default="")
+    p_web.add_argument("--full-page", action="store_true", help="Analyze the full-page capture instead of the viewport")
+    p_web.add_argument("--capture-only", action="store_true", help="Save screenshots without invoking a vision model")
+    add_workspace_arg(p_web)
     p_look.add_argument(
         "--purpose",
         choices=sorted(PURPOSES),
@@ -100,8 +114,27 @@ def run(args: Namespace) -> int:
 
     if action == "look":
         return _look(args)
+    if action == "web":
+        return _web(args)
 
     return emit_error(f"unknown action: {action}", exit_code=EXIT_USAGE)
+
+
+def _web(args: Namespace) -> int:
+    from backend.vision.web import analyze_web
+    try:
+        result = analyze_web(
+            args.url, purpose=args.purpose, question=args.question, model=args.model, tier=args.tier,
+            workspace_path=args.workspace, output_dir=args.output_dir, mobile=args.mobile,
+            ready_selector=args.ready_selector, wait_ms=args.wait_ms, timeout_ms=args.timeout_ms,
+            full_page=args.full_page, capture_only=args.capture_only,
+        )
+    except (VisionModelMissing, VisionError, ollama_client.OllamaError) as exc:
+        return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
+    except ValueError as exc:
+        return emit_error(str(exc), exit_code=EXIT_USAGE)
+    emit_json(result)
+    return EXIT_OK
 
 
 def _look(args: Namespace) -> int:
@@ -113,7 +146,7 @@ def _look(args: Namespace) -> int:
             model=args.model,
             tier=args.tier,
         )
-    except VisionModelMissing as exc:
+    except (VisionModelMissing, ollama_client.OllamaError) as exc:
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
     except VisionError as exc:
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)

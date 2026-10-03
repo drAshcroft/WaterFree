@@ -57,6 +57,7 @@ class OpenRouterAdapter:
                 api_key=api_key,
                 base_url=config.get("base_url") or OPENROUTER_BASE_URL,
                 stream_usage=bool(config.get("streamUsage", True)),
+                max_retries=int(config.get("max_retries", 2)),
                 # Chat Completions only — see module docstring.
                 use_responses_api=False,
                 default_headers={"HTTP-Referer": _REFERER, "X-Title": _TITLE},

@@ -64,7 +64,10 @@ class CheckpointStore:
         summary: str = "",
         touched_files: Optional[list[str]] = None,
         tool_calls: Optional[list[dict[str, str]]] = None,
+        status: str = "pending",
     ) -> dict[str, Any]:
+        if status not in {"pending", "running", "complete", "failed"}:
+            raise ValueError(f"Invalid initial checkpoint status: {status}")
         checkpoint_id = payload.get("id") or str(uuid.uuid4())
         created_at = str(payload.get("createdAt") or _utcnow())
         touched = list(touched_files or payload.get("touchedFiles", []))
@@ -79,7 +82,7 @@ class CheckpointStore:
                     id, session_id, reason, created_at, runtime_id, subagent_id,
                     requires_approval, summary, touched_files, tool_calls, payload,
                     status, decision, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '{}', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)
                 """,
                 (
                     checkpoint_id,
@@ -93,6 +96,7 @@ class CheckpointStore:
                     json.dumps(touched),
                     json.dumps(calls),
                     json.dumps(serialized_payload),
+                    status,
                     created_at,
                 ),
             )
@@ -100,6 +104,22 @@ class CheckpointStore:
         if checkpoint is None:  # pragma: no cover - defensive
             raise RuntimeError("Checkpoint creation failed.")
         return checkpoint
+
+    def finish_delegation(self, checkpoint_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        current = self.get_checkpoint(checkpoint_id)
+        if current is None or current["runtimeId"] != "acp" or current["payload"].get("mode") != "audit":
+            raise ValueError("An ACP audit checkpoint is required.")
+        if current["status"] != "running":
+            raise ValueError("Delegation checkpoint is already finalized.")
+        payload = {**current["payload"], "result": result}
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE checkpoints SET payload=?, status=?, touched_files=?, tool_calls=?, updated_at=? WHERE id=?",
+                (json.dumps(payload), "complete" if result.get("ok") else "failed",
+                 json.dumps(result.get("touchedFiles", [])), json.dumps(result.get("toolCalls", [])),
+                 _utcnow(), checkpoint_id),
+            )
+        return self.get_checkpoint(checkpoint_id)
 
     def list_checkpoints(self, session_id: str = "") -> list[dict[str, Any]]:
         with self._lock:
@@ -126,6 +146,8 @@ class CheckpointStore:
         current = self.get_checkpoint(checkpoint_id)
         if current is None:
             raise ValueError(f"Checkpoint not found: {checkpoint_id}")
+        if current["payload"].get("mode") == "audit":
+            raise ValueError("ACP audit records cannot be resumed; start a new delegation explicitly.")
         status = str(decision.get("action", "")).lower() or "resumed"
         if status not in {"approve", "approved", "resume", "resumed"}:
             status = "resumed"
@@ -167,6 +189,7 @@ class CheckpointStore:
             "runtimeId": row["runtime_id"],
             "subagentId": row["subagent_id"],
             "requiresApproval": bool(row["requires_approval"]),
+            "resumable": json.loads(row["payload"] or "{}").get("mode") != "audit",
             "summary": row["summary"],
             "touchedFiles": json.loads(row["touched_files"] or "[]"),
             "toolCalls": json.loads(row["tool_calls"] or "[]"),

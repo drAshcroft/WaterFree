@@ -201,11 +201,19 @@ def _one_sentence(value: Any, *, key: str) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if not text:
         raise GradeResponseError(f"Missing feedback for dimension '{key}'.")
-    scrubbed = text.replace("e.g.", "eg").replace("i.e.", "ie")
+    # Manuscript quotations are evidence inside the feedback sentence. Their
+    # punctuation does not end the surrounding sentence; apostrophes in words
+    # are not quotation delimiters.
+    scrubbed = re.sub(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'(?!\w)|(?<!\w)‘[^’\n]*’(?!\w)', "QUOTE", text)
+    scrubbed = re.sub(
+        r"\b(?:e\.g|i\.e|etc|Mr|Mrs|Ms|Dr|Prof|St|vs|Jr|Sr|No|Fig)\.",
+        "ABBREVIATION", scrubbed, flags=re.IGNORECASE,
+    )
+    scrubbed = re.sub(r"\b[A-Z]\.(?=\s+[A-Z])", "INITIAL", scrubbed)
     endings = re.findall(r"[.!?](?=(?:[\"'’”\)\]]*)?(?:\s|$))", scrubbed)
     if len(endings) > 1:
         raise GradeResponseError(f"Feedback for dimension '{key}' is not one sentence.")
-    if not endings:
+    if not endings and not re.search(r"[.!?][\"'’”\)\]]*$", text):
         text += "."
     return text
 

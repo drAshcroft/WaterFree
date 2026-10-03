@@ -90,6 +90,12 @@ class PurposeRoutingTests(unittest.TestCase):
 
         self.assertIn("waterfree vision pull --tier small", str(ctx.exception))
 
+    def test_daemon_error_does_not_claim_installed_model_needs_downloading(self):
+        with mock.patch.object(ollama_client, 'list_models', side_effect=ollama_client.OllamaError('daemon timed out')):
+            with self.assertRaisesRegex(ollama_client.OllamaError, 'daemon timed out'):
+                vision_models.ensure_available('qwen2.5vl:7b')
+            self.assertFalse(ollama_client.has_model('qwen2.5vl:7b'))
+
 
 class AnalyzeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -138,6 +144,23 @@ class AnalyzeTests(unittest.TestCase):
     def test_no_images_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             analyze([], purpose="describe")
+
+    def test_four_large_images_fit_configured_context(self) -> None:
+        images = [_write_png(self.dir / f'large-{i}.png', (1200, 1400)) for i in range(4)]
+        with mock.patch.object(ollama_client, 'has_model', return_value=True), \
+                mock.patch.object(ollama_client, 'chat', return_value='UNCERTAIN') as chat, \
+                mock.patch.object(analyze_mod, 'CONTEXT_TOKENS', 4096):
+            result = analyze([str(p) for p in images], purpose='compare')
+        self.assertEqual(chat.call_args.kwargs['options']['num_ctx'], 4096)
+        sizes = [tuple(map(int, item['sent'].split('x'))) for item in result['images']]
+        self.assertTrue(all(max(size) < 1280 for size in sizes))
+        self.assertLess(sum(((w+27)//28)*((h+27)//28) for w,h in sizes) + 1536, 4096)
+        self.assertTrue(result['advisory'])
+
+    def test_comparison_prompt_requires_independent_inspection_and_uncertainty(self) -> None:
+        system = vision_models.get_purpose('compare').system
+        self.assertIn('independently', system)
+        self.assertIn('UNCERTAIN', system)
 
 
 class AttachImagesTests(unittest.TestCase):

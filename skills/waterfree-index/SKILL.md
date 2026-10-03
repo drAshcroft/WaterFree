@@ -169,6 +169,11 @@ waterfree index list-projects
 
 ## Tips
 
+- GDScript `.gd` declarations and local calls are supported through lexical
+  extraction. Calls are inferred, not type-resolved; rebuild older indexes.
+- Agent configuration directories (`.claude`, `.codex`, `.agents`) and generated
+  `.waterfree` output are excluded from source collection.
+
 - `search-graph` finds nodes by name in the graph; `search-code` does text search in source files.
 - For `get-snippet`, try short names first — auto-resolve handles disambiguation.
 - The graph database is at `{workspace}/.waterfree/graph.db`.

@@ -37,6 +37,7 @@ You see a numbered list of the controls on screen and the visible text. You repl
 Rules:
 - Reply with exactly one action line and nothing else. No explanation, no markdown.
 - Only use element numbers that appear in the current list.
+- CLICK AT uses viewport pixels, only on canvas-only screens with vision candidate regions. Prefer their listed centers; do not guess coordinates.
 - Elements marked disabled or offscreen cannot be clicked; SCROLL first or pick another.
 - When a dialog is open, deal with it before trying anything behind it.
 - Do not repeat an action that already had no effect. Try something different or NOTE the problem.
@@ -71,6 +72,7 @@ def turn_prompt(
     step: int = 1,
     steps_left: int | None = None,
     error: str = "",
+    visual_regions: str = "",
 ) -> str:
     parts = [f"GOAL: {brief.goal.strip()}"]
     if brief.hints:
@@ -95,6 +97,10 @@ def turn_prompt(
     else:
         parts.append(snapshot.render())
     parts.append("")
+    if visual_regions:
+        parts.append("CANVAS SCREEN: vision observations and candidate clickable regions:")
+        parts.append(visual_regions)
+        parts.append("")
     parts.append("Your next action (one line):")
     return "\n".join(parts)
 

@@ -3,8 +3,24 @@
 Replaces the MCP stdio servers with a single compiled executable that exposes
 each former MCP tool as a `waterfree <area> <action>` subcommand. The goal:
 agents call it via the shell, no MCP transport involved, and the executable
-ships with every dependency frozen in via PyInstaller — no Python required on
-the host.
+uses a launcher with a deployed Python backend and a shared Python environment.
+Backend changes must be deployed to the installed runtime to affect commands
+run outside the source checkout.
+
+## Owned assets and prop lookup
+
+The owned-asset catalog has its own `assetsearch.py` entry point; `props` and
+`assets` are not WaterFree CLI areas. Use the `waterfree-assets` skill, which
+resolves the configured library paths, or query this machine's catalog directly:
+
+```powershell
+& C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\assetsearch.py "crate, godot" --subjects
+& C:\Projects\.local\Scripts\python.exe C:\Projects\itch_assets\assetsearch.py "KayKit animation" --packs
+```
+
+This returns owned file or package records and their locations and rights;
+it is not a gameplay-mechanic definition dictionary. Requests for a prop's
+behavior require the relevant project's own definitions.
 
 ## Invocation shape
 
@@ -194,6 +210,10 @@ ten `hit_ids`; plus `agent` (`AI_AGENT` env) and `session`
 (`CLAUDE_CODE_SESSION_ID`). Logging is fail-silent and never alters a command's
 output or exit code. `usage` actions are not logged.
 
+Permission failures in optional logging are quiet by default. Set
+`WATERFREE_USAGE_LOG_DEBUG=1` to see skipped-write diagnostics, or point
+`WATERFREE_USAGE_LOG` at a writable file inside the active workspace.
+
 | Action               | Flags / args |
 |----------------------|--------------|
 | `summary`            | `--since 30d\|7d\|12h\|2w\|all`, `--area A`, `--workspace P`, `--source cli\|transcript`, `--top N` |
@@ -305,12 +325,13 @@ model not installed, or no API key for a remote provider.
 ## Area: vision
 
 Implemented in `backend/vision/`. Runs a local vision model through the Ollama
-daemon; no image leaves the machine. Takes image **files** — it does not capture
-screenshots itself.
+daemon. `look` accepts image files; `web` captures a URL with Playwright and
+retains both viewport and full-page screenshots before local analysis.
 
 | Action      | Flags / args |
 |-------------|--------------|
 | `look`      | `<image>...` (up to 4), `--purpose`, `-q/--question`, `--model`, `--tier`, `--workspace` |
+| `web`       | `<url>`, `--purpose`, `--question`, `--model`, `--tier`, `--mobile`, `--ready-selector`, `--wait-ms`, `--timeout-ms`, `--full-page`, `--capture-only`, `--output-dir`, `--workspace` |
 | `models`    | `--workspace` |
 | `purposes`  | `--workspace` |
 | `pull`      | `--tier {small,large}` or `--model <id>`, `--workspace` |
@@ -331,15 +352,15 @@ and re-encoded as PNG before being sent.
 
 ## Area: imagegen
 
-Implemented in `backend/imagegen/`. Generates images on the local GPU via
-`diffusers`. Requires `diffusers`, `accelerate`, `sentencepiece`, `protobuf`
-and a CUDA-capable PyTorch; CPU generation is deliberately unsupported.
+Implemented in `backend/imagegen/`. Diffusers generation requires `diffusers`,
+`accelerate`, `sentencepiece`, `protobuf` and CUDA-capable PyTorch. The ComfyUI
+HTTP backend uses an existing server and its registered checkpoints/LoRAs.
 
 | Action    | Flags / args |
 |-----------|--------------|
-| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--workspace` |
+| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--backend {diffusers,comfy}`, `--image`, `--mask`, `--strength`, repeatable `--lora PATH=WEIGHT`, `--comfy-url`, `--checkpoint`, `--timeout`, `--workspace` |
 | `models`  | `--workspace` |
-| `status`  | `--workspace` |
+| `status`  | `--workspace`, `--backend`, `--comfy-url` |
 | `init`    | `--workspace` |
 | `unload`  | `--workspace` |
 
@@ -354,6 +375,11 @@ SD3.5 and FLUX are gated repos: accept the licence and set `$HF_TOKEN`.
 Images and a reproducibility sidecar `.json` are written to
 `<workspace>/.waterfree/generated`. A batch shares one generator, so only the
 first image records its seed.
+
+Masks use white for edits and black to preserve pixels. Sidecars include input
+hashes, editing mode and LoRA weights. Diffusers load progress on stderr reports
+observed cache-byte growth with unknown totals left null. ComfyUI job timeouts
+report the job ID without interrupting another user's work.
 
 ## Out of scope (deliberately)
 

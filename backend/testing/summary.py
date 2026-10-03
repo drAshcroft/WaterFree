@@ -64,7 +64,7 @@ def summarize_run(
     target = _target(workspace_path, fallback_model)
     preflight(target)
 
-    failures = [r for r in result.results if not r.passed]
+    failures = [r for r in result.results if not r.passed and not r.skipped]
     batches = [failures[i:i + _BATCH_SIZE] for i in range(0, len(failures), _BATCH_SIZE)]
     notes: list[str] = []
     for index, batch in enumerate(batches, start=1):

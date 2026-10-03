@@ -117,13 +117,25 @@ opening. It is read verbatim into the prompt, so keep it under ~150 lines.
 
 ## What it cannot do
 
-- **Canvas-only games.** The snapshot is DOM-based. A Phaser or pure-canvas
-  game with an empty DOM gives the model nothing to click. Paradoxia is the
-  known example. Vision-driven region clicking is planned, not built.
 - **Online multiplayer.** Out of scope.
 - **Starting your server.** By design.
 
 ## Tuning
+
+On a canvas screen without actionable DOM controls, the large vision tier
+describes the screenshot and supplies labelled candidate centers. The tester
+can emit `CLICK AT x y` using viewport pixels. Coordinate clicks are rejected
+on screens with DOM controls, outside the viewport, or for keyboard-only
+personas. `--no-vision` disables this fallback. Candidate positions can be
+wrong; inspect the retained screenshots and action log, and verify arrival
+at the intended game state instead of trusting a model's DONE statement.
+Screenshot capture falls back to CDP if Playwright readiness waits time out.
+QA uses full Chromium's new headless mode, which can use the system GPU.
+Verify the reported WebGL renderer before a long canvas run; hardware support
+still depends on the machine. Do not force software WebGL: a continuously rendering game can consume many
+CPU cores while the model is waiting. Close the browser and its worker tree
+when cancelling a run. The text context is bounded to 4,096
+tokens so it can fit alongside the vision model on a 12 GB GPU.
 
 `WATERFREE_QA_MODEL`, `WATERFREE_QA_MODEL_FALLBACK`, `WATERFREE_QA_STEP_TIMEOUT`,
 `WATERFREE_QA_KEEP_ALIVE`. The fallback tier is used automatically when the

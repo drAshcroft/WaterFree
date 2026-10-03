@@ -59,6 +59,13 @@ skills/**
 
 # Docs / project metadata not needed at extension runtime
 docs/**
+getvect-main/**
+scripts/**
+AGENTS.md
+CLAUDE.md
+.claude/**
+.codex/**
+.agents/**
 
 # Workspace state
 .git/**

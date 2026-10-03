@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -132,6 +133,14 @@ class ImageGenConfig:
     attention_slicing: bool = True
     vae_tiling: bool = True
     output_dir: str = ""
+    backend: str = "diffusers"
+    image: str = ""
+    mask: str = ""
+    strength: float = 0.75
+    loras: tuple = ()             # {path: local file or repo ID, scale: float}
+    comfy_url: str = "http://127.0.0.1:8188"
+    comfy_checkpoint: str = ""
+    comfy_timeout: float = 300.0
 
     def resolved_preset(self) -> ModelPreset:
         key = self.preset.strip().lower()
@@ -144,6 +153,17 @@ class ImageGenConfig:
     def merged(self) -> "ResolvedGeneration":
         """Collapse the preset and the overrides into concrete values."""
         preset = self.resolved_preset()
+        if self.backend not in ("diffusers", "comfy"):
+            raise ValueError("backend must be diffusers or comfy.")
+        if self.mask and not self.image:
+            raise ValueError("An inpainting mask requires an input image.")
+        if not math.isfinite(float(self.strength)) or not 0 < float(self.strength) <= 1:
+            raise ValueError("strength must be greater than 0 and at most 1.")
+        if not math.isfinite(float(self.comfy_timeout)) or float(self.comfy_timeout) <= 0:
+            raise ValueError("comfyTimeout must be positive and finite.")
+        loras = normalize_loras(self.loras)
+        if self.offload not in OFFLOAD_MODES:
+            raise ValueError(f"Unknown offload strategy: {self.offload}")
         return ResolvedGeneration(
             preset=preset,
             repo_id=self.repo_id.strip() or preset.repo_id,
@@ -157,6 +177,12 @@ class ImageGenConfig:
             offload=self.offload,
             attention_slicing=self.attention_slicing,
             vae_tiling=self.vae_tiling,
+            backend=self.backend,
+            image=str(Path(self.image).expanduser().resolve()) if self.image else '',
+            mask=str(Path(self.mask).expanduser().resolve()) if self.mask else '',
+            strength=float(self.strength), loras=loras,
+            comfy_url=self.comfy_url, comfy_checkpoint=self.comfy_checkpoint,
+            comfy_timeout=float(self.comfy_timeout),
         )
 
 
@@ -174,9 +200,23 @@ class ResolvedGeneration:
     offload: str
     attention_slicing: bool
     vae_tiling: bool
+    backend: str = "diffusers"
+    image: str = ""
+    mask: str = ""
+    strength: float = 0.75
+    loras: tuple = ()
+    comfy_url: str = "http://127.0.0.1:8188"
+    comfy_checkpoint: str = ""
+    comfy_timeout: float = 300.0
+
+    @property
+    def mode(self) -> str:
+        return "inpaint" if self.mask else "img2img" if self.image else "txt2img"
 
     def describe(self) -> dict[str, Any]:
         return {
+            "backend": self.backend,
+            "mode": self.mode,
             "preset": self.preset.key,
             "repoId": self.repo_id,
             "steps": self.steps,
@@ -184,7 +224,32 @@ class ResolvedGeneration:
             "size": f"{self.width}x{self.height}",
             "dtype": self.dtype,
             "offload": self.offload,
+            "image": self.image or None, "mask": self.mask or None,
+            "strength": self.strength, "loras": list(self.loras),
+            **({"comfyUrl": self.comfy_url, "checkpoint": self.comfy_checkpoint}
+               if self.backend == "comfy" else {}),
         }
+
+
+def normalize_loras(values) -> tuple:
+    if not isinstance(values, (tuple, list)):
+        raise ValueError("loras must be a list of paths or {path, scale} objects.")
+    result = []
+    for value in values:
+        if isinstance(value, str):
+            path, sep, weight = value.rpartition("=")
+            value = {"path": path if sep else value, "scale": float(weight) if sep else 1.0}
+        if not isinstance(value, dict) or not str(value.get("path", "")).strip():
+            raise ValueError("Each LoRA requires a path.")
+        weight = float(value.get("scale", 1.0))
+        if not math.isfinite(weight):
+            raise ValueError("LoRA scale must be finite.")
+        path = str(value['path']).strip()
+        local = Path(path).expanduser()
+        if local.is_file():
+            path = str(local.resolve())
+        result.append({"path": path, "scale": weight})
+    return tuple(result)
 
 
 def load_config(workspace_path: str = "") -> ImageGenConfig:
@@ -208,6 +273,8 @@ def load_config(workspace_path: str = "") -> ImageGenConfig:
         _snake(key): value for key, value in raw.items()
         if _snake(key) in known and value is not None
     }
+    if 'loras' in payload and isinstance(payload['loras'], list):
+        payload['loras'] = tuple(payload['loras'])
     try:
         return ImageGenConfig(**payload)
     except TypeError:

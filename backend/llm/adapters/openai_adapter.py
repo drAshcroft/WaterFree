@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from backend.llm.adapters.anthropic_adapter import _extract
 
+
+log = logging.getLogger(__name__)
 
 class OpenAIAdapter:
     provider_type = "openai"
@@ -24,8 +27,9 @@ class OpenAIAdapter:
                 use_previous_response_id=bool(config.get("usePreviousResponseId", True)),
                 model_kwargs=model_kwargs,
             )
-        except Exception:
-            return f"openai:{model_id}"
+        except Exception as exc:
+            log.warning("%s: failed to construct client for model %s: %s", self.provider_type, model_id, exc)
+            return None
 
     def extract_usage(self, response: Any) -> dict[str, int]:
         return _extract(response, use_openai_cache=True)

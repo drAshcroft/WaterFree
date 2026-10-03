@@ -134,7 +134,7 @@ def _doctor(workspace: str) -> int:
             from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True, args=["--mute-audio"])
+                browser = pw.chromium.launch(headless=True, channel="chromium", args=["--mute-audio"])
                 version = browser.version
                 browser.close()
             check("chromium", True, f"launches ({version})")

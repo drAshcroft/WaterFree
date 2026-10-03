@@ -239,10 +239,11 @@ def append(record: dict[str, Any], path: Path | None = None) -> bool:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         return True
     except Exception as exc:  # pragma: no cover - deliberately swallowed
-        try:
-            sys.stderr.write(f"note: usage log skipped ({exc})\n")
-        except Exception:
-            pass
+        if os.environ.get("WATERFREE_USAGE_LOG_DEBUG", "").lower() in ("1", "true", "yes"):
+            try:
+                sys.stderr.write(f"note: usage log skipped ({exc})\n")
+            except Exception:
+                pass
         return False
 
 

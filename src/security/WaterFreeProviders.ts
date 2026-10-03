@@ -119,6 +119,8 @@ export interface ProviderConfig {
   name: string;
   baseUrl: string;
   models: string[];
+  stageModels?: Record<string, string>;
+  useForStages?: ProviderStage[];
   modes?: string[];
   useWith?: string;
   enabled: boolean;
@@ -375,7 +377,7 @@ export const PROVIDER_TYPE_CATALOG: ProviderTypeDescriptor[] = [
     // stealth/ox-alpha is a cloaked preview model surfaced under OpenRouter's
     // "stealth/" namespace — expect the id to change or disappear once it's
     // deanonymized or retired.
-    defaultModels: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder", "stealth/ox-alpha"],
+    defaultModels: [...AUTO_MODEL_IDS, "anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4.5", "qwen/qwen3-coder", "stealth/ox-alpha"],
     requiresApiKey: true,
     supportsBaseUrl: true,
   },
@@ -628,6 +630,8 @@ export class WaterFreeProviders {
         name: entry.label,
         baseUrl: entry.connection.baseUrl,
         models,
+        stageModels: { ...entry.models, ...entry.modelOverrides },
+        useForStages: [...entry.routing.useForStages],
         modes: routingToModes(entry.routing),
         useWith: routingToUseWith(entry.routing),
         enabled: entry.enabled,
@@ -679,7 +683,15 @@ export class WaterFreeProviders {
     };
     const next = legacyConfigToProfileEntry(mergedLegacy);
     if (!next) { return; }
-    this._profile.catalog[idx] = next;
+    const previous = this._profile.catalog[idx];
+    this._profile.catalog[idx] = normalizeProfileEntry({
+      ...previous, ...next,
+      connection: { ...previous.connection, ...next.connection },
+      features: previous.features,
+      optimizations: previous.type === next.type ? previous.optimizations : next.optimizations,
+      stageTiers: previous.stageTiers,
+      modelOverrides: updates.stageModels ? Object.fromEntries(Object.entries(updates.stageModels).filter(([stage]) => stage !== "default")) : previous.modelOverrides,
+    }, id)!;
     if (!acceptsApiKey(next)) {
       await this._deleteKey(id);
     } else if (apiKey) {
@@ -1166,7 +1178,8 @@ function legacyConfigToProfileEntry(raw: unknown, fallbackId?: string): Provider
     enabled: raw.enabled,
     baseUrl: raw.baseUrl,
     connectionStyle: raw.connectionStyle,
-    models: raw.models,
+    models: raw.stageModels ?? raw.models,
+    routing: Array.isArray(raw.useForStages) ? { useForStages: raw.useForStages, personas: normalizeUseWith(raw.useWith) } : undefined,
     modes: raw.modes,
     useWith: raw.useWith,
   }, id);
@@ -1179,6 +1192,8 @@ function profileEntryToLegacyConfig(entry: ProviderProfileEntry): ProviderConfig
     name: entry.label,
     baseUrl: entry.connection.baseUrl,
     models: uniqueModels(entry.models),
+    stageModels: { ...entry.models, ...entry.modelOverrides },
+    useForStages: [...entry.routing.useForStages],
     modes: routingToModes(entry.routing),
     useWith: routingToUseWith(entry.routing),
     enabled: entry.enabled,

@@ -586,6 +586,7 @@ Invoke-Stage "Stage 4: Staging artifacts into dist/" {
     Write-Host "    -> dist\skills\ ($($skillNames.Count) skills)" -ForegroundColor Green
     if (-not $SkipMsi) {
         Assert-MsiSkillCoverage (Join-Path $DistDir "WaterFreeSetup-$ProductVersion.msi") $skillNames
+        & (Join-Path $RepoRoot 'scripts\prune_installers.ps1') -DistDirectory $DistDir -CurrentMsi (Join-Path $DistDir $finalMsiName)
     }
 }
 

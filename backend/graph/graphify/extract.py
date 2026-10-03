@@ -2280,6 +2280,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             class_nid = _make_id(stem, class_name)
             line = node.start_point[0] + 1
             add_node(class_nid, class_name, line)
+            next(item for item in nodes if item['id'] == class_nid)['symbol_kind'] = 'Class'
             add_edge(file_nid, class_nid, "contains", line)
 
             if config.ts_module == "tree_sitter_swift" and any(
@@ -2855,10 +2856,12 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, func_name)
                 add_node(func_nid, f".{func_name}()", line)
+                next(item for item in nodes if item['id'] == func_nid)['symbol_kind'] = 'Method'
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = _make_id(stem, func_name)
                 add_node(func_nid, f"{func_name}()", line)
+                next(item for item in nodes if item['id'] == func_nid)['symbol_kind'] = 'Function'
                 add_edge(file_nid, func_nid, "contains", line)
 
             if config.ts_module == "tree_sitter_python":
@@ -4039,6 +4042,30 @@ def extract_ruby(path: Path) -> dict:
 def extract_csharp(path: Path) -> dict:
     """Extract classes, interfaces, methods, namespaces, and usings from a .cs file."""
     return _extract_generic(path, _CSHARP_CONFIG)
+
+
+def extract_gdscript(path: Path) -> dict:
+    from backend.graph.gdscript import parse_symbols
+    symbols = parse_symbols(path.read_text(encoding="utf-8", errors="replace"))
+    file_id = _make_id(str(path))
+    nodes = [{"id": file_id, "label": path.name, "file_type": "code",
+              "source_file": str(path), "source_location": "L1"}]
+    edges = []
+    by_qn = {s['qualified_name']: _make_id(str(path), s['qualified_name']) for s in symbols}
+    for s in symbols:
+        nid = by_qn[s['qualified_name']]
+        nodes.append({"id": nid, "label": s['name'], "name": s['qualified_name'],
+                      "symbol_kind": s['label'], "file_type": "code", "source_file": str(path),
+                      "source_location": f"L{s['line']}", "end_line": s['end_line'], "body": s['body']})
+        edges.append({"source": by_qn.get(s['parent'], file_id), "target": nid,
+                      "relation": "contains", "confidence": "EXTRACTED",
+                      "source_file": str(path), "source_location": f"L{s['line']}"})
+        for call in s['calls']:
+            target = by_qn.get('.'.join(filter(None, (s['parent'], call)))) or by_qn.get(call)
+            if target:
+                edges.append({"source": nid, "target": target, "relation": "calls", "confidence": "INFERRED",
+                              "source_file": str(path), "source_location": f"L{s['line']}"})
+    return {"nodes": nodes, "edges": edges}
 
 
 def extract_apex(path: Path) -> dict:
@@ -11053,6 +11080,7 @@ _DISPATCH: dict[str, Any] = {
     ".hpp": extract_cpp,
     ".rb": extract_ruby,
     ".cs": extract_csharp,
+    ".gd": extract_gdscript,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
     ".scala": extract_scala,
@@ -11232,6 +11260,7 @@ def _extract_parallel(
                     print(
                         f"  AST extraction: {done_count}/{len(uncached_work)} uncached files "
                         f"({done_count * 100 // len(uncached_work)}%) [{max_workers} workers]",
+                        file=sys.stderr,
                         flush=True,
                     )
     except concurrent.futures.process.BrokenProcessPool:
@@ -11245,12 +11274,14 @@ def _extract_parallel(
             "falling back to sequential. On Windows this usually means the "
             'caller is missing an `if __name__ == "__main__":` guard. Pass '
             "parallel=False to extract() to skip the pool entirely.",
+            file=sys.stderr,
             flush=True,
         )
         return False
     if total_files >= _PROGRESS_INTERVAL:
         print(
             f"  AST extraction: {total_files}/{total_files} files (100%) [{max_workers} workers]",
+            file=sys.stderr,
             flush=True,
         )
     return True
@@ -11272,6 +11303,7 @@ def _extract_sequential(
         ):
             print(
                 f"  AST extraction: {work_idx}/{len(uncached_work)} uncached files ({work_idx * 100 // len(uncached_work)}%)",
+                file=sys.stderr,
                 flush=True,
             )
         extractor = _get_extractor(path)
@@ -11284,7 +11316,7 @@ def _extract_sequential(
             save_cached(path, result, effective_root)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
-        print(f"  AST extraction: {total_files}/{total_files} files (100%)", flush=True)
+        print(f"  AST extraction: {total_files}/{total_files} files (100%)", file=sys.stderr, flush=True)
 
 
 _PARALLEL_THRESHOLD = 20
@@ -11620,26 +11652,19 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     def _ignored(p: Path) -> bool:
         return bool(patterns and _is_ignored(p, ignore_root, patterns))
 
-    if not follow_symlinks:
-        results: list[Path] = []
-        for ext in sorted(_EXTENSIONS):
-            results.extend(
-                p for p in target.rglob(f"*{ext}")
-                if not any(_is_noise_dir(part) for part in p.parts)
-                and not _ignored(p)
-            )
-        return sorted(results)
-    # Walk with symlink following + cycle detection
+    if any(_is_noise_dir(part) for part in target.parts):
+        return []
+    # One pruned walk avoids rescanning every worktree for each extension.
     results = []
-    for dirpath, dirnames, filenames in os.walk(target, followlinks=True):
-        if os.path.islink(dirpath):
+    for dirpath, dirnames, filenames in os.walk(target, followlinks=follow_symlinks):
+        if follow_symlinks and os.path.islink(dirpath):
             real = os.path.realpath(dirpath)
             parent_real = os.path.realpath(os.path.dirname(dirpath))
             if parent_real == real or parent_real.startswith(real + os.sep):
                 dirnames.clear()
                 continue
         dp = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if not _is_noise_dir(d)]
+        dirnames[:] = [d for d in dirnames if not _is_noise_dir(d, dp)]
         for fname in filenames:
             p = dp / fname
             if p.suffix in _EXTENSIONS and not _ignored(p):

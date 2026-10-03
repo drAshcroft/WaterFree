@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import logging
 import os
+import json
+import importlib.util
+from pathlib import Path
 from typing import Any
 
 from backend.imagegen.config import (
@@ -19,6 +22,7 @@ from backend.imagegen.config import (
     OFFLOAD_SEQUENTIAL,
     ResolvedGeneration,
 )
+from backend.imagegen.progress import DownloadProgress
 
 log = logging.getLogger(__name__)
 
@@ -65,10 +69,21 @@ def require_available() -> None:
 def load_pipeline(spec: ResolvedGeneration, *, hf_token: str = "") -> Any:
     """Return a ready pipeline for `spec`, from cache when possible."""
     require_available()
-    cache_key = f"{spec.repo_id}|{spec.dtype}|{spec.offload}"
+    if spec.loras:
+        _require_peft()
+    lora_files = []
+    for adapter in spec.loras:
+        path = Path(adapter['path']).expanduser()
+        stat = path.stat() if path.is_file() else None
+        lora_files.append((stat.st_mtime_ns, stat.st_size) if stat else None)
+    cache_key = json.dumps([spec.repo_id, spec.dtype, spec.offload, spec.mode, spec.loras,
+                            lora_files, spec.attention_slicing, spec.vae_tiling], sort_keys=True)
     cached = _PIPELINE_CACHE.get(cache_key)
     if cached is not None:
         return cached
+
+    # A different model/adapter combination must release the previous weights.
+    unload()
 
     import torch  # noqa: PLC0415
 
@@ -85,7 +100,23 @@ def load_pipeline(spec: ResolvedGeneration, *, hf_token: str = "") -> Any:
         kwargs["token"] = token
 
     try:
-        pipeline = pipeline_class.from_pretrained(spec.repo_id, **kwargs)
+        with DownloadProgress(spec.repo_id):
+            pipeline = pipeline_class.from_pretrained(spec.repo_id, **kwargs)
+        if spec.mode != "txt2img":
+            conversion = _pipeline_class("AutoPipelineForInpainting" if spec.mask else "AutoPipelineForImage2Image")
+            pipeline = conversion.from_pipe(pipeline)
+        names, weights = [], []
+        for index, lora in enumerate(spec.loras):
+            path = Path(lora['path']).expanduser()
+            name = f"waterfree_lora_{index}"
+            if path.is_file():
+                pipeline.load_lora_weights(str(path.parent), weight_name=path.name, adapter_name=name)
+            else:
+                pipeline.load_lora_weights(lora['path'], adapter_name=name)
+            names.append(name)
+            weights.append(lora['scale'])
+        if names:
+            pipeline.set_adapters(names, adapter_weights=weights)
     except Exception as exc:
         raise GenerationFailed(_download_hint(spec, exc)) from exc
 
@@ -114,6 +145,14 @@ def run_pipeline(pipeline: Any, spec: ResolvedGeneration, prompt: str, *, count:
     }
     if generator is not None:
         kwargs["generator"] = generator
+    if spec.image:
+        from PIL import Image, ImageOps
+        with Image.open(spec.image) as source:
+            kwargs['image'] = ImageOps.exif_transpose(source).convert('RGB').resize((spec.width, spec.height))
+        kwargs['strength'] = spec.strength
+        if spec.mask:
+            with Image.open(spec.mask) as source:
+                kwargs['mask_image'] = source.convert('L').resize((spec.width, spec.height), Image.Resampling.NEAREST)
     if spec.negative_prompt.strip() and _supports_negative_prompt(spec):
         kwargs["negative_prompt"] = spec.negative_prompt.strip()
 
@@ -153,6 +192,11 @@ def _pipeline_class(name: str) -> Any:
             "  pip install -U diffusers"
         )
     return cls
+
+
+def _require_peft():
+    if importlib.util.find_spec('peft') is None:
+        raise BackendUnavailable('LoRA loading requires PEFT in this Python environment. Install it with: python -m pip install peft')
 
 
 def _apply_memory_strategy(pipeline: Any, spec: ResolvedGeneration) -> None:

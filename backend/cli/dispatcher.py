@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 import time
 from typing import Sequence
@@ -18,7 +19,7 @@ from backend.cli import usage as area_usage
 from backend.cli import usage_log
 from backend.cli import vision as area_vision
 from backend.cli import writing_grade as area_writing_grade
-from backend.cli._common import EXIT_INTERNAL, EXIT_USAGE, take_last_output
+from backend.cli._common import EXIT_INTERNAL, EXIT_USAGE, emit_error, take_last_output
 from backend.cli.areas import CLI_AREAS  # noqa: F401 -- re-exported for main.py's gate
 
 
@@ -26,6 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="waterfree",
         description="WaterFree workspace toolkit. See docs/cli-surface.md.",
+        epilog="Owned asset and prop lookup: use the waterfree-assets skill's assetsearch.py. See docs/cli-surface.md for the catalog entry point.",
     )
     sub = parser.add_subparsers(dest="area", metavar="<area>")
     sub.required = True
@@ -62,6 +64,13 @@ def dispatch(argv: Sequence[str]) -> int:
     try:
         exit_code = runner(args)
         return exit_code
+    except (PermissionError, sqlite3.OperationalError) as exc:
+        exit_code = EXIT_INTERNAL
+        return emit_error(
+            f"{args.area} {args.action} could not access its database or files: {exc}. "
+            "For permission or readonly errors, use an authorized writable location or approved execution.",
+            exit_code=exit_code,
+        )
     except SystemExit as exc:
         exit_code = exc.code if isinstance(exc.code, int) else EXIT_INTERNAL
         raise

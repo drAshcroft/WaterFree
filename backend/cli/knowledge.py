@@ -16,6 +16,7 @@ from backend.cli._common import (
     add_workspace_arg,
     emit_error,
     emit_json,
+    emit_raw,
 )
 from backend.knowledge.models import SCOPES, KnowledgeEntry
 from backend.knowledge.store import SEARCH_SCOPES, DuplicateContentError, KnowledgeStore
@@ -63,11 +64,15 @@ def register(sub: _SubParsersAction) -> None:
     p_get = actions.add_parser("get", help="Fetch one knowledge entry by id or exact title")
     add_workspace_arg(p_get)
     p_get.add_argument("entry_id")
+    p_get.add_argument("--text", action="store_true", help="Print readable fields and the code body with actual newlines.")
 
     p_add = actions.add_parser("add", help="Add a knowledge entry")
     add_workspace_arg(p_add)
     p_add.add_argument("--title", required=True)
-    p_add.add_argument("--description", required=True)
+    add_description = p_add.add_mutually_exclusive_group(required=True)
+    add_description.add_argument("--description")
+    add_description.add_argument("--description-file", help="Read a UTF-8 description file, or '-' for stdin.")
+    p_add.add_argument("--dry-run", action="store_true", help="Validate and preview an entry without saving it.")
     code_group = p_add.add_mutually_exclusive_group()
     code_group.add_argument("--code", help="Inline code body (small snippets only)")
     code_group.add_argument("--code-file",
@@ -103,7 +108,9 @@ def register(sub: _SubParsersAction) -> None:
     add_workspace_arg(p_update)
     p_update.add_argument("entry_id")
     p_update.add_argument("--title", default=None)
-    p_update.add_argument("--description", default=None)
+    update_description = p_update.add_mutually_exclusive_group()
+    update_description.add_argument("--description", default=None)
+    update_description.add_argument("--description-file", help="Read a UTF-8 description file, or '-' for stdin.")
     update_code = p_update.add_mutually_exclusive_group()
     update_code.add_argument("--code", default=None, help="Replace the code body inline.")
     update_code.add_argument("--code-file", default=None,
@@ -518,8 +525,26 @@ def _read_code(args: Namespace) -> str | None:
     return Path(args.code_file).read_text(encoding="utf-8")
 
 
+def _read_description(args: Namespace) -> str | None:
+    path = getattr(args, "description_file", None)
+    if path is None:
+        return args.description
+    if path == "-":
+        if getattr(args, "code_file", None) == "-":
+            raise ValueError("Description and code cannot both read stdin in one command.")
+        return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
 def run(args: Namespace) -> int:
     store = KnowledgeStore()
+    try:
+        return _run_store(args, store)
+    finally:
+        store.close()
+
+
+def _run_store(args: Namespace, store: KnowledgeStore) -> int:
     action = args.action
 
     if action == "search":
@@ -563,10 +588,17 @@ def run(args: Namespace) -> int:
             return emit_error(str(exc), exit_code=EXIT_USAGE)
         if entry is None:
             return emit_error(f"Entry {args.entry_id} not found.", exit_code=EXIT_NOT_FOUND)
-        emit_json(_entry_to_dict(entry))
+        if args.text:
+            emit_raw(f"{entry.title}\n\n{entry.description}\n\n{entry.code}\n\n{entry.context}")
+        else:
+            emit_json(_entry_to_dict(entry))
         return EXIT_OK
 
     if action == "update":
+        try:
+            args.description = _read_description(args)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return emit_error(f"could not read description: {exc}", exit_code=EXIT_USAGE)
         try:
             code = _read_code(args)
         except (OSError, FileNotFoundError) as exc:
@@ -614,8 +646,9 @@ def run(args: Namespace) -> int:
 
     if action == "add":
         try:
+            args.description = _read_description(args)
             code = _read_code(args)
-        except (OSError, FileNotFoundError) as exc:
+        except (OSError, UnicodeError, ValueError) as exc:
             return emit_error(f"could not read code: {exc}", exit_code=EXIT_USAGE)
         snippet_type = args.snippet_type
         if code is None:
@@ -661,6 +694,9 @@ def run(args: Namespace) -> int:
                 emit_json({"added": False, "blocked": True, "warnings": warnings,
                            "message": "near-duplicate title; use `knowledge update <id>` or pass --force after review"})
                 return EXIT_USAGE
+        if getattr(args, "dry_run", False):
+            emit_json({"dry_run": True, "added": False, "entry": _entry_to_dict(entry), "warnings": warnings or []})
+            return EXIT_OK
         added = store.add_entry(entry)
         store.upsert_repo(args.source_repo,
                           args.source_file or args.source_repo,

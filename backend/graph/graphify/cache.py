@@ -14,6 +14,7 @@ from pathlib import Path
 # env var for worktrees or shared-output setups; accepts a relative path
 # (".waterfree/graphify-out-feature") or an absolute one ("/shared/graphify-out").
 _GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", ".waterfree/graphify-out")
+_AST_SCHEMA = 2  # typed symbols and GDScript extraction
 
 
 def _body_content(content: bytes) -> bytes:
@@ -249,6 +250,8 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
         # absolute-path shape that a fresh in-process extraction produces
         # (#777). Legacy entries with absolute source_file pass through.
         if isinstance(result, dict):
+            if kind == 'ast' and result.pop('_ast_schema', None) != _AST_SCHEMA:
+                return None
             _absolutize_source_files_in(result, root)
         return result
     # Migration fallback: check legacy flat cache/ dir for AST entries
@@ -260,6 +263,8 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
             except (json.JSONDecodeError, OSError):
                 return None
             if isinstance(result, dict):
+                if kind == 'ast' and result.pop('_ast_schema', None) != _AST_SCHEMA:
+                    return None
                 _absolutize_source_files_in(result, root)
             return result
     return None
@@ -294,6 +299,8 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         on_disk = _copy.deepcopy(result)
         _relativize_source_files_in(on_disk, root)
     h = file_hash(p, root)
+    if kind == 'ast' and isinstance(on_disk, dict):
+        on_disk = {**on_disk, '_ast_schema': _AST_SCHEMA}
     target_dir = cache_dir(root, kind)
     entry = target_dir / f"{h}.json"
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")

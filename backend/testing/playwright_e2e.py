@@ -140,7 +140,7 @@ class PlaywrightRunner:
         results = parse_playwright_json(raw.report)
         return TestRunResult(
             passed=sum(1 for r in results if r.passed),
-            failed=sum(1 for r in results if not r.passed),
+            failed=sum(1 for r in results if not r.passed and not r.skipped),
             results=results,
             raw_output=raw.console,
         )

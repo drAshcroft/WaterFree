@@ -14,6 +14,10 @@ from backend.llm.provider_profiles import (
 )
 
 
+class ProviderConstructionError(RuntimeError):
+    """A configured provider could not construct its model client."""
+
+
 @dataclass(frozen=True)
 class ProviderRuntimeSpec:
     provider_id: str
@@ -40,6 +44,7 @@ def build_runtime_spec(
     session_key: str,
     policies: ProviderPolicies,
     model_name_override: str = "",
+    workspace_path: str = "",
 ) -> ProviderRuntimeSpec:
     stage_key = normalize_stage_name(stage)
     model_name = model_name_override.strip() or profile.model_for_stage(stage_key)
@@ -78,10 +83,22 @@ def build_runtime_spec(
         elif provider_type == "gemini":
             gemini_opts = profile.optimizations.gemini
             config["enable_implicit_caching"] = bool(gemini_opts.get("enableImplicitCaching", True))
-        model = adapter.create_llm(model_name, config)
-        if provider_type == "anthropic" and isinstance(model, str):
-            # create_llm fell back to string — disable extended thinking
-            extended_thinking = False
+        from backend.llm.openrouter_catalog import is_auto_model
+        if is_auto_model(model_name):
+            if provider_type != "openrouter":
+                raise ProviderConstructionError("auto:free/auto:floor are only supported for OpenRouter.")
+            from backend.llm.auto_agent import build_auto_agent_model
+            model = build_auto_agent_model(profile, model_name, workspace_path=workspace_path)
+            metadata["routing_chain"] = [{"provider": target.provider_type, "model": target.model}
+                                         for target, _ in model.candidates]
+        else:
+            model = adapter.create_llm(model_name, config)
+        if model is None:
+            raise ProviderConstructionError(
+                f"Could not initialize provider '{profile.label}' ({provider_type}) "
+                f"for model '{model_name}'. Check its API key, endpoint, and installed "
+                "provider dependencies; the original cause is in the backend log."
+            )
 
     return ProviderRuntimeSpec(
         provider_id=profile.id,

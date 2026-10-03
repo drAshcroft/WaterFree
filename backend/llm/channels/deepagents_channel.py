@@ -73,6 +73,7 @@ class DeepAgentsChannel:
         self._usage_store = usage_store
         self._agents: dict[str, Any] = {}
         self._agent_usage_keys: dict[str, str] = {}
+        self._agent_models: dict[str, Any] = {}
         self._total_usage = UsageStats()
 
     def run(
@@ -107,13 +108,13 @@ class DeepAgentsChannel:
                 stage=stage,
                 persona=persona,
                 workspace_path=workspace_path,
-                session_key=session_key or workspace_path,
+                session_key=session_key,
                 provider_profile=resolved.profile,
                 runtime_name=resolved.runtime_name,
                 model_name=resolved.model_name,
             )
             if agent is None:
-                return ChannelResult(text="", usage=UsageStats())
+                raise RuntimeError(f"Provider '{resolved.profile.id}' did not create an agent.")
             self._agents[key] = agent
             self._agent_usage_keys[key] = usage_key
 
@@ -131,10 +132,13 @@ class DeepAgentsChannel:
                 stage,
                 exc,
             )
-            return ChannelResult(text="", usage=UsageStats())
+            raise RuntimeError(f"Agent request failed for provider '{resolved.profile.id}', stage '{stage}': {exc}") from exc
 
         text = _extract_text(result)
-        usage = self._extract_usage(result, resolved.profile.provider_kind())
+        model = self._agent_models.get(key)
+        requests = model.trace.snapshot() if hasattr(model, "trace") else []
+        winner = requests[-1] if requests else {"provider": resolved.profile.provider_kind(), "model": resolved.model_name}
+        usage = self._extract_usage(result, winner["provider"])
         self._total_usage = self._total_usage + usage
         log.info(
             "LLM call complete: lane=%s provider=%s stage=%s model=%s "
@@ -142,7 +146,7 @@ class DeepAgentsChannel:
             self._lane,
             resolved.profile.id,
             stage,
-            resolved.model_name,
+            winner["model"],
             usage.input_tokens,
             usage.output_tokens,
             usage.cache_creation_tokens,
@@ -154,8 +158,8 @@ class DeepAgentsChannel:
             self._usage_store.record(
                 usage_key,
                 usage,
-                provider_type=resolved.profile.provider_kind(),
-                model=resolved.profile.model_for_stage(stage),
+                provider_type=winner["provider"],
+                model=winner["model"],
                 persona=persona,
                 stage=stage,
             )
@@ -168,6 +172,7 @@ class DeepAgentsChannel:
         for key in to_drop:
             del self._agents[key]
             self._agent_usage_keys.pop(key, None)
+            self._agent_models.pop(key, None)
 
     def get_cumulative_usage(self) -> dict:
         return {"provider": self._lane, **self._total_usage.to_dict()}
@@ -215,9 +220,10 @@ class DeepAgentsChannel:
             runtime_name=runtime_name,
             stage=stage,
             persona=norm_persona,
-            session_key=session_key,
+            session_key=session_key or workspace_path,
             policies=self._provider_profiles.policies,
             model_name_override=model_name,
+            workspace_path=workspace_path,
         )
 
         kwargs: dict[str, Any] = {
@@ -233,7 +239,11 @@ class DeepAgentsChannel:
         self._attach_middleware(kwargs, stage=stage, spec=spec)
 
         try:
-            return self._da_factory(**kwargs), spec.usage_key
+            agent = self._da_factory(**kwargs)
+            key = self._agent_key(workspace_path=workspace_path, stage=stage, persona=persona,
+                                  session_key=session_key, provider_id=provider_profile.id)
+            self._agent_models[key] = spec.model
+            return agent, spec.usage_key
         except Exception as exc:
             log.warning(
                 "Failed to create agent (lane=%s provider=%s stage=%s): %s",
@@ -242,7 +252,10 @@ class DeepAgentsChannel:
                 stage,
                 exc,
             )
-            return None, spec.usage_key
+            raise RuntimeError(
+                f"Could not create agent for provider '{provider_profile.id}', "
+                f"model '{model_name}', stage '{stage}': {exc}"
+            ) from exc
 
     def _attach_middleware(self, kwargs: dict[str, Any], *, stage: str, spec) -> None:
         middlewares: list[Any] = []

@@ -60,6 +60,16 @@ blocked reason despite being ready.
 
 ## Updating a task — no JSON needed
 
+Explicit `--workspace` paths must name an existing directory. On Windows, use
+quoted paths or forward slashes (`C:/Projects/name`); drive-relative paths such
+as `C:Projectsname` are rejected instead of creating a stray task database.
+JSON `null` clears `blockedReason` and `phase` on update and import/upsert.
+
+For a compact survey, use `todos list --fields key,title,priority` or
+`todos get-ready --fields key,title,priority`. Counts and paging metadata remain.
+Set stable identifiers with `todos add --key KEY`; keys are separate from titles.
+Record any prerequisite new mechanic explicitly in rationale and acceptance criteria.
+
 Use discrete flags for the common writes — they sidestep shell-quoting problems:
 
 ```bash
@@ -103,5 +113,9 @@ waterfree todos delete <id|key>
 ```
 
 ## Exit codes
+
+`todos update <id> --quiet` emits a compact JSON receipt containing `id` and
+`status`, retaining the complete task and notes in storage. Use it for updates
+whose full description and note history would consume unnecessary context.
 
 `0` ok · `2` usage/validation · `3` task not found · `1` internal error.

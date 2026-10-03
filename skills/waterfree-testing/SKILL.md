@@ -40,6 +40,11 @@ commands also accept `--full` for cross-area CLI compatibility.
 - `--godot-path <exe>` — the Godot executable to use. See *Godot* below.
 
 ### Run all tests
+
+Unittest suites use a 900-second subprocess deadline. Set
+`WATERFREE_UNITTEST_TIMEOUT` to a positive number of seconds above all adapter
+startup/build/test/cleanup deadlines for slower suites. Timeouts return a failed
+result and retain partial stdout/stderr in the testing log.
 ```bash
 waterfree testing run --workspace .
 ```

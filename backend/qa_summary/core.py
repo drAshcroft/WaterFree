@@ -20,12 +20,13 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 
-from backend.llm.chat_client import ChatTarget, ChatUnavailable, chat, preflight, resolve_chat_target
+from backend.llm.chat_client import ChatTarget, ChatTrace, ChatUnavailable, chat, preflight, resolve_chat_target
 
 _STAGE = "qa_summary"
 # Used only when no provider claims the qa_summary stage, i.e. the local default.
@@ -354,6 +355,7 @@ def run_qa_summary(
         document=document,
         fallback_model=_DEFAULT_MODEL,
     )
+    target = replace(target, trace=ChatTrace())
     # One preflight per run rather than a failure on chunk 1 of N.
     preflight(target)
 
@@ -376,11 +378,21 @@ def run_qa_summary(
         file_or_url=file_or_url,
     )
 
+    requests = target.trace.snapshot()
+    # Chunk requests can use different fallbacks; the final request serves the
+    # returned answer. Preserve every winner and failed attempt alongside it.
+    final_route = requests[-1] if requests else {"model": target.model, "provider": target.provider_type}
     return {
         "source": file_or_url,
         "question": question,
-        "model": target.model,
-        "provider": target.provider_type,
+        "model": final_route["model"],
+        "provider": final_route["provider"],
+        "routing": {
+            "requested_model": target.model,
+            "requested_provider": target.provider_type,
+            "fallback_used": any(request["fallback"] for request in requests),
+            "requests": requests,
+        },
         "source_characters": len(source_text),
         "chunks_processed": total_chunks,
         "response": final_answer,

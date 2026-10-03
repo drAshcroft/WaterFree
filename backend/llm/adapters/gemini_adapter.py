@@ -19,8 +19,11 @@ Quirks
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+
+log = logging.getLogger(__name__)
 
 class GeminiAdapter:
     provider_type = "gemini"
@@ -36,8 +39,9 @@ class GeminiAdapter:
             if config.get("enable_implicit_caching", True):
                 kwargs["enable_implicit_caching"] = True
             return ChatGoogleGenerativeAI(**kwargs)
-        except Exception:
-            return f"gemini:{model_id}"
+        except Exception as exc:
+            log.warning("%s: failed to construct client for model %s: %s", self.provider_type, model_id, exc)
+            return None
 
     def extract_usage(self, response: Any) -> dict[str, int]:
         _zero: dict[str, int] = {

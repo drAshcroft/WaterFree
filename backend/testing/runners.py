@@ -11,6 +11,7 @@ remain after the MCP server scaffolding is removed.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -185,6 +186,8 @@ def _parse_unittest_output(raw: str) -> TestRunResult:
         if stripped.startswith("FAIL: ") or stripped.startswith("ERROR: "):
             fail_display = stripped.split(": ", 1)[1].strip()
             i += 1
+            while i < len(lines) and lines[i].startswith("-" * 10):
+                i += 1
             block: list[str] = []
             while i < len(lines) and not lines[i].startswith("=" * 10) and not lines[i].startswith("-" * 10):
                 block.append(lines[i])
@@ -199,11 +202,15 @@ def _parse_unittest_output(raw: str) -> TestRunResult:
 
     if not results:
         total = 0
+        skipped_count = 0
         failed_count = 0
         for line in lines:
             m = re.match(r"^Ran (\d+) test", line)
             if m:
                 total = int(m.group(1))
+            skip = re.search(r"skipped=(\d+)", line)
+            if skip:
+                skipped_count = int(skip.group(1))
             m2 = re.search(r"FAILED \((.+)\)", line)
             if m2:
                 groups = m2.group(1)
@@ -211,18 +218,50 @@ def _parse_unittest_output(raw: str) -> TestRunResult:
                 e_m = re.search(r"errors=(\d+)", groups)
                 failed_count = int(f_m.group(1) if f_m else 0) + int(e_m.group(1) if e_m else 0)
         return TestRunResult(
-            passed=total - failed_count,
+            passed=total - failed_count - skipped_count,
+            skipped=skipped_count,
             failed=failed_count,
             results=[],
             raw_output=raw,
         )
 
     passed = sum(1 for r in results if r.passed)
-    failed = sum(1 for r in results if not r.passed)
+    failed = sum(1 for r in results if not r.passed and not r.skipped)
     return TestRunResult(passed=passed, failed=failed, results=results, raw_output=raw)
 
 
 class UnittestRunner:
+    @staticmethod
+    def _timeout() -> int:
+        raw = os.environ.get("WATERFREE_UNITTEST_TIMEOUT", "900")
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError("WATERFREE_UNITTEST_TIMEOUT must be a positive number of seconds") from exc
+        if value <= 0:
+            raise ValueError("WATERFREE_UNITTEST_TIMEOUT must be a positive number of seconds")
+        return value
+
+    def _run(self, cmd: list[str], workspace_path: str) -> TestRunResult:
+        timeout = self._timeout()
+        try:
+            r = _run_command(cmd, workspace_path=workspace_path, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            def text(value):
+                return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+            raw = text(exc.stdout) + text(exc.stderr)
+            message = f"Unittest runner exceeded {timeout}s. Set WATERFREE_UNITTEST_TIMEOUT above the suite's startup, build and cleanup deadlines. Inspect retained logs and any adapter-owned child processes."
+            return TestRunResult(passed=0, failed=1,
+                                 results=[TestResult(name="unittest timeout", passed=False, error=message)],
+                                 raw_output=raw + '\n' + message)
+        raw = r.stdout + r.stderr
+        result = _parse_unittest_output(raw)
+        result.raw_output = raw
+        if r.returncode and not result.failed:
+            result.failed = 1
+            result.results.append(TestResult(name="unittest process", passed=False, error=f"Runner exited {r.returncode}: {raw}"))
+        return result
+
     def list_tests(self, workspace_path: str) -> list[str]:
         if _is_frozen():
             suite = _discover_unittest_suite(workspace_path)
@@ -238,16 +277,11 @@ class UnittestRunner:
         if _is_frozen():
             suite = _discover_unittest_suite(workspace_path)
             return _run_unittest_suite(suite)
-        r = _run_command(
+        return self._run(
             [sys.executable, "-m", "unittest", "discover",
              "-s", _start_dir(workspace_path), "-p", "test_*.py", "-v"],
-            workspace_path=workspace_path,
-            timeout=120,
+            workspace_path,
         )
-        raw = r.stdout + r.stderr
-        result = _parse_unittest_output(raw)
-        result.raw_output = raw
-        return result
 
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
         if _is_frozen():
@@ -266,23 +300,11 @@ class UnittestRunner:
                     raw_output=msg,
                 )
             return _run_unittest_suite(matched)
-        r = _run_command(
+        return self._run(
             [sys.executable, "-c", _UNITTEST_RUN_ONE_SCRIPT,
              _start_dir(workspace_path), name_substr],
-            workspace_path=workspace_path,
-            timeout=120,
+            workspace_path,
         )
-        raw = r.stdout + r.stderr
-        if r.returncode == 2:
-            msg = f"No tests found matching '{name_substr}'"
-            return TestRunResult(
-                passed=0, failed=1,
-                results=[TestResult(name=name_substr, passed=False, error=msg)],
-                raw_output=raw,
-            )
-        result = _parse_unittest_output(raw)
-        result.raw_output = raw
-        return result
 
 
 def _is_frozen() -> bool:
@@ -324,7 +346,8 @@ def _run_unittest_suite(suite: unittest.TestSuite) -> TestRunResult:
         total = result_obj.testsRun
         failed = len(result_obj.failures) + len(result_obj.errors)
         result = TestRunResult(
-            passed=total - failed,
+            passed=total - failed - len(result_obj.skipped),
+            skipped=len(result_obj.skipped),
             failed=failed,
             results=[],
             raw_output=raw,
@@ -365,7 +388,7 @@ def _parse_pytest_output(raw: str) -> TestRunResult:
                 return TestRunResult(passed=p, failed=f, results=[], raw_output=raw)
 
     passed = sum(1 for r in results if r.passed)
-    failed = sum(1 for r in results if not r.passed)
+    failed = sum(1 for r in results if not r.passed and not r.skipped)
     return TestRunResult(passed=passed, failed=failed, results=results, raw_output=raw)
 
 
@@ -447,7 +470,7 @@ def _parse_jest_json(raw: str) -> TestRunResult:
             ))
 
     passed = sum(1 for r in results if r.passed)
-    failed = sum(1 for r in results if not r.passed)
+    failed = sum(1 for r in results if not r.passed and not r.skipped)
     return TestRunResult(passed=passed, failed=failed, results=results, raw_output=raw)
 
 
@@ -516,7 +539,7 @@ def _parse_vitest_json(raw: str) -> TestRunResult:
             ))
 
     passed = sum(1 for r in results if r.passed)
-    failed = sum(1 for r in results if not r.passed)
+    failed = sum(1 for r in results if not r.passed and not r.skipped)
     return TestRunResult(passed=passed, failed=failed, results=results, raw_output=raw)
 
 

@@ -46,6 +46,37 @@ class KnowledgeCliTestCase(unittest.TestCase):
 
 
 class KnowledgeAddWithoutCodeTests(KnowledgeCliTestCase):
+    def test_description_file_dry_run_does_not_save_then_add_preserves_newlines(self):
+        path = self.db_path.parent / 'description.txt'
+        path.write_text('First paragraph.\n\nSecond paragraph.', encoding='utf-8')
+        argv = ['add', '--title', 'File-backed description', '--description-file', str(path), '--source-repo', 'demo']
+        code, draft, _ = self.run_cli([*argv, '--dry-run'])
+        self.assertEqual(code, EXIT_OK)
+        self.assertTrue(draft['dry_run'])
+        self.assertFalse(draft['added'])
+        self.assertIsNone(self.open_store().get_entry(draft['entry']['id']))
+        code, added, _ = self.run_cli(argv)
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(self.open_store().get_entry(added['id']).description, path.read_text(encoding='utf-8'))
+
+    def test_description_file_update_and_missing_file(self):
+        entry_id = self.add_prose('Description input test')
+        path = self.db_path.parent / 'description.txt'
+        path.write_text('Updated\nwith two lines.', encoding='utf-8')
+        code, _, _ = self.run_cli(['update', entry_id, '--description-file', str(path)])
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(self.open_store().get_entry(entry_id).description, path.read_text(encoding='utf-8'))
+        code, _, _ = self.run_cli(['update', entry_id, '--description-file', str(path.with_name('missing'))])
+        self.assertEqual(code, EXIT_USAGE)
+    def test_get_text_preserves_real_newlines(self) -> None:
+        entry_id = self.add_prose('Readable knowledge', 'First line\nSecond line')
+        out = io.StringIO()
+        with patch('backend.cli.knowledge.KnowledgeStore', self.open_store), redirect_stdout(out):
+            code = dispatch(['knowledge', 'get', entry_id, '--text'])
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn('First line\nSecond line', out.getvalue())
+        self.assertNotIn('First line\\nSecond line', out.getvalue())
+
     def test_prose_entry_needs_no_code_and_defaults_to_convention(self) -> None:
         entry_id = self.add_prose("Lesson: seed-if-empty ships to nobody")
 

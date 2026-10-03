@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field
 
 VERBS: tuple[str, ...] = (
-    "CLICK", "TYPE", "PRESS", "SCROLL", "WAIT", "BACK", "LOOK", "NOTE", "DONE", "STUCK",
+    "CLICK", "CLICKAT", "TYPE", "PRESS", "SCROLL", "WAIT", "BACK", "LOOK", "NOTE", "DONE", "STUCK",
 )
 SEVERITIES: tuple[str, ...] = ("high", "medium", "low", "note")
 MAX_WAIT_SECONDS = 5
@@ -49,11 +49,15 @@ class Action:
     severity: str = ""                  # NOTE severity
     seconds: int = 0                    # WAIT
     raw: str = field(default="", compare=False)
+    x: float = 0
+    y: float = 0
 
     def describe(self) -> str:
         """One line for logs and for the model's own history."""
         if self.verb in ("CLICK",):
             return f"CLICK {self.target}"
+        if self.verb == "CLICKAT":
+            return f"CLICK AT {self.x:g} {self.y:g}"
         if self.verb == "TYPE":
             return f'TYPE {self.target} "{self.text}"'
         if self.verb == "PRESS":
@@ -75,6 +79,7 @@ class Action:
 
 GRAMMAR_HELP = """Reply with exactly one action on one line. Nothing else.
   CLICK <n>                        click element number n
+  CLICK AT <x> <y>                 click a vision region in viewport pixels (canvas-only screens)
   TYPE <n> "text"                  type text into element n
   PRESS <key>                      Enter, Escape, Tab, Space, ArrowUp/Down/Left/Right, or a single character
   SCROLL up | SCROLL down          scroll the page
@@ -88,6 +93,7 @@ GRAMMAR_HELP = """Reply with exactly one action on one line. Nothing else.
 
 _QUOTED = r'"((?:[^"\\]|\\.)*)"'
 _RE_CLICK = re.compile(r"^CLICK\s+#?(\d+)\s*$", re.I)
+_RE_CLICK_AT = re.compile(r"^(?:CLICK\s+AT|CLICKAT)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*$", re.I)
 _RE_TYPE = re.compile(rf"^TYPE\s+#?(\d+)\s+{_QUOTED}\s*$", re.I)
 _RE_TYPE_BARE = re.compile(r"^TYPE\s+#?(\d+)\s+(\S.*?)\s*$", re.I)
 _RE_PRESS = re.compile(r"^PRESS\s+\"?([A-Za-z0-9+]+)\"?\s*$", re.I)
@@ -118,6 +124,10 @@ def _parse_line(line: str) -> Action | None:
     head = line.split(None, 1)[0].upper().rstrip(":")
     if head not in VERBS:
         return None
+
+    m = _RE_CLICK_AT.match(line)
+    if m:
+        return Action("CLICKAT", x=float(m.group(1)), y=float(m.group(2)), raw=line)
 
     m = _RE_CLICK.match(line)
     if m:

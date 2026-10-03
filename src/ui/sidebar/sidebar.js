@@ -105,6 +105,23 @@ const PERSONA_STAGE_OPTIONS = [
   { id: "knowledge", label: "Knowledge / Snippetize" },
 ];
 
+const READER_STAGE_OPTIONS = [
+  { id: "qa_summary", label: "File / URL summaries" },
+  { id: "tutorial", label: "Tutorial reader" },
+  { id: "testing", label: "Test result summaries" },
+  { id: "creative_writing", label: "Creative writing grades" },
+];
+const PROVIDER_STAGE_OPTIONS = PERSONA_STAGE_OPTIONS.concat(READER_STAGE_OPTIONS);
+
+function initialStageModels(type) {
+  const concrete = defaultModelsForProviderType(type).find(function(model) { return !model.startsWith("auto:"); }) || "";
+  const models = { default: concrete };
+  if (type === "openrouter") {
+    READER_STAGE_OPTIONS.forEach(function(stage) { models[stage.id] = "auto:free"; });
+  }
+  return models;
+}
+
 const MENU_ITEMS = [
   { id: "providers", label: "Providers" },
   { id: "mcp",       label: "MCP Servers" },
@@ -986,6 +1003,7 @@ function renderMcpPage() {
     const result = state.mcpSummaryResult;
     const metaHtml = [
       result.source ? '<span class="mode-pill">' + escapeHtml(result.source) + '</span>' : '',
+      result.provider ? '<span class="mode-pill">' + escapeHtml(result.provider) + '</span>' : '',
       result.model ? '<span class="mode-pill">' + escapeHtml(result.model) + '</span>' : '',
       typeof result.source_characters === "number"
         ? '<span class="mode-pill">' + escapeHtml(String(result.source_characters)) + ' chars</span>'
@@ -998,6 +1016,12 @@ function renderMcpPage() {
       '<div class="mcp-summary-result">',
       '<div class="usage-section-title">Latest Result</div>',
       metaHtml ? '<div class="mcp-summary-meta">' + metaHtml + '</div>' : '',
+      result.routing && result.routing.requests ? '<details><summary>Model routing' + (result.routing.fallback_used ? ' (fallback used)' : '') + '</summary><pre class="mcp-summary-output">'
+        + escapeHtml(result.routing.requests.map(function(request) {
+          return (request.attempts || []).map(function(attempt) {
+            return attempt.provider + '/' + attempt.model + (attempt.error ? ' — failed: ' + attempt.error : attempt.skipped ? ' — skipped: ' + attempt.skipped : ' — served');
+          }).join('\n');
+        }).join('\n\n')) + '</pre></details>' : '',
       '<div class="mcp-summary-output">' + renderMcpSummaryOutput(result.response || "") + '</div>',
       '</div>',
     ].join("");
@@ -1010,7 +1034,7 @@ function renderMcpPage() {
     '<span class="provider-name">Summary MCP Utility</span>',
     '<span class="provider-type">Try <code>qa_summary</code> with a filename and question.</span>',
     '</div>',
-    '<span class="mode-pill">Local Ollama</span>',
+    '<span class="mode-pill">Configured reader route</span>',
     '</div>',
     '<div class="field-group">',
     '<label class="field-label" for="mcp-summary-source">Source File</label>',
@@ -1052,6 +1076,21 @@ function renderProviderForm() {
   const supportsUrl = descriptor ? descriptor.supportsBaseUrl !== false : true;
   const keyPlaceholder = apiKeyPlaceholderForProviderType(f.type);
   const defaultUrl = defaultBaseUrlForProviderType(f.type);
+  const modelChoices = Array.from(new Set(defaultModelsForProviderType(f.type).concat(f.models || [], Object.values(f.stageModels || {}))));
+  const pickerOptions = modelChoices.map(function(model) {
+    return '<option value="' + escapeHtml(model) + '">' + escapeHtml(model === 'auto:free' ? 'Free first, then lowest price, then local' : model === 'auto:floor' ? 'Lowest price, then local' : model) + '</option>';
+  }).join('');
+  const routes = PROVIDER_STAGE_OPTIONS.map(function(stage) {
+    const checked = (f.useForStages || []).includes(stage.id);
+    const selected = (f.stageModels || {})[stage.id] || '';
+    const preview = (f.previews || {})[stage.id];
+    return '<div class="field-group">'
+      + '<label class="field-label"><input type="checkbox" data-provider-stage="' + stage.id + '"' + (checked ? ' checked' : '') + '> ' + escapeHtml(stage.label) + '</label>'
+      + '<input class="key-input" data-stage-model="' + stage.id + '" list="pf-model-options" aria-label="' + escapeHtml(stage.label) + ' model" placeholder="Provider default" value="' + escapeHtml(selected) + '">'
+      + (f.type === 'openrouter' && selected.startsWith('auto:') ? '<button type="button" data-action="previewAutoRoute" data-stage="' + stage.id + '">Preview route</button>' : '')
+      + (preview ? '<p class="hint">' + escapeHtml(preview.error || (preview.chain || []).map(function(link) { return link.provider + '/' + link.model; }).join(' → ')) + '</p>' : '')
+      + '</div>';
+  }).join('');
 
   return [
     '<div class="provider-form">',
@@ -1075,9 +1114,12 @@ function renderProviderForm() {
       '<input type="text" id="pf-url" class="key-input" value="' + escapeHtml(f.baseUrl || defaultUrl) + '" placeholder="' + escapeHtml(defaultUrl || "https://api.example.com/v1") + '">',
       '</div>',
     ].join("") : "",
-    '<p class="hint" style="margin-top:12px">Provider setup only stores connection details. Persona prompts and model routing live in the Persona Studio page.</p>',
+    '<datalist id="pf-model-options">' + pickerOptions + '</datalist>',
+    '<div class="field-group"><label class="field-label">Default model</label><input id="pf-default-model" class="key-input" list="pf-model-options" value="' + escapeHtml((f.stageModels || {}).default || '') + '"></div>',
+    '<p class="hint">Check the stages this provider serves. Leave a model blank to use its default. Automatic OpenRouter routes try free or low-price models and then local Ollama; agent stages require tool support.</p>',
+    routes,
     '<div class="button-row" style="margin-top:12px">',
-    '<button type="button" class="primary" data-action="submitProvider">Save</button>',
+    '<button type="button" class="primary" data-action="submitProvider"' + ((f.useForStages || []).length ? '' : ' disabled') + '>Save</button>',
     '<button type="button" data-action="cancelProvider">Cancel</button>',
     '</div>',
     '</div>',
@@ -1317,6 +1359,8 @@ function wireSettingsForms() {
       }
       state.providerForm.type = t;
       state.providerForm.models = defaultModelsForProviderType(t);
+      state.providerForm.stageModels = initialStageModels(t);
+      state.providerForm.previews = {};
       render();
     });
   }
@@ -1326,6 +1370,24 @@ function wireSettingsForms() {
   if (keyInput) { keyInput.addEventListener("input", function(e) { state.providerForm.apiKey = e.target.value; }); }
   const urlInput = document.getElementById("pf-url");
   if (urlInput) { urlInput.addEventListener("input", function(e) { state.providerForm.baseUrl = e.target.value; }); }
+  const defaultModel = document.getElementById("pf-default-model");
+  if (defaultModel) { defaultModel.addEventListener('input', function(e) { state.providerForm.stageModels.default = e.target.value; }); }
+  document.querySelectorAll('[data-provider-stage]').forEach(function(input) {
+    input.addEventListener('change', function(e) {
+      const stage = e.target.getAttribute('data-provider-stage');
+      const stages = state.providerForm.useForStages;
+      state.providerForm.useForStages = e.target.checked ? Array.from(new Set(stages.concat(stage))) : stages.filter(function(item) { return item !== stage; });
+      render();
+    });
+  });
+  document.querySelectorAll('[data-stage-model]').forEach(function(input) {
+    input.addEventListener('change', function(e) {
+      const stage = e.target.getAttribute('data-stage-model');
+      state.providerForm.stageModels[stage] = e.target.value.trim();
+      delete state.providerForm.previews[stage];
+      render();
+    });
+  });
   const modelsText = document.getElementById("pf-models-text");
   if (modelsText) {
     modelsText.addEventListener("input", function(e) {
@@ -1600,6 +1662,7 @@ root.addEventListener("click", function(event) {
       name: providerTypeLabel("claude"),
       apiKey: "", baseUrl: defaultBaseUrlForProviderType("claude"),
       models: defaultModelsForProviderType("claude"),
+      stageModels: initialStageModels('claude'), useForStages: PERSONA_STAGE_OPTIONS.map(function(stage) { return stage.id; }), previews: {},
       enabled: true,
     };
     render();
@@ -1618,6 +1681,8 @@ root.addEventListener("click", function(event) {
         apiKey: "",
         baseUrl: provider.baseUrl || defaultBaseUrlForProviderType(provider.type),
         models: (provider.models || []).slice(),
+        stageModels: Object.assign({}, provider.stageModels || initialStageModels(provider.type)),
+        useForStages: (provider.useForStages || PERSONA_STAGE_OPTIONS.map(function(stage) { return stage.id; })).slice(), previews: {},
         enabled: provider.enabled,
       };
       render();
@@ -1662,6 +1727,7 @@ root.addEventListener("click", function(event) {
       apiKey: f.apiKey || "",
       baseUrl: f.baseUrl || "",
       models: (f.models && f.models.length > 0 ? f.models : defaultModelsForProviderType(f.type)),
+      stageModels: Object.fromEntries(Object.entries(f.stageModels).map(function(pair) { return [pair[0], pair[1] || f.stageModels.default]; })), useForStages: f.useForStages.slice(),
       enabled: f.enabled !== false,
     };
     if (f.mode === "add") {
@@ -1670,6 +1736,16 @@ root.addEventListener("click", function(event) {
       vscode.postMessage(Object.assign({ type: "updateProvider", id: f.id }, msg));
     }
     state.providerForm = null;
+    render();
+    return;
+  }
+
+  if (action === 'previewAutoRoute') {
+    const f = state.providerForm;
+    const stage = el.getAttribute('data-stage');
+    if (!f || f.type !== 'openrouter') { return; }
+    f.previews[stage] = { error: 'Loading current catalog…' };
+    vscode.postMessage({ type: 'previewAutoRoute', providerId: f.id || '', apiKey: f.apiKey || '', stage: stage, model: f.stageModels[stage] });
     render();
     return;
   }
@@ -1921,6 +1997,14 @@ window.addEventListener("message", function(event) {
     state.mcpSummaryResult = message.data || null;
     if (state.settingsOpen && state.settingsPage === "mcp") { render(); }
     return;
+  }
+
+  if (message.type === 'autoRoutePreview') {
+    const f = state.providerForm;
+    if (f && f.type === 'openrouter' && f.stageModels[message.stage] === message.model) {
+      f.previews[message.stage] = message.data;
+      render();
+    }
   }
   if (message.type === "qaSummaryError") {
     state.mcpSummaryLoading = false;

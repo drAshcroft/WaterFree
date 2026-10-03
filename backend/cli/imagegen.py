@@ -54,12 +54,22 @@ def register(sub: _SubParsersAction) -> None:
                         help="Where to write. Default: <workspace>/.waterfree/generated")
     p_make.add_argument("--hf-token", default="",
                         help="Hugging Face token for gated repos. Falls back to $HF_TOKEN.")
+    p_make.add_argument('--backend', choices=('diffusers', 'comfy'), default=None)
+    p_make.add_argument('--image', default=None, help='Input image for img2img (path relative to current directory).')
+    p_make.add_argument('--mask', default=None, help='Inpainting mask: white edits, black preserves. Requires --image.')
+    p_make.add_argument('--strength', type=float, default=None, help='Editing strength, greater than 0 and at most 1.')
+    p_make.add_argument('--lora', action='append', default=None, help='Repeat PATH=WEIGHT; local Diffusers file/repo or registered ComfyUI LoRA.')
+    p_make.add_argument('--comfy-url', default=None)
+    p_make.add_argument('--checkpoint', default=None, help='Registered ComfyUI checkpoint; required if more than one is available.')
+    p_make.add_argument('--timeout', type=float, default=None, help='ComfyUI job timeout in seconds.')
     add_workspace_arg(p_make)
 
     p_models = actions.add_parser("models", help="List presets and whether they fit this GPU")
     add_workspace_arg(p_models)
 
     p_status = actions.add_parser("status", help="Check that the backend is usable")
+    p_status.add_argument('--backend', choices=('diffusers', 'comfy'), default=None)
+    p_status.add_argument('--comfy-url', default=None)
     add_workspace_arg(p_status)
 
     p_init = actions.add_parser("init", help="Write .waterfree/imagegen.json with every setting")
@@ -101,13 +111,18 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "status":
-        usable, reason = backend.is_available()
-        config = load_config(workspace)
+        config = apply_overrides(load_config(workspace), backend=args.backend, comfy_url=args.comfy_url)
+        if config.backend == 'comfy':
+            from backend.imagegen import backend_comfy
+            usable, reason = backend_comfy.is_available(config)
+        else:
+            usable, reason = backend.is_available()
         emit_json({
             "usable": usable,
             "reason": reason,
             "gpuVramGb": round(available_vram_gb(), 1),
             "preset": config.preset,
+            "backend": config.backend,
             "outputDir": str(output_dir_for(config, workspace)),
         })
         return EXIT_OK if usable else EXIT_DEP_MISSING
@@ -139,6 +154,9 @@ def _make(args: Namespace, workspace: str) -> int:
         negative_prompt=args.negative_prompt,
         seed=args.seed,
         offload=args.offload,
+        backend=args.backend, image=args.image, mask=args.mask, strength=args.strength,
+        loras=args.lora, comfy_url=args.comfy_url, comfy_checkpoint=args.checkpoint,
+        comfy_timeout=args.timeout,
     )
     try:
         result = generate(

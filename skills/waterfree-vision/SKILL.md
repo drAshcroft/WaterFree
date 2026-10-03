@@ -126,8 +126,31 @@ waterfree imagegen unload
 
 ## Exit codes
 
+Multi-image requests budget their image patches against the model context and
+downscale further when needed. `WATERFREE_VISION_CONTEXT` controls the requested
+context (8192 tokens by default); keep it within your machine's memory budget.
+Comparison responses are advisory. Inspect images directly for acceptance and
+use focused crops when details are too small to establish overlap confidently.
+
 | Code | Meaning |
 |------|---------|
 | 0    | Analysis returned |
 | 2    | Usage error (unknown purpose, too many images) |
 | 4    | Model not downloaded, image unreadable, or Ollama unreachable |
+
+## Websites
+
+```bash
+waterfree vision web http://localhost:3000 --purpose ui
+waterfree vision web http://localhost:3000 --mobile --ready-selector "#app-ready"
+waterfree vision web http://localhost:3000 --capture-only
+```
+
+Desktop analysis uses a 1280x800 viewport. `--mobile` adds an independent
+390x844 capture and analysis. Viewport and full-page PNGs are retained under
+`.waterfree/vision-web`; full-page analysis requires `--full-page` so stitched
+pages are not mistaken for a single screen. `--output-dir` selects a destination.
+Navigation waits for DOM readiness, fonts, and 750ms settling; use
+`--ready-selector` for a SPA's meaningful ready state and `--wait-ms` to change
+settling time. `--timeout-ms` defaults to 30000. Capture requires Playwright
+and Chromium; image analysis still runs locally through Ollama.

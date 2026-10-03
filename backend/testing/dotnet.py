@@ -106,7 +106,7 @@ def parse_trx(text: str) -> list[TestResult]:
         if outcome in _SKIPPED_OUTCOMES:
             # Visible, but not counted as a failure — same treatment as a
             # skipped JUnit case in the Godot adapter.
-            results.append(TestResult(name=name, passed=True, error="skipped"))
+            results.append(TestResult(name=name, passed=False, error="skipped", skipped=True))
             continue
 
         passed = outcome == "passed"
@@ -271,7 +271,7 @@ class DotnetRunner:
 
         return TestRunResult(
             passed=sum(1 for r in results if r.passed),
-            failed=sum(1 for r in results if not r.passed),
+            failed=sum(1 for r in results if not r.passed and not r.skipped),
             results=results,
             raw_output=raw,
         )

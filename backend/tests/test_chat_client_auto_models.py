@@ -122,6 +122,32 @@ def _remote(model: str) -> ChatTarget:
 
 
 class ChainWalkTests(unittest.TestCase):
+    def test_harness_gated_models_are_not_retried_on_each_reader_chunk(self) -> None:
+        target = replace(_remote("v/gated:free"), alternates=(_remote("v/usable:free"),))
+        def fake(messages, *, target, **kwargs):
+            if target.model == "v/gated:free":
+                raise ChatUnavailable("HTTP 403 Gate Free Endpoints by Agentic Harness")
+            return "answer"
+        with mock.patch.object(chat_client, "_chat_once", side_effect=fake) as call:
+            for _ in range(3):
+                self.assertEqual(chat_client.chat([], target=target, max_tokens=10), "answer")
+        self.assertEqual(call.call_count, 4)
+        requests = target.trace.snapshot()
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(requests[1]["attempts"][0]["skipped"])
+        self.assertEqual(requests[0]["model"], "v/usable:free")
+        self.assertNotIn("sk-or-test", str(requests))
+
+    def test_rate_limits_remain_retryable_on_later_requests(self) -> None:
+        target = replace(_remote("v/free:free"), alternates=(_remote("v/cheap"),))
+        with mock.patch.object(chat_client, "_chat_once", side_effect=[
+            ChatUnavailable("HTTP 429"), "first", "second",
+        ]) as call:
+            chat_client.chat([], target=target, max_tokens=10)
+            chat_client.chat([], target=target, max_tokens=10)
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(target.trace.snapshot()[-1]["model"], "v/free:free")
+
     def test_chat_falls_through_to_the_next_candidate(self) -> None:
         target = _remote("v/free-a:free")
         target = replace(target, alternates=(_remote("v/cheap"),))

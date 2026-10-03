@@ -89,6 +89,18 @@ export interface AcpSubagentDriverOptions {
     touchedFiles?: string[];
   };
   log?: (message: string) => void;
+  recordDelegation?: (event: DelegationCheckpointEvent) => Promise<{ checkpoint: { id: string } }>;
+}
+
+export interface DelegationCheckpointEvent {
+  workspacePath: string;
+  state: "started" | "finished";
+  checkpointId?: string;
+  agentId: string;
+  prompt?: string;
+  model?: string;
+  taskId?: string;
+  result?: DelegationResult | { ok: false; failureReason: string };
 }
 
 /**
@@ -193,6 +205,32 @@ export class AcpSubagentDriver {
    * failed turn's context, and the agent has no partial state worth resuming.
    */
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
+    request = { ...request, taskId: request.taskId ?? `acp-${++this._counter}` };
+    const record = this._options.recordDelegation;
+    const audit = await record?.({
+      workspacePath: request.workspacePath, state: "started", agentId: request.agentId,
+      prompt: request.prompt, model: request.model ?? this._options.registry.get(request.agentId)?.model,
+      taskId: request.taskId,
+    });
+    let result: DelegationResult | undefined;
+    try {
+      result = await this._delegateAttempts(request);
+      if (audit && record) {
+        await record({ workspacePath: request.workspacePath, state: "finished",
+          agentId: request.agentId, checkpointId: audit.checkpoint.id, result });
+      }
+      return result;
+    } catch (error) {
+      if (!result && audit && record) {
+        await record({ workspacePath: request.workspacePath, state: "finished",
+          agentId: request.agentId, checkpointId: audit.checkpoint.id,
+          result: { ok: false, failureReason: (error as Error).message } });
+      }
+      throw error;
+    }
+  }
+
+  private async _delegateAttempts(request: DelegationRequest): Promise<DelegationResult> {
     const maxAttempts = Math.max(1, request.maxAttempts ?? 1);
     let result = await this._attempt(request);
     let attempts = 1;

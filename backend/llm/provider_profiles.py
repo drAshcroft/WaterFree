@@ -445,7 +445,7 @@ def normalize_provider_entry(raw: Any, fallback_id: str) -> ProviderProfile | No
         style=normalize_connection_style(provider_type, connection_raw.get("style"), base_url),
         base_url=base_url,
         secret_ref=str(connection_raw.get("secretRef", "") or f"waterfree.provider.{provider_id}.key").strip(),
-        api_key=str(connection_raw.get("apiKey", "") or "").strip(),
+        api_key=str(connection_raw.get("apiKey", connection_raw.get("api_key", "")) or "").strip(),
     )
     models = normalize_stage_models(provider_type, raw.get("models"))
     routing_raw = raw.get("routing", {}) if isinstance(raw.get("routing"), dict) else {}

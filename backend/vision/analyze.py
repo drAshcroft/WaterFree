@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("WATERFREE_VISION_TIMEOUT", "300"))
 # Vision models on a 12 GB card are slow to load; keeping one resident between
 # calls is the difference between a 4-second and a 40-second second image.
 KEEP_ALIVE = os.environ.get("WATERFREE_VISION_KEEP_ALIVE", "15m")
+CONTEXT_TOKENS = int(os.environ.get("WATERFREE_VISION_CONTEXT", "8192"))
 
 
 class VisionError(RuntimeError):
@@ -87,6 +89,20 @@ def analyze(
 
     prepared = [prepare_image(path) for path in image_paths]
     prompt = _build_prompt(resolved_purpose, question, prepared)
+    # Qwen image tokens use approximately one token per 28x28 pixel patch.
+    # Leave headroom for wrappers, prompt text, and generated output.
+    overhead = (len(prompt) + len(resolved_purpose.system)) // 3 + 1536
+    image_budget = CONTEXT_TOKENS - overhead
+    image_tokens = sum(((p.width + 27) // 28) * ((p.height + 27) // 28) for p in prepared)
+    estimated_tokens = image_tokens + overhead
+    if estimated_tokens > CONTEXT_TOKENS:
+        if image_budget <= 0:
+            raise VisionError("Prompt leaves no image context. Shorten the question or increase WATERFREE_VISION_CONTEXT.")
+        # A safety margin accommodates patch rounding and model wrappers.
+        edge = int(MAX_EDGE_PX * math.sqrt(image_budget / image_tokens) * 0.85)
+        if edge < 128:
+            raise VisionError("Image context is too small for legible comparison. Compare fewer images or increase WATERFREE_VISION_CONTEXT.")
+        prepared = [prepare_image(path, max_edge=edge) for path in image_paths]
 
     kwargs = {"base": base} if base else {}
     try:
@@ -99,6 +115,7 @@ def analyze(
             images=[item.b64 for item in prepared],
             timeout=timeout,
             keep_alive=KEEP_ALIVE,
+            options={"num_ctx": CONTEXT_TOKENS},
             **kwargs,
         )
     except ollama_client.OllamaError as exc:
@@ -109,6 +126,7 @@ def analyze(
         "model": model_id,
         "question": question.strip() or resolved_purpose.default_question,
         "answer": answer.strip(),
+        "advisory": resolved_purpose.key in ("compare", "triage", "ui"),
         "images": [
             {
                 "path": item.path,
@@ -133,7 +151,7 @@ def _build_prompt(purpose: Purpose, question: str, prepared: list[PreparedImage]
     return f"{ask}\n\nThe images, in order:\n{listing}"
 
 
-def prepare_image(path: str) -> PreparedImage:
+def prepare_image(path: str, *, max_edge: int | None = None) -> PreparedImage:
     """Validate, downscale, and base64-encode one image."""
     resolved = Path(path).expanduser()
     if not resolved.exists():
@@ -168,8 +186,9 @@ def prepare_image(path: str) -> PreparedImage:
         raise VisionError(f"Could not read {resolved.name}: {exc}") from exc
 
     longest = max(original_width, original_height)
-    if longest > MAX_EDGE_PX:
-        scale = MAX_EDGE_PX / float(longest)
+    edge_limit = MAX_EDGE_PX if max_edge is None else max_edge
+    if longest > edge_limit:
+        scale = edge_limit / float(longest)
         target = (max(1, int(original_width * scale)), max(1, int(original_height * scale)))
         from PIL import Image as _Image  # noqa: PLC0415
 

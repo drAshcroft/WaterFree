@@ -6,7 +6,8 @@ requiresOllama: false
 
 # WaterFree — Image Generation
 
-Generates images locally through `diffusers`. Nothing is sent to a hosted API.
+Generates through local Diffusers or a configured ComfyUI HTTP endpoint.
+Inputs are sent to that endpoint when `--backend comfy` is selected.
 
 Each invocation is a short shell command — run it in whatever shell you have.
 All commands emit JSON to stdout; the images land on disk.
@@ -27,6 +28,7 @@ waterfree imagegen models     # presets, disk cost, and what fits this GPU
 `status` exits **4** with the fix if something is missing. Requirements:
 `diffusers`, `accelerate`, `sentencepiece`, `protobuf`, plus a CUDA-capable
 PyTorch. CPU generation is deliberately not supported — it is minutes per image.
+LoRA loading also requires `peft` in that same Python environment.
 
 **Weights download on first use** (7–24 GB depending on preset) into the
 Hugging Face cache, not the workspace. SD3.5 and FLUX are *gated*: accept the
@@ -113,7 +115,37 @@ waterfree imagegen make "app icon, flat, blue" -n 4
 waterfree vision look .waterfree/generated/*.png --purpose compare
 ```
 
-## Exit codes
+## Editing, LoRAs and ComfyUI
+
+```bash
+waterfree imagegen make "a red sailboat" --image boat.png --strength 0.65
+waterfree imagegen make "a lake background" --image boat.png --mask background.png --strength 0.8
+waterfree imagegen make "misty forest" --preset sdxl --lora C:/models/style.safetensors=0.7
+waterfree imagegen status --backend comfy --comfy-url http://127.0.0.1:8188
+waterfree imagegen make "a toy boat" --backend comfy --preset sdxl-turbo --checkpoint sd_xl_turbo_1.0_fp16.safetensors
+```
+
+Input paths are relative to the current directory. Images resize to the requested
+dimensions; masks resize with nearest-neighbor sampling. White edits, black
+preserves. Strength must be greater than zero and at most one. Repeat
+`--lora PATH=WEIGHT` to combine adapters. Diffusers also accepts Hub repo IDs.
+Unsupported pipeline conversions report an error. Sidecars retain mode, input
+paths and SHA-256 hashes, adapter weights and resolved settings.
+
+ComfyUI must be running and the checkpoint/LoRAs registered in its configured
+model folders. Choose the matching preset for steps and guidance. Select
+`--checkpoint` when multiple checkpoints exist. The same editing flags work
+with this backend. `--timeout` bounds job polling and reports the job ID on
+timeout; it does not interrupt other users' jobs. The client needs no local
+CUDA or Diffusers for ComfyUI. ComfyUI CFG=1 corresponds to Diffusers guidance=0;
+sidecars record the effective CFG.
+
+Diffusers emits progress JSON on stderr with observed cache byte growth and
+incomplete-file sizes; unknown totals remain null. Stdout remains one result
+JSON. Set `WATERFREE_IMAGEGEN_PROGRESS=0` to disable progress and
+`HF_HUB_OFFLINE=1` for cached-only operation.
+
+### Exit codes
 
 | Code | Meaning |
 |------|---------|

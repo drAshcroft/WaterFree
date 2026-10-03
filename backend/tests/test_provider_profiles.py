@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from backend.llm.channels.deepagents_channel import DeepAgentsChannel
 from backend.llm.provider_factory import build_runtime_spec, extract_usage
@@ -139,7 +140,8 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(resolved.profile.id, "claude-cheap")
         self.assertEqual(resolved.model_name, "claude-sonnet-4-6")
 
-    def test_openai_runtime_spec_preserves_cache_metadata_and_usage_extraction(self) -> None:
+    @mock.patch("backend.llm.adapters.openai_adapter.OpenAIAdapter.create_llm", return_value=object())
+    def test_openai_runtime_spec_preserves_cache_metadata_and_usage_extraction(self, adapter) -> None:
         profile = default_provider_profile_document("openai").catalog[0]
         spec = build_runtime_spec(
             profile,
@@ -180,7 +182,8 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(groq.model_for_stage("planning"), "llama-3.3-70b-versatile")
         self.assertEqual(groq.model_for_stage("annotation"), "llama-3.1-8b-instant")
 
-    def test_channel_create_agent_handles_current_summarization_api(self) -> None:
+    @mock.patch("backend.llm.adapters.anthropic_adapter.AnthropicAdapter.create_llm", return_value=object())
+    def test_channel_create_agent_handles_current_summarization_api(self, adapter) -> None:
         profile = default_provider_profile_document("claude")
         channel = DeepAgentsChannel(
             provider_lane="deep_agents",

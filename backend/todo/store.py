@@ -875,9 +875,9 @@ class TaskStore:
         if "priority" in patch:
             task.priority = parse_enum(TaskPriority, patch["priority"], field="priority")
         if "phase" in patch:
-            task.phase = str(patch["phase"]).strip() or None
+            task.phase = str(patch["phase"] or "").strip() or None
         if "blockedReason" in patch:
-            task.blocked_reason = str(patch["blockedReason"]).strip() or None
+            task.blocked_reason = str(patch["blockedReason"] or "").strip() or None
         if "owner" in patch:
             task.owner = self._owner_from_input(patch["owner"] or {})
         if "taskType" in patch:

@@ -16,11 +16,13 @@ tester who cannot work out what to do next has found something.
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.llm import ollama_client
 from backend.qa import models, vision_check
+from backend.qa.canvas_regions import describe_regions
 from backend.qa.actions import Action, ParseError, parse
 from backend.qa.browser import Observation, Session
 from backend.qa.findings import Finding, RunLog
@@ -92,6 +94,7 @@ class Driver:
         model: str = "",
         base: str = "",
         chat=None,
+        canvas_reader=None,
     ) -> None:
         self.session = session
         self.log = run_log
@@ -101,6 +104,8 @@ class Driver:
         self.base = base
         # Injectable so the loop is testable without Ollama.
         self._chat = chat or self._ollama_chat
+        self._canvas_reader = canvas_reader or describe_regions
+        self._canvas_cache = {}
         self.model = model or models.resolve_model(tier=models.DEFAULT)
         self._tier = models.DEFAULT
 
@@ -153,12 +158,25 @@ class Driver:
 
             shot = self.log.next_shot_path(f"step{step:02d}")
             screenshot_name = self.session.screenshot(shot)
+            visual_regions = ""
+            screen_digest = snapshot.digest
+            if snapshot.is_canvas_only and self.caps.vision_every > 0:
+                screenshot_b64 = self.session.screenshot_b64()
+                screen_digest = hashlib.sha256(screenshot_b64.encode("ascii")).hexdigest()
+                if screen_digest not in self._canvas_cache:
+                    regions = self._canvas_reader(screenshot_b64, snapshot.viewport, base=self.base, goal=self.brief.goal)
+                    self._canvas_cache = {screen_digest: regions}
+                    self.vision_checks += 1
+                    self.log.event("canvas_regions", step=step, model=regions.model,
+                                   description=regions.description, regions=regions.regions, error=regions.error)
+                visual_regions = self._canvas_cache[screen_digest].render()
 
             user = turn_prompt(
                 self.brief, snapshot, self._history,
                 previous=previous, step=step,
                 steps_left=self.caps.steps - step,
                 error=error_note,
+                visual_regions=visual_regions,
             )
             error_note = ""
 
@@ -188,7 +206,11 @@ class Driver:
             # Loop detection before execution: repeating a no-op action on an
             # unchanged screen is the classic small-model failure, and it is
             # cheaper to stop than to spend the remaining budget on it.
-            key = (action.describe(), snapshot.digest)
+            if action.verb == "CLICKAT" and ("CLICK" in self.persona.forbid or "CLICKAT" in self.persona.forbid):
+                error_note = "Coordinate clicks are forbidden for this persona. Use keyboard actions."
+                self._remember(step, action, error_note)
+                continue
+            key = (action.describe(), screen_digest)
             self._loop_counts[key] = self._loop_counts.get(key, 0) + 1
             if self._loop_counts[key] >= LOOP_LIMIT and not action.is_terminal:
                 return self._finish(

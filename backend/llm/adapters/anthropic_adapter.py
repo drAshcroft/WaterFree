@@ -1,8 +1,11 @@
 """Anthropic/Claude provider adapter."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+
+log = logging.getLogger(__name__)
 
 class AnthropicAdapter:
     provider_type = "anthropic"
@@ -26,8 +29,9 @@ class AnthropicAdapter:
                 stream_usage=True,
                 **({"model_kwargs": model_kwargs} if model_kwargs else {}),
             )
-        except Exception:
-            return f"anthropic:{model_id}"
+        except Exception as exc:
+            log.warning("%s: failed to construct client for model %s: %s", self.provider_type, model_id, exc)
+            return None
 
     def extract_usage(self, response: Any) -> dict[str, int]:
         return _extract(response, use_openai_cache=False)

@@ -17,7 +17,7 @@ from backend.testing.npm_scripts import (
     NpmScriptRunner,
     is_npm_scripts_project,
     parse_script_output,
-    test_scripts,
+    test_scripts as discover_scripts,
 )
 
 
@@ -36,29 +36,29 @@ class ScriptDiscoveryTests(unittest.TestCase):
                 "test:a": "tsx src/tests/a.test.ts",
                 "test:b": "tsx src/tests/b.test.ts",
             })
-            self.assertEqual(test_scripts(tmp), ["test:a", "test:b"])
+            self.assertEqual(discover_scripts(tmp), ["test:a", "test:b"])
 
     def test_falls_back_to_a_bare_test_script(self) -> None:
         with TemporaryDirectory() as tmp:
             _write_package(Path(tmp), {"test": "node run-tests.js"})
-            self.assertEqual(test_scripts(tmp), ["test"])
+            self.assertEqual(discover_scripts(tmp), ["test"])
 
     def test_aggregate_only_project_reports_nothing_to_run(self) -> None:
         """A script that just chains missing siblings is not a suite."""
         with TemporaryDirectory() as tmp:
             _write_package(Path(tmp), {"test": "npm run a && npm run b"})
-            self.assertEqual(test_scripts(tmp), [])
+            self.assertEqual(discover_scripts(tmp), [])
 
     def test_handles_a_bom(self) -> None:
         with TemporaryDirectory() as tmp:
             (Path(tmp) / "package.json").write_text(
                 json.dumps({"scripts": {"test:x": "tsx x.ts"}}), encoding="utf-8-sig",
             )
-            self.assertEqual(test_scripts(tmp), ["test:x"])
+            self.assertEqual(discover_scripts(tmp), ["test:x"])
 
     def test_missing_package_json_is_not_an_error(self) -> None:
         with TemporaryDirectory() as tmp:
-            self.assertEqual(test_scripts(tmp), [])
+            self.assertEqual(discover_scripts(tmp), [])
 
 
 class DetectionTests(unittest.TestCase):

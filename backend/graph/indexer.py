@@ -63,11 +63,12 @@ _EXT_LANG: dict[str, str] = {
     ".jsx": "javascript",
     ".py":  "python",
     ".cs":  "csharp",
+    ".gd":  "gdscript",
 }
 
 _EXCLUDE_DIRS = {
     # Common
-    "node_modules", ".git", "dist", "build", "__pycache__",
+    "node_modules", ".git", ".claude", ".codex", ".agents", "dist", "build", "__pycache__",
     ".waterfree", ".venv", "venv", ".mypy_cache",
     ".pytest_cache", "coverage", ".next", "out", ".turbo",
     # .NET / C# build output
@@ -665,6 +666,17 @@ def parse_file(file_path: str, project: str, root_path: str) -> Optional[ParsedF
 
     if lang == "python":
         result = _extract_python(source, file_path, project, rel)
+    elif lang == "gdscript":
+        from backend.graph.gdscript import parse_symbols
+        result = ParsedFileResult(file_path, lang)
+        result.set_mod_prefix(_make_qn(project, rel))
+        for symbol in parse_symbols(source.decode("utf-8", errors="replace")):
+            result.symbols.append(RawSymbol(
+                symbol['label'], symbol['name'],
+                _make_qn(project, rel, symbol['qualified_name']), file_path,
+                symbol['line'], symbol['end_line'], symbol['body'],
+                {'extraction': 'lexical', 'call_confidence': 'inferred'},
+            ))
     elif lang == "csharp":
         result = _extract_csharp(source, file_path, project, rel)
     else:

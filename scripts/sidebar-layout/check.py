@@ -25,8 +25,8 @@ import tempfile
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SIDEBAR = REPO / "src" / "ui" / "sidebar"
 
-# VS Code will not drag a sidebar narrower than ~170px; 120 gives real headroom.
-WIDTHS = [340, 260, 220, 180, 150, 120]
+# Include 100px to guard the narrow quick-job selectors and MCP Browse row.
+WIDTHS = [340, 260, 220, 180, 150, 120, 100]
 
 # Stand-ins for the theme variables the real webview inherits from VS Code.
 # Without them every color resolves to nothing and buttons collapse to bare text,
@@ -77,12 +77,15 @@ SETTINGS_PAYLOAD = {
         "apiKeyPlaceholder": "sk-ant-api03-...",
         "defaultModels": ["claude-opus-4-6"],
         "requiresApiKey": True, "supportsBaseUrl": True,
-    }],
+    }, {"type": "openrouter", "label": "OpenRouter", "defaultBaseUrl": "https://openrouter.ai/api/v1",
+        "defaultModels": ["auto:free", "auto:floor", "openai/gpt-4o-mini"], "requiresApiKey": True}],
     "providers": [{
         "id": "p1", "type": "claude", "name": "Claude", "enabled": True,
         "models": ["claude-opus-4-6"], "baseUrl": "https://api.anthropic.com",
         "hasKey": True,
-    }],
+    }, {"id":"p2", "type":"openrouter", "name":"OpenRouter", "enabled":True,
+        "models":["auto:free","openai/gpt-4o-mini"], "hasKey":True,
+        "stageModels":{"default":"openai/gpt-4o-mini","testing":"auto:free"}, "useForStages":["coding"]}],
     "activeProviderId": "p1",
     "personaAssignments": [],
 }
@@ -151,6 +154,26 @@ def main() -> int:
                     nav.first.click()
                     page.wait_for_timeout(150)
                     check(name)
+                    if name == 'providers':
+                        page.locator("[data-action='editProvider'][data-provider-id='p2']").click()
+                        check('provider-auto-form')
+                        page.locator("[data-provider-stage='testing']").check()
+                        stage_model = page.locator("[data-stage-model='testing']")
+                        stage_model.fill('auto:floor')
+                        stage_model.dispatch_event('change')
+                        page.locator("[data-action='previewAutoRoute'][data-stage='testing']").click()
+                        preview = page.evaluate("window.__posted.filter(m=>m.type==='previewAutoRoute').at(-1)")
+                        if preview.get('model') != 'auto:floor' or preview.get('stage') != 'testing':
+                            failures.append(f'w={width} incorrect route preview payload: {preview}')
+                        post(page, {'type':'autoRoutePreview', 'stage':'testing', 'model':'auto:floor',
+                                    'data':{'chain':[{'provider':'openrouter','model':'vendor/test-model'}]}})
+                        if not page.locator('.hint').filter(has_text='vendor/test-model').count():
+                            failures.append(f'w={width} route preview did not render')
+                        check('provider-auto-preview')
+                        page.locator("[data-action='submitProvider']").click()
+                        saved = page.evaluate("window.__posted.filter(m=>m.type==='updateProvider').at(-1)")
+                        if not saved or saved.get('stageModels',{}).get('testing') != 'auto:floor' or 'testing' not in saved.get('useForStages',[]):
+                            failures.append(f'w={width} stage settings not saved: {saved}')
                     exit_state = page.evaluate(EXIT_REACHABLE_JS, width)
                     if exit_state != "ok":
                         failures.append(f"w={width} {name}: {exit_state}")

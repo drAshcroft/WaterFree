@@ -42,7 +42,7 @@ KEEP_ALIVE = os.environ.get("WATERFREE_QA_KEEP_ALIVE", "20m")
 TIMEOUT_SECONDS = int(os.environ.get("WATERFREE_QA_STEP_TIMEOUT", "120"))
 # Low temperature: we want the most likely action, not creativity. Persona
 # prompts supply the "human" variance instead.
-OPTIONS: dict = {"temperature": 0.2, "num_predict": 160}
+OPTIONS: dict = {"temperature": 0.2, "num_predict": 160, "num_ctx": 4096}
 
 
 class DriverModelMissing(RuntimeError):

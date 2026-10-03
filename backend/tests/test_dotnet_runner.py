@@ -56,8 +56,9 @@ class TrxParsingTests(unittest.TestCase):
     def test_counts_pass_fail_and_skip(self) -> None:
         results = parse_trx(TRX)
         self.assertEqual(len(results), 3)
-        self.assertEqual(sum(1 for r in results if r.passed), 2)  # pass + skip
-        self.assertEqual(sum(1 for r in results if not r.passed), 1)
+        self.assertEqual(sum(1 for r in results if r.passed), 1)
+        self.assertEqual(sum(1 for r in results if not r.passed and not r.skipped), 1)
+        self.assertEqual(sum(r.skipped for r in results), 1)
 
     def test_keeps_the_failure_message_and_stack(self) -> None:
         failed = next(r for r in parse_trx(TRX) if not r.passed)
@@ -74,7 +75,8 @@ class TrxParsingTests(unittest.TestCase):
 
     def test_skip_is_visible_but_not_a_failure(self) -> None:
         skipped = next(r for r in parse_trx(TRX) if r.name.endswith("PendingFeature"))
-        self.assertTrue(skipped.passed)
+        self.assertFalse(skipped.passed)
+        self.assertTrue(skipped.skipped)
         self.assertEqual(skipped.error, "skipped")
 
     def test_unknown_outcome_is_treated_as_a_failure(self) -> None:

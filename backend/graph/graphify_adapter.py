@@ -195,7 +195,7 @@ def to_store_nodes(
         if is_file_node:
             label = "Module"
         else:
-            label = _LABEL_MAP.get(raw_label.lower(), "Function")
+            label = _LABEL_MAP.get(str(node.get("symbol_kind") or raw_label).lower(), "Function")
 
         name = _clean_symbol_name(node.get("name") or raw_label or node_id or "unknown")
 
@@ -222,7 +222,7 @@ def to_store_nodes(
             "qualified_name": qualified_name,
             "file_path": source_file,
             "line": line,
-            "end_line": line,
+            "end_line": int(node.get("end_line") or line),
             "graphify_id": node_id,
             "metadata": {
                 "graphify_id": node_id,

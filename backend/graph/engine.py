@@ -294,6 +294,9 @@ class GraphEngine:
         project: str = "",
         **kwargs,
     ) -> dict:
+        # Retain legacy facade arguments rather than silently ignoring filters.
+        name_pattern = kwargs.pop("query", name_pattern)
+        label = kwargs.pop("node_type", label).capitalize()
         project = self._resolve(project)
         if not project:
             return {"results": [], "total": 0, "has_more": False, "limit": limit, "offset": offset}

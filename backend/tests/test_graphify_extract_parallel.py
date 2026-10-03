@@ -1,4 +1,6 @@
 import unittest
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +27,13 @@ class FakePool:
 
 
 class GraphifyExtractParallelTests(unittest.TestCase):
+    def test_extraction_progress_does_not_pollute_json_stdout(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            graphify_extract._extract_sequential([], [], Path('.'), total_files=100)
+        self.assertFalse(out.getvalue())
+        self.assertIn('AST extraction:', err.getvalue())
+
     def test_worker_future_exception_requests_sequential_fallback(self) -> None:
         future = FailingFuture()
         per_file: list[dict | None] = [None]

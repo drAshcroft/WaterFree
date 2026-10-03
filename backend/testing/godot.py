@@ -319,12 +319,13 @@ def parse_junit_xml(text: str) -> list[TestResult]:
 
             results.append(TestResult(
                 name=name,
-                passed=not failures,
+                passed=not failures and not skipped,
+                skipped=skipped and not failures,
                 error=error,
                 duration_ms=_seconds_to_ms(case.get("time")),
             ))
             if skipped and not failures:
-                # A skipped case is not a failure; keep it visible but passing.
+                # Visible separately from executed passes and failures.
                 results[-1].error = "skipped"
     return results
 
@@ -444,7 +445,7 @@ STRATEGIES = {"gdunit4": GdUnit4Strategy, "gut": GutStrategy}
 def _summarize(results: list[TestResult], raw: str) -> TestRunResult:
     return TestRunResult(
         passed=sum(1 for r in results if r.passed),
-        failed=sum(1 for r in results if not r.passed),
+        failed=sum(1 for r in results if not r.passed and not r.skipped),
         results=results,
         raw_output=raw,
     )

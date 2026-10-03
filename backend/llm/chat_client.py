@@ -26,9 +26,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from backend.llm import ollama_client
 from backend.llm.provider_profiles import (
@@ -79,6 +80,38 @@ class ChatUnavailable(RuntimeError):
     """
 
 
+class ChatTrace:
+    """Thread-safe, run-local routing evidence; never stores credentials."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests: list[dict] = []
+        self._gated: set[tuple[str, str, str]] = set()
+
+    @staticmethod
+    def _key(target: "ChatTarget") -> tuple[str, str, str]:
+        return target.provider_type, target.base_url, target.model
+
+    def gated(self, target: "ChatTarget") -> bool:
+        with self._lock:
+            return self._key(target) in self._gated
+
+    def record(self, attempts: list[dict], winner: "ChatTarget") -> None:
+        with self._lock:
+            self._requests.append({
+                "provider": winner.provider_type, "model": winner.model,
+                "fallback": len(attempts) > 1, "attempts": attempts,
+            })
+
+    def gate(self, target: "ChatTarget") -> None:
+        with self._lock:
+            self._gated.add(self._key(target))
+
+    def snapshot(self) -> list[dict]:
+        with self._lock:
+            return list(self._requests)
+
+
 @dataclass(frozen=True)
 class ChatTarget:
     """A fully-resolved destination for one reader stage.
@@ -95,6 +128,7 @@ class ChatTarget:
     base_url: str
     api_key: str
     alternates: tuple["ChatTarget", ...] = ()
+    trace: ChatTrace = field(default_factory=ChatTrace, compare=False, repr=False)
 
     @property
     def is_local(self) -> bool:
@@ -288,15 +322,25 @@ def chat(
     usually a short window rather than an exhausted quota.
     """
     links = target.chain()
-    if len(links) == 1:
-        return _chat_once(messages, target=links[0], max_tokens=max_tokens, timeout=timeout)
-
     problems: list[str] = []
+    attempts: list[dict] = []
     for link in links:
+        attempt = {"provider": link.provider_type, "model": link.model}
+        if target.trace.gated(link):
+            message = "Skipped: endpoint requires an agentic harness (earlier request in this run)."
+            attempts.append({**attempt, "ok": False, "error": message, "skipped": True})
+            problems.append(f"{link.describe()}: {message}")
+            continue
         try:
-            return _chat_once(messages, target=link, max_tokens=max_tokens, timeout=timeout)
+            answer = _chat_once(messages, target=link, max_tokens=max_tokens, timeout=timeout)
+            attempts.append({**attempt, "ok": True})
+            target.trace.record(attempts, link)
+            return answer
         except ChatUnavailable as exc:
             problems.append(f"{link.describe()}: {exc}")
+            attempts.append({**attempt, "ok": False, "error": str(exc)})
+            if "gate free endpoints by agentic harness" in str(exc).lower():
+                target.trace.gate(link)
             log.info("Falling through from %s: %s", link.describe(), exc)
     raise ChatUnavailable(
         "Every candidate model failed for this request. Tried:\n  " + "\n  ".join(problems)

@@ -31,6 +31,21 @@ def _target() -> ChatTarget:
 
 
 class GradeValidationTests(unittest.TestCase):
+    def test_abbreviations_and_quoted_manuscript_do_not_trigger_a_repair(self) -> None:
+        examples = (
+            'Mr. Smith’s voice, pacing, etc. make St. Louis feel vivid.',
+            'The line "He left. She stayed." gives the ending weight.',
+            "The line ‘Why?’ sharpens the narrator’s uncertainty.",
+            "A. Smith's phrasing is clear, e.g. in the final scene.",
+        )
+        for feedback in examples:
+            with self.subTest(feedback=feedback), mock.patch.object(
+                core, "_chat", return_value=_grade_payload(feedback=feedback)
+            ) as chat:
+                result = core._render_grade("story", target=_target(), evidence_mode=False)
+                self.assertEqual(chat.call_count, 1)
+                self.assertEqual(result["dimensions"]["interest"]["feedback"], feedback)
+
     def test_accepts_fenced_json_and_preserves_dimension_order(self) -> None:
         result = core._validate_grade(f"```json\n{_grade_payload()}\n```")
 

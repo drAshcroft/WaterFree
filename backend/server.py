@@ -162,12 +162,14 @@ from backend.handlers.runtime_handler import (
     handle_get_active_runtime,
     handle_set_active_runtime,
     handle_sync_provider_profile,
+    handle_preview_auto_route,
     handle_list_personas,
     handle_save_personas,
     handle_list_skills,
     handle_reload_skills,
     handle_get_skill_detail,
     handle_list_checkpoints,
+    handle_record_acp_delegation,
     handle_resume_checkpoint,
     handle_discard_checkpoint,
     handle_list_subagents,
@@ -374,14 +376,10 @@ class Server:
         """Store an already-normalized profile document for a workspace.
 
         Deliberately does NOT re-normalize via ``profile.to_dict()``. That
-        round-trip is lossy for secrets: ``provider_to_dict`` serializes the
-        connection key as ``api_key`` (dataclass field name) while
-        ``normalize_provider_entry`` reads ``apiKey``, so a key handed over by
-        the extension host was silently dropped here — leaving adapters to
-        construct their clients with an empty credential. Callers reach this
-        through ``normalize_provider_profile``, so the document is already
-        canonical; keeping secrets out of ``provider_to_dict`` also keeps them
-        out of ``profile_hash`` and any other serialization of the document.
+        round-trip used to lose secrets because serialization emitted
+        ``api_key`` while normalization only read ``apiKey``. Normalization now
+        accepts both, but callers already hand us a canonical document, so
+        preserve it directly and invalidate any cached runtime.
         """
         path = os.path.abspath(workspace_path)
         if not hasattr(self, "_provider_profiles"):
@@ -476,10 +474,12 @@ class Server:
         "reloadSkills":         handle_reload_skills,
         "getSkillDetail":       handle_get_skill_detail,
         "listCheckpoints":      handle_list_checkpoints,
+        "recordAcpDelegation":  handle_record_acp_delegation,
         "resumeCheckpoint":     handle_resume_checkpoint,
         "discardCheckpoint":    handle_discard_checkpoint,
         "getUsageStats":           handle_get_usage_stats,
         "getProviderCapabilities": handle_get_provider_capabilities,
+        "previewAutoRoute":      handle_preview_auto_route,
         "listSubagents":           handle_list_subagents,
         # ADR management
         "getADR":               handle_get_adr,

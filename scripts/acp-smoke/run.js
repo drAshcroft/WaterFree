@@ -92,12 +92,13 @@ function makeHost(workspace, permissionChoice, withTerminal, commandChoice) {
 }
 
 function makeDriver(mode, workspace, permissionChoice, extraEnv, opts) {
-  const { withTerminal = false, commandChoice = "allow" } = opts || {};
+  const { withTerminal = false, commandChoice = "allow", recordDelegation } = opts || {};
   let host;
   const driver = new AcpSubagentDriver({
     registry: makeCatalog(mode, workspace, extraEnv),
     createHost: () => (host = makeHost(workspace, permissionChoice, withTerminal, commandChoice)),
     log: () => {},
+    recordDelegation,
   });
   return { driver, getHost: () => host };
 }
@@ -345,6 +346,29 @@ async function main() {
       "⚠️ No reply: the model returned empty content after retries and any fallback providers.") !== undefined);
     check("ordinary prose passes", assessTurn("end_turn", "I updated the parser.") === undefined);
     check("prose mentioning http 200 passes", assessTurn("end_turn", "The endpoint returned HTTP 200.") === undefined);
+  }
+
+  console.log("\n[17] durable delegation audit callbacks");
+  {
+    const events = [];
+    const recordDelegation = async (event) => {
+      events.push(event);
+      return { checkpoint: { id: "audit-1" } };
+    };
+    const { driver } = makeDriver("ok", workspace, undefined, undefined, { recordDelegation });
+    const result = await driver.delegate({ agentId: "stub", prompt: "audit this", workspacePath: workspace });
+    check("audit begins before the delegation and finalizes afterward", events.length === 2 && events[0].state === "started" && events[1].state === "finished");
+    check("audit retains prompt and stable task id", events[0].prompt === "audit this" && events[0].taskId === result.taskId);
+    check("audit finalizes same checkpoint with actual result", events[1].checkpointId === "audit-1" && events[1].result === result);
+    driver.dispose();
+    const failed = makeDriver("ok", workspace, undefined, undefined, {
+      recordDelegation: async () => { throw new Error("audit store offline"); },
+    });
+    let rejected = false;
+    try { await failed.driver.delegate({ agentId: "stub", prompt: "blocked", workspacePath: workspace }); }
+    catch (error) { rejected = /audit store offline/.test(error.message); }
+    check("unrecorded execution fails before spawning the agent", rejected && failed.getHost() === undefined);
+    failed.driver.dispose();
   }
 
   console.log(`\n==== ${passed} passed, ${failed} failed ====`);

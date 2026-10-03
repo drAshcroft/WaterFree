@@ -6,6 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import type { ProviderStage } from "../security/WaterFreeProviders.js";
 
 export type CoordAnchorType = "create-at" | "modify" | "delete" | "read-only-context";
 
@@ -148,8 +149,9 @@ export type SidebarAction =
   | { type: "requestSettings" }
   | { type: "requestWizardStatus" }
   | { type: "runQaSummary"; fileOrUrl: string; question: string }
-  | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
-  | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; enabled: boolean }
+  | { type: "addProvider"; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; stageModels: Record<string, string>; useForStages: ProviderStage[]; enabled: boolean }
+  | { type: "updateProvider"; id: string; providerType: string; name: string; apiKey: string; baseUrl: string; models: string[]; stageModels: Record<string, string>; useForStages: ProviderStage[]; enabled: boolean }
+  | { type: "previewAutoRoute"; providerId: string; apiKey: string; model: string; stage: string }
   | { type: "savePersonaAssignments"; personaId: string; assignments: PersonaProviderAssignment[] }
   | { type: "removeProvider"; id: string }
   | { type: "toggleProvider"; id: string }
@@ -297,6 +299,10 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
 
   sendQaSummaryError(message: string): void {
     void this._view?.webview.postMessage({ type: "qaSummaryError", message });
+  }
+
+  sendAutoRoutePreview(stage: string, model: string, data: unknown): void {
+    void this._view?.webview.postMessage({ type: "autoRoutePreview", stage, model, data });
   }
 
   dispose(): void {
@@ -490,6 +496,8 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
           apiKey: String(message.apiKey ?? ""),
           baseUrl: String(message.baseUrl ?? ""),
           models: Array.isArray(message.models) ? message.models.map(String) : [],
+          stageModels: isRecord(message.stageModels) ? Object.fromEntries(Object.entries(message.stageModels).map(([key, value]) => [key, String(value)])) : {},
+          useForStages: Array.isArray(message.useForStages) ? message.useForStages.map(String) as ProviderStage[] : [],
           enabled: Boolean(message.enabled ?? true),
         });
         return;
@@ -503,9 +511,15 @@ export class PlanSidebarProvider implements vscode.WebviewViewProvider, vscode.D
             apiKey: String(message.apiKey ?? ""),
             baseUrl: String(message.baseUrl ?? ""),
             models: Array.isArray(message.models) ? message.models.map(String) : [],
+            stageModels: isRecord(message.stageModels) ? Object.fromEntries(Object.entries(message.stageModels).map(([key, value]) => [key, String(value)])) : {},
+            useForStages: Array.isArray(message.useForStages) ? message.useForStages.map(String) as ProviderStage[] : [],
             enabled: Boolean(message.enabled ?? true),
           });
         }
+        return;
+      case "previewAutoRoute":
+        this._actionEmitter.fire({ type: "previewAutoRoute", providerId: String(message.providerId ?? ""),
+          apiKey: String(message.apiKey ?? ""), model: String(message.model ?? ""), stage: String(message.stage ?? "") });
         return;
       case "savePersonaAssignments":
         if (typeof message.personaId === "string") {

@@ -168,7 +168,7 @@ class PlaywrightParsingTests(unittest.TestCase):
         )
 
     def test_reports_the_failure_message(self) -> None:
-        failed = [r for r in parse_playwright_json(self.REPORT) if not r.passed]
+        failed = [r for r in parse_playwright_json(self.REPORT) if not r.passed and not r.skipped]
         self.assertEqual(len(failed), 1)
         self.assertIn("locator not found", failed[0].error)
 
@@ -176,7 +176,8 @@ class PlaywrightParsingTests(unittest.TestCase):
         skipped = next(
             r for r in parse_playwright_json(self.REPORT) if "skipped on mobile" in r.name
         )
-        self.assertTrue(skipped.passed)
+        self.assertFalse(skipped.passed)
+        self.assertTrue(skipped.skipped)
 
     def test_malformed_report_yields_nothing(self) -> None:
         self.assertEqual(parse_playwright_json("<html>error</html>"), [])

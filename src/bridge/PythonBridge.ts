@@ -16,6 +16,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 
 import { PairLoggerLike } from "../logging/PairLogger.js";
+import type { DelegationCheckpointEvent } from "../acp/AcpSubagentDriver.js";
 
 export type NotificationHandler = (params: unknown) => void;
 
@@ -47,6 +48,7 @@ export type CheckpointInfo = {
   runtimeId: string;
   subagentId?: string;
   requiresApproval: boolean;
+  resumable?: boolean;
   summary: string;
   touchedFiles: string[];
   toolCalls: Array<{ serverId: string; toolName: string }>;
@@ -452,6 +454,10 @@ export class PythonBridge implements vscode.Disposable {
 
   getSkillDetail(skillId: string): Promise<{ markdown: string; references: string[]; scripts: string[] }> {
     return this.request("getSkillDetail", { skillId });
+  }
+
+  recordAcpDelegation(event: DelegationCheckpointEvent): Promise<{ checkpoint: CheckpointInfo }> {
+    return this.request("recordAcpDelegation", event);
   }
 
   listCheckpoints(

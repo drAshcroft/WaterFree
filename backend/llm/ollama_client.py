@@ -270,7 +270,7 @@ def pull(
         raise OllamaError(f"Pull of '{model}' failed: {exc}") from exc
 
 
-def has_model(model: str, base: str = _DEFAULT_BASE) -> bool:
+def has_model(model: str, base: str = _DEFAULT_BASE, *, strict: bool = False) -> bool:
     """True when `model` is already downloaded.
 
     Tag-aware: a bare name matches any tag, while an explicit tag must match
@@ -279,6 +279,8 @@ def has_model(model: str, base: str = _DEFAULT_BASE) -> bool:
     try:
         installed = [name.lower() for name in list_models(base=base)]
     except OllamaError:
+        if strict:
+            raise
         return False
     wanted = model.strip().lower()
     if ":" in wanted:

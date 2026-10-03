@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 from backend.knowledge.store import KnowledgeStore
+from backend.llm.checkpoints.store import CheckpointStore
 from backend.llm.personas import list_personas, reload_personas, save_persona_documents
 from backend.llm.provider_profiles import normalize_provider_profile
 from backend.llm.runtime_registry import (
@@ -39,6 +40,30 @@ def handle_sync_provider_profile(server, params: dict) -> dict:
     profile = normalize_provider_profile(params.get("profile", {}))
     profile_hash = server._set_provider_profile(workspace_path, profile)
     return {"ok": True, "profileHash": profile_hash}
+
+
+def handle_preview_auto_route(server, params: dict) -> dict:
+    """Catalog preview only: does not send completions or consume paid tokens."""
+    from backend.llm.adapters.openrouter_adapter import resolve_api_key
+    from backend.llm.openrouter_catalog import is_auto_model, load_models, select_candidates
+    from backend.llm.provider_profiles import ALL_PROVIDER_STAGES, READER_STAGES, DEFAULT_STAGE_MODELS
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    sentinel, stage = str(params.get("model", "")).strip(), str(params.get("stage", "")).strip()
+    if not is_auto_model(sentinel) or stage not in ALL_PROVIDER_STAGES:
+        raise ValueError("Choose an automatic model and a supported stage.")
+    document = server._get_provider_profile(workspace_path)
+    profile = next((p for p in document.catalog if p.id == params.get("providerId")), None)
+    if profile and profile.type != "openrouter":
+        raise ValueError("Automatic routing requires an OpenRouter provider.")
+    key = resolve_api_key(params.get("apiKey") or (profile.connection.api_key if profile else ""))
+    ids = select_candidates(load_models(workspace_path=workspace_path, api_key=key or "", force_refresh=True),
+                            sentinel=sentinel, require_tools=stage not in READER_STAGES)
+    fallback_env = "WATERFREE_QA_SUMMARY_MODEL" if stage in READER_STAGES else "WATERFREE_AGENT_FALLBACK_MODEL"
+    local = os.environ.get(fallback_env, DEFAULT_STAGE_MODELS["ollama"]["default"])
+    return {"model": sentinel, "stage": stage,
+            "chain": [{"provider": "openrouter", "model": model} for model in ids]
+                     + [{"provider": "ollama", "model": local}],
+            "note": "Catalog preview; endpoint and local-model availability are checked when a request runs."}
 
 
 def handle_list_personas(server, params: dict) -> dict:
@@ -109,14 +134,50 @@ def handle_get_skill_detail(server, params: dict) -> dict:
     return SkillRegistry(workspace_path).get_skill_detail(skill_id)
 
 
+def handle_record_acp_delegation(server, params: dict) -> dict:
+    workspace_path = os.path.abspath(params.get("workspacePath", "."))
+    if not os.path.isdir(workspace_path):
+        raise ValueError("workspacePath must name an existing directory.")
+    store = CheckpointStore(workspace_path)
+    try:
+        state = params.get("state")
+        if state == "started":
+            agent_id = str(params.get("agentId", "")).strip()
+            prompt = str(params.get("prompt", "")).strip()
+            if not agent_id or not prompt:
+                raise ValueError("agentId and prompt are required.")
+            checkpoint = store.create_checkpoint(
+                session_id=str(params.get("taskId", "")), reason="ACP delegation audit",
+                runtime_id="acp", subagent_id=agent_id, requires_approval=False,
+                summary=f"Delegation to {agent_id}", status="running",
+                payload={"mode": "audit", "agentId": agent_id, "prompt": prompt,
+                         "model": params.get("model", ""), "workspacePath": workspace_path},
+            )
+        elif state == "finished":
+            result = params.get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
+                raise ValueError("result must include a boolean ok field.")
+            checkpoint = store.finish_delegation(str(params.get("checkpointId", "")), result)
+        else:
+            raise ValueError("state must be started or finished.")
+        return {"checkpoint": checkpoint}
+    finally:
+        store.close()
+
+
 def handle_list_checkpoints(server, params: dict) -> dict:
     workspace_path = os.path.abspath(params.get("workspacePath", "."))
     session_id = str(params.get("sessionId", ""))
     runtime = server._get_runtime(workspace_path)
     list_checkpoints = getattr(runtime, "list_checkpoints", None)
-    if not callable(list_checkpoints):
-        return {"checkpoints": []}
-    checkpoints = list_checkpoints(workspace_path, session_id=session_id)
+    checkpoints = list_checkpoints(workspace_path, session_id=session_id) if callable(list_checkpoints) else []
+    store = CheckpointStore(workspace_path)
+    try:
+        known = {checkpoint["id"] for checkpoint in checkpoints}
+        checkpoints.extend(checkpoint for checkpoint in store.list_checkpoints(session_id)
+                           if checkpoint["runtimeId"] == "acp" and checkpoint["id"] not in known)
+    finally:
+        store.close()
     return {"checkpoints": checkpoints}
 
 
@@ -127,6 +188,13 @@ def handle_resume_checkpoint(server, params: dict) -> dict:
         raise ValueError("checkpointId is required")
     decision = dict(params.get("decision", {}))
     decision.setdefault("workspacePath", workspace_path)
+    store = CheckpointStore(workspace_path)
+    try:
+        checkpoint = store.get_checkpoint(checkpoint_id)
+        if checkpoint and not checkpoint["resumable"]:
+            raise ValueError("ACP audit records cannot be resumed; start a new delegation explicitly.")
+    finally:
+        store.close()
     runtime = server._get_runtime(workspace_path)
     return {"ok": True, "checkpoint": runtime.resume(checkpoint_id, decision)}
 
@@ -136,6 +204,13 @@ def handle_discard_checkpoint(server, params: dict) -> dict:
     checkpoint_id = str(params.get("checkpointId", "")).strip()
     if not checkpoint_id:
         raise ValueError("checkpointId is required")
+    store = CheckpointStore(workspace_path)
+    try:
+        checkpoint = store.get_checkpoint(checkpoint_id)
+        if checkpoint and checkpoint["runtimeId"] == "acp":
+            return {"ok": store.discard_checkpoint(checkpoint_id), "checkpointId": checkpoint_id}
+    finally:
+        store.close()
     runtime = server._get_runtime(workspace_path)
     discard = getattr(runtime, "discard", None)
     if not callable(discard):

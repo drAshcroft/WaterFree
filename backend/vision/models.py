@@ -154,7 +154,7 @@ PURPOSES: dict[str, Purpose] = {
         key="compare",
         tier=LARGE,
         summary="Differences between two or more images.",
-        system=_UI_SYSTEM,
+        system=_UI_SYSTEM + " Inspect each image independently before comparing. Describe visible overlap with its location. If detail is too small to establish overlap, say UNCERTAIN; do not conclude that no overlap exists. Your assessment is advisory and requires direct inspection for acceptance.",
         default_question=(
             "These images are versions of the same screen. List the concrete "
             "visual differences between them in order of significance, and say "
@@ -193,7 +193,7 @@ def resolve_model(purpose: Purpose, *, override: str = "", tier: str = "") -> st
 def ensure_available(model_id: str, *, base: str = "") -> None:
     """Raise with the pull command when `model_id` is not installed."""
     kwargs = {"base": base} if base else {}
-    if ollama_client.has_model(model_id, **kwargs):
+    if ollama_client.has_model(model_id, strict=True, **kwargs):
         return
     tier = next((t for t, m in REGISTRY.items() if m.model_id == model_id), "")
     size = f" (~{REGISTRY[tier].disk_gb} GB)" if tier else ""

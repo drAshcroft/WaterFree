@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict
+import hashlib
+import uuid
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from backend.imagegen import backend_diffusers as backend
@@ -41,15 +43,49 @@ def generate(
         raise ValueError(f"count must be between 1 and {MAX_BATCH}.")
 
     spec = config.merged()
-    backend.require_available()
+    # Validate input data before allocating a model or requesting any downloads.
+    from PIL import Image
+    for name in ('image', 'mask'):
+        path = getattr(spec, name)
+        if path:
+            try:
+                with Image.open(path) as source:
+                    source.verify()
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Invalid {name} file '{path}': {exc}") from exc
+    if spec.backend == 'diffusers':
+        import re as _re
+        for lora in spec.loras:
+            path = lora['path']
+            missing_local = Path(path).suffix.lower() in ('.safetensors', '.bin', '.pt', '.pth')
+            if not Path(path).is_file() and (missing_local or not _re.fullmatch(r'[\w.-]+/[\w.-]+', path)):
+                raise ValueError(f"LoRA file does not exist: {path}")
+    selected_backend = backend
+    if spec.backend == 'comfy':
+        from backend.imagegen import backend_comfy
+        selected_backend = backend_comfy
+        selected_backend.require_available(spec)
+    else:
+        selected_backend.require_available()
 
     destination = Path(output_dir).expanduser() if output_dir else output_dir_for(config, workspace_path)
     destination.mkdir(parents=True, exist_ok=True)
 
     started = time.time()
-    pipeline = backend.load_pipeline(spec, hf_token=hf_token)
+    pipeline = selected_backend.load_pipeline(spec, hf_token=hf_token)
+    if spec.backend == 'comfy':
+        spec = replace(spec, comfy_checkpoint=pipeline['checkpoint'])
     loaded = time.time()
-    images = backend.run_pipeline(pipeline, spec, text, count=count)
+    images = selected_backend.run_pipeline(pipeline, spec, text, count=count)
+    if len(images) != count:
+        raise backend.GenerationFailed(f"Backend returned {len(images)} images; expected {count}.")
+    if spec.mask:
+        from PIL import ImageOps
+        with Image.open(spec.image) as source:
+            original = ImageOps.exif_transpose(source).convert('RGB').resize((spec.width, spec.height))
+        with Image.open(spec.mask) as source:
+            mask = source.convert('L').resize(original.size, Image.Resampling.NEAREST)
+        images = [Image.composite(value.convert('RGB').resize(original.size), original, mask) for value in images]
     finished = time.time()
 
     stem = _stem(text, started)
@@ -96,10 +132,28 @@ def _metadata(prompt: str, spec: ResolvedGeneration, *, seed_offset: int) -> dic
         # the base seed on all of them would be a lie that wastes someone's time.
         "seed": spec.seed if (spec.seed >= 0 and seed_offset == 0) else None,
         "batchIndex": seed_offset,
+        "backend": spec.backend, "mode": spec.mode, "strength": spec.strength,
+        "inputs": {name: {"path": getattr(spec, name),
+                          "sha256": _file_hash(getattr(spec, name))}
+                   for name in ('image', 'mask') if getattr(spec, name)},
+        "loras": [{**lora, "sha256": _file_hash(lora['path'])} for lora in spec.loras],
+        **({"comfyUrl": spec.comfy_url, "checkpoint": spec.comfy_checkpoint,
+            "comfyCfg": spec.guidance if spec.guidance > 0 else 1.0} if spec.backend == 'comfy' else {}),
     }
+
+
+def _file_hash(path):
+    if not Path(path).is_file():
+        return None
+    digest = hashlib.sha256()
+    with open(path, 'rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _stem(prompt: str, timestamp: float) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", prompt.lower()).strip("-")[:_SLUG_MAX_CHARS].strip("-")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(timestamp))
-    return f"{stamp}_{slug}" if slug else stamp
+    # Concurrent requests in the same second must not overwrite earlier output.
+    return f"{stamp}_{slug}_{uuid.uuid4().hex[:8]}" if slug else f"{stamp}_{uuid.uuid4().hex[:8]}"

@@ -156,6 +156,9 @@ call `get <id>` for the one entry you chose — that keeps a search at a few
 hundred bytes per row instead of several KB.
 
 ### Get one entry
+
+Use `waterfree knowledge get <id> --text` for long prose or code bodies. It emits
+real newlines instead of JSON string escapes; omit `--text` for machine-readable JSON.
 ```bash
 waterfree knowledge get <entry-id>
 ```
@@ -238,6 +241,10 @@ waterfree knowledge stats
 ```
 
 ## Exit codes
+
+Descriptions can come from `--description-file <UTF-8 file>` (or `-` for stdin)
+on both add and update. Use `knowledge add --dry-run` to validate and preview
+without adding a knowledge entry; retain normal quality checks before saving.
 
 | Code | Meaning |
 |------|---------|

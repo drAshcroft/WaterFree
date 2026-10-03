@@ -20,12 +20,15 @@ Quirks
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from backend.llm.adapters.anthropic_adapter import _extract
 
 _DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+
+log = logging.getLogger(__name__)
 
 class QwenAdapter:
     provider_type = "qwen"
@@ -40,8 +43,9 @@ class QwenAdapter:
                 base_url=config.get("base_url") or _DASHSCOPE_BASE_URL,
                 stream_usage=bool(config.get("streamUsage", True)),
             )
-        except Exception:
-            return f"qwen:{model_id}"
+        except Exception as exc:
+            log.warning("%s: failed to construct client for model %s: %s", self.provider_type, model_id, exc)
+            return None
 
     def extract_usage(self, response: Any) -> dict[str, int]:
         return _extract(response, use_openai_cache=True)

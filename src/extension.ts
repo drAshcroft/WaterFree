@@ -190,6 +190,7 @@ export class WaterFreeController implements vscode.Disposable {
     this._acpAgents = new AcpAgentRegistry(_workspacePath);
     this._acpDriver = new AcpSubagentDriver({
       registry: this._acpAgents,
+      recordDelegation: (event) => this._bridge.recordAcpDelegation(event),
       log: (message) => this._log("acp", message),
       createHost: ({ spec, workspacePath }) =>
         new WorkspaceAcpClientHost({
@@ -2170,6 +2171,8 @@ export class WaterFreeController implements vscode.Disposable {
           name: action.name,
           baseUrl: action.baseUrl,
           models: action.models,
+          stageModels: action.stageModels,
+          useForStages: action.useForStages,
           enabled: action.enabled,
         }, action.apiKey);
         await this._syncProviderProfile({ restartBackend: true });
@@ -2181,9 +2184,23 @@ export class WaterFreeController implements vscode.Disposable {
           name: action.name,
           baseUrl: action.baseUrl,
           models: action.models,
+          stageModels: action.stageModels,
+          useForStages: action.useForStages,
           enabled: action.enabled,
         }, action.apiKey);
         await this._syncProviderProfile({ restartBackend: true });
+        return;
+      }
+      case "previewAutoRoute": {
+        try {
+          const result = await this._bridge.request<Record<string, unknown>>("previewAutoRoute", {
+            workspacePath: this._workspacePath, providerId: action.providerId,
+            apiKey: action.apiKey, model: action.model, stage: action.stage,
+          });
+          this._sidebarProvider.sendAutoRoutePreview(action.stage, action.model, result);
+        } catch (err) {
+          this._sidebarProvider.sendAutoRoutePreview(action.stage, action.model, { error: err instanceof Error ? err.message : String(err) });
+        }
         return;
       }
       case "savePersonaAssignments": {

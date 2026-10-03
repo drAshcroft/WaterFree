@@ -127,6 +127,8 @@ def run(args: Namespace) -> int:
         # discovery is a setup problem, not a test failure — keep it
         # distinguishable from "your tests are red", which is exit 1.
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
+    except ValueError as exc:
+        return emit_error(str(exc), exit_code=EXIT_USAGE)
 
 
 def _dispatch(runner, workspace: str, args: Namespace, action: str) -> int:
@@ -181,11 +183,13 @@ def _result_payload(result, workspace: str = "", args: Namespace | None = None) 
     payload = {
         "passed": result.passed,
         "failed": result.failed,
-        "total": result.passed + result.failed,
+        "skipped": result.skipped,
+        "total": result.passed + result.failed + result.skipped,
         "results": [
             {
                 "name": r.name,
                 "passed": r.passed,
+                "skipped": r.skipped,
                 "error": r.error,
                 "duration_ms": r.duration_ms,
             }
