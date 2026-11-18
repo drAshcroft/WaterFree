@@ -29,7 +29,7 @@ waterfree <area> <action> [--workspace <path>] [flags] [positional]
 ```
 
 - **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`,
-  `writing-grade`, `vision`, `imagegen`, `usage`
+  `writing-grade`, `vision`, `imagegen`, `meshgen`, `audiogen`, `animgen`, `gpu`, `usage`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
   every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
@@ -524,19 +524,32 @@ HTTP backend uses an existing server and its registered checkpoints/LoRAs.
 
 | Action    | Flags / args |
 |-----------|--------------|
-| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--backend {diffusers,comfy}`, `--image`, `--mask`, `--strength`, repeatable `--lora PATH=WEIGHT`, `--comfy-url`, `--checkpoint`, `--timeout`, `--workspace` |
+| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--backend {diffusers,comfy}`, `--image`, `--mask`, `--strength`, repeatable `--lora PATH=WEIGHT`, `--comfy-url`, `--checkpoint`, `--timeout`, `--comfy-free` (after the job, `POST /free` to a ComfyUI on this machine so the next GPU job finds the memory; `comfyFreeAfter` in imagegen.json; off by default), GPU queue flags, `--workspace` |
 | `models`  | `--workspace` |
 | `status`  | `--workspace`, `--backend`, `--comfy-url` |
+| `install` | `[PRESET ...\|all]` (default: the workspace's preset), `--hf-token`, `--workspace` |
 | `init`    | `--workspace` |
-| `unload`  | `--workspace` |
+| `unload`  | GPU queue flags, `--workspace` — same as `gpu evict` |
 
 Presets: `sd35-medium` (default, ~11 GB), `sdxl` (~7 GB), `sdxl-turbo` (~7 GB),
-`flux-schnell` (~24 GB, needs sequential offload on a 12 GB card). Settings
+`flux-schnell` (~24 GB, needs sequential offload on a 12 GB card). The VRAM
+preflight uses needs measured per (preset, offload) on an RTX 3060 12 GB
+(`MEASURED_VRAM_GB` in `backend/imagegen/generate.py`, 2026-11-18): sd35-medium
+model 10.3 / sequential 3.3; sdxl model 7.9 / sequential 3.4; sdxl-turbo none
+9.2 / model 5.6 / sequential 1.0. `--offload none` does not fit 12 GB for sdxl
+(spilled 3.2 GB) or sd35-medium (crashed) and is refused. Settings
 resolve in three layers, later winning: preset defaults → `.waterfree/imagegen.json`
 → CLI flags.
 
-Weights download to the Hugging Face cache on first use, not the workspace.
-SD3.5 and FLUX are gated repos: accept the licence and set `$HF_TOKEN`.
+**`make` never downloads.** Weights live in the Hugging Face cache and arrive
+through `imagegen install`, which fetches only what the pipeline loads and skips
+anything already cached. A preset that is not installed makes `status` and
+`make` exit `4` with the install command. SD3.5 and FLUX are gated repos:
+accept the licence and set `$HF_TOKEN` before installing.
+
+`make` takes the exclusive GPU lease (see "GPU scheduling"). Each invocation is
+its own process and frees its pipeline when done, so `unload` has nothing of its
+own to release; it makes room on the GPU instead.
 
 Images and a reproducibility sidecar `.json` are written to
 `<workspace>/.waterfree/generated`. A batch shares one generator, so only the
@@ -547,12 +560,206 @@ hashes, editing mode and LoRA weights. Diffusers load progress on stderr reports
 observed cache-byte growth with unknown totals left null. ComfyUI job timeouts
 report the job ID without interrupting another user's work.
 
+## GPU scheduling
+
+Implemented in `backend/gpu/`. One machine-wide lease coordinates every local
+GPU user, so two agents (or an agent and a person) can run GPU commands at once
+without one OOM-crashing the other or silently spilling into system RAM.
+
+- **exclusive** — `imagegen make`, `meshgen make`, `audiogen design|speak|sfx`,
+  `animgen make`, `gpu run`, `gpu evict`. One holder. After taking it the command unloads
+  resident Ollama models and checks free VRAM (`nvidia-smi`) against the job's
+  measured need, refusing (exit `4`) rather than starting a job that would spill.
+- **shared** — every Ollama-backed area (vision, qa, qa-summary, writing-grade,
+  tutorializer, graphify, the agent's local fallback). Many may hold it at once.
+  A CLI command holds it from its first Ollama request until it exits;
+  `waterfree serve` takes it per request. Only the local daemon counts
+  (loopback host on Ollama's own port); remote endpoints take no lease.
+- **FIFO queue.** Nothing jumps an incompatible request queued ahead of it, so
+  neither side starves. State is `%LOCALAPPDATA%\WaterFree\gpu\state.json`;
+  entries carry pid + process creation time, and a dead holder is pruned on the
+  next read, so a crashed command never blocks the GPU.
+- **Engines die with their command.** trellis-server / moss-tts-server run in a
+  Windows Job Object with kill-on-close; a killed command cannot orphan a server
+  that pins VRAM.
+- **Spills are reported.** A job that outgrows the card *after* the preflight is
+  silently moved into system RAM by the NVIDIA Windows driver and slows down
+  many times. Every engine process (and imagegen's in-process diffusers run) is
+  watched through Windows' `GPU Process Memory` counters (`backend/gpu/spill.py`):
+  when its shared usage grows 256 MB past its own baseline a warning goes to
+  stderr, and the result JSON carries `vramSpill: {vramSpillMb, sharedPeakMb,
+  dedicatedPeakMb, spilled}`.
+
+GPU queue flags (on every exclusive action):
+
+| Flag | Meaning |
+|------|---------|
+| `--wait-timeout SECONDS` | How long to queue (default 1800, `$WATERFREE_GPU_WAIT_TIMEOUT`). Progress on stderr names the holder and your queue position. |
+| `--no-wait` | Fail at once if busy. |
+| `--skip-vram-check` | Start below the measured VRAM need anyway (expect a large slowdown). |
+| `--quiet` | No progress on stderr. |
+
+A busy GPU exits `4` with `{"gpuBusy": true, "holders": [...], "queue": [...]}`;
+too little VRAM exits `4` with `{"insufficientVram": true, "needGb", "gpu",
+"otherGpuProcesses"}`. `$WATERFREE_GPU_SCHEDULER=0` turns all of it off.
+
+## Area: gpu
+
+| Action   | Flags / args |
+|----------|--------------|
+| `status` | — : holders, queue, free VRAM, resident Ollama models, other GPU processes, installed engines/models |
+| `evict`  | GPU queue flags — wait for the GPU, unload resident Ollama models |
+| `run`    | `--vram-gb N`, `--label`, GPU queue flags, `-- <command> [args]` — run any program (a Whisper script, a ComfyUI batch) under the exclusive lease; its output and exit code pass through, and WaterFree commands it runs inherit the lease |
+
+## Area: meshgen
+
+Implemented in `backend/meshgen/` on [trellis.cpp](https://github.com/pwilkin/trellis.cpp)
+(TRELLIS.2-4B, Q8_0). One image of one object in, a UV-unwrapped GLB with PBR
+textures out, plus a sidecar `.json` (input hash, seed, settings, engine and
+model revision, licence, triangle count).
+
+| Action    | Flags / args |
+|-----------|--------------|
+| `make`    | `<image>...` (max 16), `--res {512,1024,1536}`, `--faces N`, `--atlas PX`, `--no-texture`, `--bg-removal {auto,birefnet,threshold}`, `--uv {xatlas,box}`, `--steps`, `--seed`, `--model-set`, `--copyright`, `--preview`, `--output-dir`, GPU queue flags, `--workspace` |
+| `preview` | `<glb>...`, `--size PX` (default 512), `--quiet` — front/three-quarter/side/back PNGs + a 2x2 grid beside each GLB, for `waterfree vision`. Headless Chromium (Playwright) with a vendored, hash-pinned `<model-viewer>` 4.0.0 (`backend/meshgen/viewer/`); ~7 s per mesh |
+| `status`  | `--workspace` — exit `4` with the install command if anything is missing |
+| `install` | `--model-set` — engine (~0.7 GB) + weights (~10 GB) |
+| `init`    | `--workspace` — writes `.waterfree/meshgen.json` |
+
+Default `--res 1024`. **Triangle count is fixed by the engine**: trellis.cpp
+v0.8.1 decimates to ~150K triangles at res 512 and ~300K at 1024, and neither
+its CLI nor its server accepts a target (`--faces`/`faces` exist only on its
+unreleased main branch). `--faces` is therefore refused rather than silently
+ignored; decimate afterwards for game use until WaterFree's own decimation
+pass lands (GPU-009). Measured on an RTX 3060 12 GB / i7-4790: res 512 ≈ 2.7-3.4
+min and 2.5 GB VRAM per mesh, res 1024 ≈ 10.7 min and 4.5 GB (most of it
+CPU-side remeshing). One trellis-server serves the whole batch. Output goes to
+`<workspace>/.waterfree/generated/meshes`. TRELLIS.2 is MIT, but its image
+encoder (DINOv3) is under Meta's DINOv3 License; every sidecar records that.
+
+## Area: audiogen
+
+Implemented in `backend/audiogen/` on [openmoss](https://github.com/pwilkin/openmoss).
+Three model sets, one per role, loaded one at a time:
+
+| Role     | Model | Output | Measured (RTX 3060) |
+|----------|-------|--------|---------------------|
+| `voice`  | MOSS-VoiceGenerator 1.7B (BF16) | 24 kHz mono | ~2 s per candidate after a ~20-35 s load; 8.9 GB free |
+| `speech` | MOSS-TTS-Local-Transformer v1.5 (Q8_0) | 48 kHz stereo | ~1.6× real time after a ~20 s load; 10.3 GB free |
+| `sfx`    | MOSS-SoundEffect v2.0 (BF16), Vulkan build | 48 kHz mono | ~2.7 min per clip (the DiT always denoises 30 s); 9.3 GB free |
+
+Voice and speech run openmoss's CUDA build; SFX runs its Vulkan build, whose
+DAC-VAE decode took 8.7 s against the CUDA build's 577 s on the RTX 3060. Both
+backbones run at `--n-ctx 4096` (`nCtx` in audiogen.json): at the engine's 8192
+the speech model no longer fits a 12 GB card next to the desktop and silently
+spills into system RAM (~13× slower per line).
+
+| Action         | Flags / args |
+|----------------|--------------|
+| `design`       | `<description>`, `--text LINE`, `-n` (1-8, default 3), `--seed`, `--channels`, `--language`, `--output-dir`, GPU queue flags, `--workspace` |
+| `save-voice`   | `<name>`, `--from WAV`, `--description`, `--transcript`, `--force`, `--workspace` |
+| `voices`       | `--workspace` |
+| `remove-voice` | `<name>`, `--workspace` |
+| `speak`        | `[TEXT]` or `--lines FILE` (.txt, or .json `[{"text","voice","name","seed"}]`), `--voice`, `--instruction`, `--seed`, `--channels {native,mono,stereo}`, `--language`, `--output-dir`, GPU queue flags, `--workspace` |
+| `sfx`          | `[PROMPT]` or `--prompts FILE`, `-n`, `--seconds` (≤30), `--steps`, `--cfg`, `--negative-prompt`, `--seed`, `--channels`, `--output-dir`, GPU queue flags, `--workspace` |
+| `status`       | `--workspace` — also reports whether the optional QA engine is installed |
+| `install`      | `[voice\|speech\|sfx\|all\|qa]` — `all` is the three generator roles; `qa` (opt-in) is the Whisper + CLAP checker |
+| `init`         | `--workspace` — writes `.waterfree/audiogen.json` |
+
+`design`, `speak` and `sfx` take `--qa` (opt-in, user decision 2026-11-18):
+after openmoss stops, inside the same lease, faster-whisper large-v3 transcribes
+each spoken take and CLAP scores each SFX against its prompt
+(`backend/audiogen/qa.py`, its own venv). Each file gets `qa`: for speech `wer`,
+`misread` (wrong words), `dropped`, `added`, `repeated`, `spellingVariants`
+(near-identical spellings such as traveller/traveler, not errors) and `review`
+(any misread word, a stutter, or >15% real errors); design candidates and SFX
+variants of one prompt get a `rank`. The result's `qa` lists `review` and `best`.
+
+The NPC workflow is design → listen → `save-voice` → `speak`. Saved voices live
+in the project at `.waterfree/voices/<name>.wav + .json`; the speech server
+reads that folder as its voice registry, so each voice's reference is encoded
+once per batch, not once per line. Candidates and lines use consecutive seeds
+from `--seed`, recorded in every sidecar. Output goes to
+`<workspace>/.waterfree/generated/audio/{voice-design,speech,sfx}`.
+
+## Area: animgen
+
+Implemented in `backend/animgen/` on [NVIDIA Kimodo](https://github.com/nv-tlabs/kimodo)
+v1.2 (Kimodo-SOMA-RP-v1.2). A text prompt in; a humanoid motion clip out as BVH
+(77-joint SOMA skeleton, cm, Y up, 30 fps, T-pose rest pose), FBX (via a headless
+Blender, after the GPU is released), Kimodo NPZ, and a sidecar `.json` (prompt,
+seed, settings, stats, engine/weight revisions, licences).
+
+| Action    | Flags / args |
+|-----------|--------------|
+| `make`    | `[PROMPT...]` and/or `--prompts FILE` (.txt, or .json `[{"name","text"\|"segments","seconds","seed","inPlace","loop","path","constraints"}]`), `-n` (1-8), `--seconds` (0.5-10), `--steps`, `--seed`, `--in-place`, `--loop`, `--path X,Z ...`, `--constraints FILE`, `--no-preview`, `--no-postprocess`, `--tpose {standard,seed}`, `--fbx {auto,always,never}`, `--skip-ram-check`, `--output-dir`, GPU queue flags, `--workspace` |
+| `status`  | `--workspace` — engine, weights, Blender, free RAM, cached prompts; exit `4` with the install command if missing |
+| `install` | — builds the venv (uv, Python 3.12, torch cu126, Kimodo with its C++ extension) and fetches the weights; needs a C++ compiler and an HF token with Meta Llama 3 access |
+| `init`    | `--workspace` — writes `.waterfree/animgen.json` |
+
+**The text encoder runs on the CPU** (user decision, 2026-11-18): LLM2Vec over
+Llama-3-8B-Instruct in bf16, ~15.5 GB of RAM and ~100 s to load. Every prompt's
+embedding is cached under `%LOCALAPPDATA%\WaterFree\cache\animgen-text-embeddings`
+(keyed by text + encoder revisions), so the encoder loads only when a batch has
+a prompt never seen before. Only then does `make` check free system RAM, and it
+refuses below ~17 GB (`ramGb`), exiting `4` with `{"insufficientRam": true,
+"needGb", "availableGb", "largestPrograms": [{name, gb, processes}]}` so the
+human knows what to close; `--skip-ram-check` overrides.
+
+Measured on an RTX 3060 12 GB / i7-4790 / 32 GB: VRAM +1.3-1.5 GB; worker
+start ~25 s; ~9-13 s per 3 s clip at 100 steps; plus, with new prompts, ~100 s
+to load the encoder and 11-22 s to encode each prompt. One worker serves the
+whole batch. Output goes to `<workspace>/.waterfree/generated/animations`.
+`--in-place` subtracts Kimodo's smoothed root trajectory (hip sway and turning
+stay); `rootTravelM` in the result is the travel as generated.
+
+- **Loops** (`--loop`, ANIM-003): the clip is generated longer (cycle × 1.4 +
+  1.5 s, ≤ 10 s); the frame pair with the best heading-normalised pose +
+  velocity match inside the target length range is cut, the last few frames
+  are slerp-blended into the rigidly moved lead-in, and the clip ends on a copy
+  of its first pose (engines expect last key = first). The result reports
+  `loop.seamStepM` vs `typicalStepM`. A loop is one prompt, without path/constraints.
+- **Paths and constraints** (ANIM-006): `"path": [[x, z], ...]` waypoints
+  (metres; start at 0,0 facing +z, +x = the character's left) become Kimodo's
+  root2d constraint at a constant pace; `"constraints"` passes a Kimodo
+  constraints JSON (its demo's format) through, validated by type.
+- **Previews** (ANIM-005): `<name>.png` beside each clip, front and side stick
+  figures at eight times plus the top-down root path, for `waterfree vision`.
+- **Unity** (ANIM-004, verified on Unity 6000.5 in batch mode): the FBX imports
+  as a valid Humanoid avatar (all required bones, 55 mapped), scale 1, 30 fps,
+  the clip named after the file. Blender's BVH importer never shortens the
+  scene, so the exporter sets the frame range itself; without that a 4 s clip
+  imported as 8.3 s.
+
+## Engines and weights
+
+Pinned in `backend/engines/catalog.py` (release asset or Hugging Face commit +
+SHA-256 for every file). Installed to `%LOCALAPPDATA%\WaterFree\engines\<engine>\<version>`
+and `%LOCALAPPDATA%\WaterFree\models\<set>` (`$WATERFREE_ENGINES_DIR`,
+`$WATERFREE_MODELS_DIR`). Installs adopt files already present after verifying
+their hash, resume interrupted downloads, and never fetch anything twice;
+`make`-type actions never download. Engine logs: `%LOCALAPPDATA%\WaterFree\logs\engines`.
+
+Python engines are the exception (`backend/engines/pyenv.py`): Kimodo (animgen)
+and the audio QA checker (faster-whisper + CLAP) are PyTorch projects whose
+pins WaterFree's own venv cannot share (Kimodo needs `transformers==5.1.0`;
+faster-whisper 1.2.1 needs `av<19`), so each is a uv-built venv at
+`engines\<key>\<version>\venv`, installed stage by stage and import-checked by
+`backend/engines/hf_fetch.py`, with weights in the Hugging Face cache like
+imagegen's. `install` records the revisions it got; engine processes run with
+`HF_HUB_OFFLINE=1`, and `status` reports a weight repo as stale if the cache's
+`refs/main` has moved since install. WaterFree's own HF downloads (imagegen
+install) force copy mode on Windows machines without symlink support, avoiding
+a race in huggingface_hub's symlink probe (`backend/engines/hf_cache.py`, GPU-010).
+
 ## Out of scope (deliberately)
 
 - **No `debug` area.** The `waterfree-debug` skill is being removed (T8); its
   MCP server (`backend/mcp_debug.py`) goes with it.
 - **No daemon mode.** Each CLI invocation is a short-lived process. The VS Code
-  extension keeps using `waterfree serve` for the persistent bridge.
+  extension keeps using `waterfree serve` for the persistent bridge. GPU engines
+  likewise live for one command (GPU-001); a warm-engine broker would sit on the
+  same lease if model load time ever dominates.
 - **No shell completion (yet).** Possible follow-up.
 
 ## JSON contract notes

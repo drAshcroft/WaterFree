@@ -19,6 +19,9 @@ import threading
 import urllib.error
 import urllib.request
 
+from backend.gpu import lease as gpu_lease
+from backend.gpu import ollama as gpu_ollama
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_BASE = "http://localhost:11434"
@@ -261,9 +264,15 @@ def chat(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
+        # The local daemon shares this machine's GPU with imagegen/meshgen/
+        # audiogen: wait while one of them holds it exclusively, rather than
+        # loading a model on top of it (backend/gpu, GPU-002).
+        with gpu_ollama.access(base):
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read())
         return data["message"]["content"]
+    except gpu_lease.GpuBusy as exc:
+        raise OllamaError(f"The GPU is busy with another WaterFree job: {exc}") from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
         raise OllamaHTTPError(

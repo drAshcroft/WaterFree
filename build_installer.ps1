@@ -34,7 +34,9 @@
     end. Default invocation needs no arguments.
 
 .PARAMETER ProductVersion
-    Override the MSI's ProductVersion. Defaults to "0.1.0" (matches the wixproj).
+    Override the MSI's ProductVersion (MAJOR.MINOR.PATCH). Defaults to an
+    auto-incremented 0.1.<build>. The VS Code extension is packaged with the
+    same version, so every deploy is a real extension upgrade.
 
 .PARAMETER Clean
     Wipe bin/, dist/, the wix payload dir, and PyInstaller's build/ before
@@ -61,16 +63,23 @@
     After a successful build, install the artifacts onto THIS machine (Stage 5):
 
       - dist\WaterFreeSetup-<version>.msi via `msiexec /i /qn` (perUser scope,
-        so no elevation is required)
-      - dist\waterfree.vsix via `code --install-extension --force`
+        so no elevation is required). Its helper installs the vsix and records
+        the outcome in %LocalAppData%\WaterFree\logs\installer\
+        vscode-extension-status.json, which this stage prints.
+      - dist\waterfree.vsix via `code --install-extension --force`, only when
+        the MSI helper did not install it (or -SkipMsi)
       - dist\skills via install_claude.ps1 and install_codex.ps1 (falling back
         to the working tree's skills\ when dist has not been staged)
+
+    An incomplete VS Code extension update (not installed, or installed while
+    VS Code is running and so needing a window reload) is repeated at the end
+    of the build with what to do. It is a warning, not a build failure.
 
     Off by default: a plain build stays side-effect free.
 
 .PARAMETER SkipVsixDeploy
-    With -Deploy, don't run `code --install-extension`. The MSI's helper already
-    installs the vsix; use this when you only want the MSI's copy.
+    With -Deploy, don't retry `code --install-extension` when the MSI's helper
+    did not install the vsix.
 
 .PARAMETER SkipSkillsDeploy
     With -Deploy, don't run the Claude/Codex skill installers.
@@ -164,6 +173,13 @@ trap {
 $RepoRoot   = $PSScriptRoot
 $ProductVersion = Resolve-ProductVersion $ProductVersion $RepoRoot
 Write-Host "==> Building WaterFree $ProductVersion" -ForegroundColor Cyan
+
+# Stage 2 stamps this version into the VSIX, and VS Code needs plain semver
+# (an MSI-style 4-part version would be packaged as-is and break the install).
+if (-not $SkipVsix -and $ProductVersion -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+    Write-Host "FAILED: ProductVersion '$ProductVersion' must be MAJOR.MINOR.PATCH; the VS Code extension is packaged with the same version." -ForegroundColor Red
+    Stop-Build 2
+}
 $DistDir    = Join-Path $RepoRoot "dist"
 $BinDir     = Join-Path $RepoRoot "bin"
 $WixDir     = Join-Path $RepoRoot "installer"
@@ -182,6 +198,10 @@ $PlatformTag = switch -Regex ($env:OS) {
 $ArchTag = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
 $RuntimeDirName = "waterfree-$PlatformTag-$ArchTag"
 $LauncherName = if ($PlatformTag -eq "win32") { "waterfree.exe" } else { "waterfree" }
+# npm.cmd, not npm: on Windows `npm` resolves to the npm.ps1 shim, which
+# re-parses the *source text* of the calling statement and Invoke-Expressions
+# it, so `--` and variables in Stage 2's call would only survive by accident.
+$NpmCmd = if ($PlatformTag -eq "win32") { "npm.cmd" } else { "npm" }
 $RuntimeZipName = "waterfree-runtime.zip"
 $RuntimeDirPath = Join-Path $BinDir $RuntimeDirName
 $ExePath = Join-Path $RuntimeDirPath $LauncherName
@@ -193,6 +213,9 @@ $VenvPython         = if ($env:WATERFREE_PYTHON) { $env:WATERFREE_PYTHON } else 
 $LauncherProj       = Join-Path $RepoRoot "installer\WaterFreeLauncher\WaterFreeLauncher.csproj"
 $LauncherPublishDir = Join-Path $RepoRoot "installer\WaterFreeLauncher\publish"
 $BackendSrc         = Join-Path $RepoRoot "backend"
+
+# Set by Stage 5 and repeated after "Build complete" so it does not scroll away.
+$script:ExtensionDeploy = $null
 
 $Banner = "==>"
 $Start  = Get-Date
@@ -279,6 +302,28 @@ function Get-SkillPackageNames([string]$root) {
         Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") } |
         Select-Object -ExpandProperty Name |
         Sort-Object)
+}
+
+function Get-VsixVersion([string]$vsixPath) {
+    <#
+    The version VS Code will see: extension/package.json inside the vsix.
+    Returns $null when the file is missing or unreadable.
+    #>
+    if (-not (Test-Path $vsixPath)) { return $null }
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($vsixPath)
+        try {
+            $entry = $zip.GetEntry("extension/package.json")
+            if (-not $entry) { return $null }
+            $reader = New-Object System.IO.StreamReader($entry.Open())
+            try { return ($reader.ReadToEnd() | ConvertFrom-Json).version } finally { $reader.Dispose() }
+        } finally {
+            $zip.Dispose()
+        }
+    } catch {
+        return $null
+    }
 }
 
 function Assert-MsiSkillCoverage([string]$msiPath, [string[]]$expected) {
@@ -502,12 +547,25 @@ if ($SkipVsix) {
         Write-Host "FAILED: -SkipVsix was passed but $VsixPath does not exist." -ForegroundColor Red
         Stop-Build 3
     }
+    $reusedVsixVersion = Get-VsixVersion $VsixPath
+    if ($reusedVsixVersion -ne $ProductVersion) {
+        Write-Host "    WARNING: reusing waterfree.vsix v$reusedVsixVersion inside WaterFree $ProductVersion." -ForegroundColor Yellow
+        Write-Host "    If that version is already installed, VS Code sees a same-version reinstall, not an upgrade." -ForegroundColor DarkGray
+    }
 } else {
-    Invoke-Stage "Stage 2: npm run package -> waterfree.vsix" {
+    # The VSIX carries the MSI's version. package.json keeps its checked-in
+    # base version: vsce stamps $ProductVersion into the packaged manifest only
+    # (--no-update-package-json), so a build leaves no diff and the build
+    # counter (installer\.build-number) stays local. A constant VSIX version
+    # made every deploy a same-version reinstall, which VS Code refuses
+    # ("restart VS Code" / EBUSY) while a window has the extension loaded.
+    Invoke-Stage "Stage 2: npm run package -> waterfree.vsix (v$ProductVersion)" {
         Push-Location $RepoRoot
         try {
             # Invoke-Native: vsce warns to stderr on success. See the helper.
-            $code = Invoke-Native { & npm run package }
+            # npm appends everything after `--` to the package script, i.e. to
+            # its final `vsce package` command.
+            $code = Invoke-Native { & $NpmCmd run package -- $ProductVersion --no-update-package-json }
             if ($code -ne 0) {
                 Write-Host "FAILED: npm run package exited $code" -ForegroundColor Red
                 Stop-Build $code
@@ -518,6 +576,11 @@ if ($SkipVsix) {
     }
     if (-not (Test-Path $VsixPath)) {
         Write-Host "FAILED: npm run package succeeded but $VsixPath is missing." -ForegroundColor Red
+        Stop-Build 1
+    }
+    $builtVsixVersion = Get-VsixVersion $VsixPath
+    if ($builtVsixVersion -ne $ProductVersion) {
+        Write-Host "FAILED: waterfree.vsix was packaged as v$builtVsixVersion, expected $ProductVersion." -ForegroundColor Red
         Stop-Build 1
     }
 }
@@ -614,10 +677,35 @@ function Invoke-SkillInstaller([string]$scriptPath) {
     return $proc.ExitCode
 }
 
+# The installer helper exits 0 even when the extension step fails (a VS Code
+# hiccup must not roll back the product), so its outcome comes from the status
+# file it writes. Returns $null when there is none.
+function Read-ExtensionStatus([string]$path) {
+    if (-not (Test-Path $path)) { return $null }
+    try { return (Get-Content -Raw -Path $path | ConvertFrom-Json) } catch { return $null }
+}
+
+function Test-VsCodeRunning {
+    $null -ne (Get-Process -Name "Code", "Code - Insiders" -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+# Level: "ok" (nothing to do), "reload" (installed; open windows need a reload)
+# or "incomplete" (the extension was not updated).
+function Set-ExtensionDeploy([string]$level, [string]$text) {
+    $script:ExtensionDeploy = [pscustomobject]@{ Level = $level; Text = $text }
+}
+
 if (-not $Deploy) {
     Write-Stage "Stage 5: Deploy (skipped, pass -Deploy to install on this machine)"
 } else {
     Invoke-Stage "Stage 5: Deploying to this machine" {
+        # Where the MSI's installer helper reports on the VS Code extension:
+        # INSTALLDIR is LocalAppDataFolder\WaterFree (.wxs), and SetRunHelper
+        # passes --log [TempFolder]WaterFreeInstaller-helper.log.
+        $extStatusFile = Join-Path $env:LOCALAPPDATA "WaterFree\logs\installer\vscode-extension-status.json"
+        $helperLog     = Join-Path $env:TEMP "WaterFreeInstaller-helper.log"
+        $helperExt     = $null
+
         # --- 5a. MSI -------------------------------------------------------
         if ($SkipMsi) {
             Write-Host "    SKIP MSI install (-SkipMsi was passed; nothing was built)." -ForegroundColor Yellow
@@ -628,6 +716,9 @@ if (-not $Deploy) {
                 Stop-Build 1
             }
             $msiLog = Join-Path $env:TEMP "WaterFreeSetup-$ProductVersion.log"
+            # Clear the previous install's status so a helper that never got
+            # that far cannot be mistaken for a successful one.
+            Remove-Item -Force -Path $extStatusFile -ErrorAction SilentlyContinue
             Write-Host "    msiexec /i $deployMsi /qn" -ForegroundColor DarkGray
             $msi = Start-Process -FilePath "msiexec.exe" `
                                  -ArgumentList @("/i", "`"$deployMsi`"", "/qn", "/norestart",
@@ -639,40 +730,64 @@ if (-not $Deploy) {
                 Stop-Build $msi.ExitCode
             }
             Write-Host "    Installed WaterFree $ProductVersion (log: $msiLog)" -ForegroundColor Green
+
+            $helperExt = Read-ExtensionStatus $extStatusFile
+            if (-not $helperExt) {
+                Write-Host "    WARNING: the MSI helper recorded no VS Code extension status ($extStatusFile)." -ForegroundColor Yellow
+                Write-Host "    Helper log: $helperLog" -ForegroundColor DarkGray
+            } elseif ($helperExt.status -eq "installed") {
+                Write-Host "    VS Code extension (MSI helper): $($helperExt.message)" -ForegroundColor Green
+            } else {
+                Write-Host "    VS Code extension (MSI helper) [$($helperExt.status)]: $($helperExt.message)" -ForegroundColor Yellow
+                Write-Host "    Helper log: $($helperExt.helperLog)" -ForegroundColor DarkGray
+            }
         }
 
         # --- 5b. VSIX ------------------------------------------------------
-        # The MSI helper installs the vsix too; doing it here as well is
-        # idempotent (--force) and covers -SkipMsi / helper-failure cases.
-        if ($SkipVsixDeploy) {
+        # Only when the MSI helper did not install the extension. Re-installing
+        # the version it just installed is a same-version reinstall -- what VS
+        # Code refuses (EBUSY / "restart VS Code") while a window holds the
+        # extension -- and its failure used to be waved off as harmless.
+        $deployVsix = Join-Path $DistDir "waterfree.vsix"
+        if (-not (Test-Path $deployVsix)) { $deployVsix = $VsixPath }
+        $extLabel = "WaterFree extension v$(Get-VsixVersion $deployVsix)"
+        $manualInstall = "close every VS Code window, then run: code --install-extension `"$deployVsix`" --force"
+        $helperOutcome = if ($helperExt) { "MSI helper: $($helperExt.status)" }
+                         elseif ($SkipMsi) { "MSI not installed (-SkipMsi)" }
+                         else { "MSI helper: no status" }
+
+        if ($helperExt -and $helperExt.status -in @("installed", "reload-required")) {
+            Write-Host "    SKIP second vsix install: the MSI helper already installed it." -ForegroundColor DarkGray
+            $level = if ($helperExt.status -eq "installed") { "ok" } else { "reload" }
+            Set-ExtensionDeploy $level $helperExt.message
+        } elseif ($SkipVsixDeploy) {
             Write-Host "    SKIP vsix install (-SkipVsixDeploy)." -ForegroundColor Yellow
+            if (-not $SkipMsi) {
+                Set-ExtensionDeploy "incomplete" "$extLabel was not installed ($helperOutcome; retry skipped by -SkipVsixDeploy). To install it, $manualInstall"
+            }
+        } elseif (-not (Test-Command "code")) {
+            Write-Host "    SKIP vsix install: the 'code' CLI is not on PATH." -ForegroundColor Yellow
+            Set-ExtensionDeploy "incomplete" "$extLabel was not installed ($helperOutcome; 'code' CLI not on PATH). If you use VS Code, install $deployVsix from the Extensions view (Install from VSIX...)."
         } else {
-            $deployVsix = Join-Path $DistDir "waterfree.vsix"
-            if (-not (Test-Path $deployVsix)) { $deployVsix = $VsixPath }
-            if (-not (Test-Command "code")) {
-                # Non-fatal: the MSI's helper already handled the vsix, and a
-                # machine without the `code` CLI on PATH is a normal setup.
-                Write-Host "    SKIP vsix install: the 'code' CLI is not on PATH." -ForegroundColor Yellow
-            } else {
-                & code --install-extension $deployVsix --force
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "    Installed $deployVsix into VS Code" -ForegroundColor Green
-                } elseif (-not $SkipMsi) {
-                    # The MSI helper is the authoritative vsix installer and has
-                    # already run. This second pass is belt-and-braces, and it
-                    # reliably hits EBUSY when the build is launched from a VS
-                    # Code instance that currently has the extension loaded --
-                    # an environmental condition, not a broken build. Warn only.
-                    Write-Host "    WARNING: code --install-extension returned $LASTEXITCODE." -ForegroundColor Yellow
-                    Write-Host "    The MSI helper already installed the vsix, so this is non-fatal." -ForegroundColor DarkGray
-                    Write-Host "    Restart VS Code to load WaterFree $ProductVersion." -ForegroundColor DarkGray
+            $code = Invoke-Native { & code --install-extension $deployVsix --force }
+            if ($code -eq 0) {
+                Write-Host "    Installed $deployVsix into VS Code" -ForegroundColor Green
+                if (Test-VsCodeRunning) {
+                    Set-ExtensionDeploy "reload" "$extLabel installed, but VS Code is running: run 'Developer: Reload Window' in each window, or restart VS Code."
                 } else {
-                    # -SkipMsi means nothing else installed the extension, so a
-                    # failure here really does leave the machine un-deployed.
-                    Write-Host "FAILED: code --install-extension returned $LASTEXITCODE." -ForegroundColor Red
-                    Write-Host "Close every VS Code window and re-run, or pass -SkipVsixDeploy." -ForegroundColor Yellow
-                    Stop-Build $LASTEXITCODE
+                    Set-ExtensionDeploy "ok" "$extLabel installed."
                 }
+            } elseif ($SkipMsi) {
+                # -SkipMsi means nothing else installed the extension, so a
+                # failure here really does leave the machine un-deployed.
+                Write-Host "FAILED: code --install-extension returned $code." -ForegroundColor Red
+                Write-Host "Close every VS Code window and re-run, or pass -SkipVsixDeploy." -ForegroundColor Yellow
+                Stop-Build $code
+            } else {
+                # The MSI itself installed fine; only the extension is stale.
+                # Report it plainly rather than failing the whole deploy.
+                Write-Host "    WARNING: code --install-extension returned $code; the extension was NOT updated." -ForegroundColor Yellow
+                Set-ExtensionDeploy "incomplete" "$extLabel was not installed ($helperOutcome; retry exit=$code). To finish, $manualInstall"
             }
         }
 
@@ -720,4 +835,11 @@ $total = (Get-Date) - $Start
 Write-Host ""
 Write-Host ("==> Build complete in {0:n1}s" -f $total.TotalSeconds) -ForegroundColor Green
 Write-Host "    Artifacts: $DistDir" -ForegroundColor Green
+if ($script:ExtensionDeploy) {
+    switch ($script:ExtensionDeploy.Level) {
+        "ok"     { Write-Host "    VS Code extension: $($script:ExtensionDeploy.Text)" -ForegroundColor Green }
+        "reload" { Write-Host "    VS Code extension: RELOAD NEEDED -- $($script:ExtensionDeploy.Text)" -ForegroundColor Yellow }
+        default  { Write-Host "    WARNING: VS Code extension update INCOMPLETE -- $($script:ExtensionDeploy.Text)" -ForegroundColor Yellow }
+    }
+}
 Invoke-ExitPause

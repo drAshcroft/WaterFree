@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,27 @@ class PresetTests(unittest.TestCase):
 
     def test_no_gpu_means_nothing_fits(self) -> None:
         self.assertFalse(fits_vram(PRESETS["sdxl-turbo"], 0.0))
+
+
+class VramNeedTests(unittest.TestCase):
+    """GPU-008: the preflight uses measured needs per (preset, offload), not the presets' guesses."""
+
+    def need(self, preset: str, offload: str) -> float:
+        return generate_mod.vram_need_gb(ImageGenConfig(preset=preset, offload=offload).merged())
+
+    def test_measured_combinations_are_used(self) -> None:
+        self.assertEqual(self.need("sdxl", "model"), 7.9)
+        self.assertEqual(self.need("sd35-medium", "model"), 10.3)
+        self.assertEqual(self.need("sdxl-turbo", "sequential"), 1.0)
+
+    def test_no_offload_is_refused_where_it_does_not_fit_a_12gb_card(self) -> None:
+        """Measured: SDXL spilled 3.2 GB into system RAM, SD3.5 crashed."""
+        for preset in ("sdxl", "sd35-medium"):
+            self.assertGreater(self.need(preset, "none"), 12.0, preset)
+
+    def test_unmeasured_combinations_fall_back(self) -> None:
+        self.assertEqual(self.need("flux-schnell", "model"), PRESETS["flux-schnell"].vram_gb)
+        self.assertEqual(self.need("flux-schnell", "sequential"), 3.0)
 
 
 class ConfigLayeringTests(unittest.TestCase):
@@ -156,10 +178,26 @@ class HintTests(unittest.TestCase):
     def test_gated_repo_error_explains_the_licence_and_token(self) -> None:
         spec = ImageGenConfig(preset="sd35-medium").merged()
 
-        hint = backend._download_hint(spec, Exception("401 Client Error: gated repo"))
+        hint = backend._download_hint_for(spec.repo_id, Exception("401 Client Error: gated repo"))
 
         self.assertIn("HF_TOKEN", hint)
         self.assertIn("licence", hint)
+
+    def test_make_never_downloads_and_names_the_install_command(self) -> None:
+        """GPU-004: weights arrive via `imagegen install`, never inside `make`."""
+        spec = ImageGenConfig(preset="sdxl", offload="none").merged()
+        pipeline_class = mock.MagicMock()
+        pipeline_class.from_pretrained.side_effect = OSError(
+            "Cannot find the requested files in the disk cache and outgoing traffic has been disabled. "
+            "To enable model look-ups and downloads online, set 'local_files_only' to False.")
+        with mock.patch.object(backend, "require_available"), \
+                mock.patch.object(backend, "_pipeline_class", return_value=pipeline_class), \
+                mock.patch.dict(sys.modules, {"torch": mock.MagicMock(float16="f16")}):
+            with self.assertRaises(backend.NotInstalled) as ctx:
+                backend.load_pipeline(spec)
+        self.assertTrue(pipeline_class.from_pretrained.call_args.kwargs["local_files_only"])
+        self.assertIn("waterfree imagegen install sdxl", str(ctx.exception))
+        self.assertIsInstance(ctx.exception, backend.BackendUnavailable, "must map to exit 4")
 
     def test_oom_hint_suggests_cheaper_settings_and_freeing_ollama(self) -> None:
         spec = ImageGenConfig(preset="sd35-medium").merged()

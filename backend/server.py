@@ -621,6 +621,11 @@ def run() -> None:
         "WaterFree backend starting (stdin/stdout JSON-RPC, logFile=%s)",
         BACKEND_LOG_FILE,
     )
+    # This process lives for the whole editor session: take the shared GPU lease
+    # per Ollama request, not once for the life of the process, or it would
+    # block every imagegen/meshgen/audiogen job until VS Code closes.
+    from backend.gpu import ollama as gpu_ollama
+    gpu_ollama.set_scope(gpu_ollama.SCOPE_CALL)
     server = Server()
     try:
         for line in sys.stdin:

@@ -23,5 +23,9 @@ CLI_AREAS: tuple[str, ...] = (
     "writing-grade",
     "vision",
     "imagegen",
+    "meshgen",
+    "audiogen",
+    "animgen",
+    "gpu",
     "usage",
 )

@@ -8,8 +8,12 @@ import sys
 import time
 from typing import Sequence
 
+from backend.cli import animgen as area_animgen
+from backend.cli import audiogen as area_audiogen
+from backend.cli import gpu as area_gpu
 from backend.cli import imagegen as area_imagegen
 from backend.cli import index as area_index
+from backend.cli import meshgen as area_meshgen
 from backend.cli import knowledge as area_knowledge
 from backend.cli import qa as area_qa
 from backend.cli import qa_summary as area_qa_summary
@@ -41,6 +45,10 @@ def _build_parser() -> argparse.ArgumentParser:
     area_writing_grade.register(sub)
     area_vision.register(sub)
     area_imagegen.register(sub)
+    area_meshgen.register(sub)
+    area_audiogen.register(sub)
+    area_animgen.register(sub)
+    area_gpu.register(sub)
     area_usage.register(sub)
 
     return parser
@@ -90,6 +98,10 @@ def dispatch(argv: Sequence[str]) -> int:
     # never changes the exit code; `waterfree usage ...` itself is not logged so
     # reading the log does not pollute it.
     take_last_output()
+    # Names this process in `waterfree gpu status` if it ends up holding the GPU
+    # lease -- directly (imagegen/meshgen/audiogen) or via an Ollama call.
+    from backend.gpu.lease import set_command_label
+    set_command_label(f"{args.area} {getattr(args, 'action', '')}".strip())
     started = time.perf_counter()
     exit_code = EXIT_INTERNAL
     try:

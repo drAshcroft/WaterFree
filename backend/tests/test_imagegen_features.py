@@ -123,6 +123,27 @@ class ComfyHttpTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
+    def test_free_asks_comfyui_to_unload_and_tolerates_failure(self):
+        """GPU-008: POST /free answers 200 with an empty body; an unreachable ComfyUI must not fail the job."""
+        posted = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+
+            def do_POST(self):
+                posted.append((self.path, json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
+                self.send_response(200); self.end_headers()   # ComfyUI's /free sends no body
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            spec = ImageGenConfig(backend='comfy', comfy_url=f'http://127.0.0.1:{server.server_port}').merged()
+            self.assertTrue(backend_comfy.free(spec))
+            self.assertEqual(posted, [('/free', {'unload_models': True, 'free_memory': True})])
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+        self.assertFalse(backend_comfy.free(ImageGenConfig(backend='comfy', comfy_url='http://127.0.0.1:9').merged()))
+
     def test_checkpoint_and_lora_selection_require_registered_weights(self):
         info={'CheckpointLoaderSimple':{'input':{'required':{'ckpt_name':[['one','two']]}}}}
         with patch.object(backend_comfy,'_http',return_value=info):

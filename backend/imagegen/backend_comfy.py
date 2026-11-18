@@ -1,12 +1,14 @@
 """ComfyUI's public HTTP API, using core nodes and existing registered weights."""
 from __future__ import annotations
+
 import io
 import json
 import secrets
 import time
 import uuid
 from pathlib import Path
-from urllib import request, parse, error
+from urllib import error, parse, request
+
 from backend.imagegen.backend_diffusers import BackendUnavailable, GenerationFailed
 
 
@@ -42,6 +44,21 @@ def require_available(spec):
     usable, reason = is_available(spec)
     if not usable:
         raise BackendUnavailable(reason)
+
+
+def free(spec) -> bool:
+    """Ask ComfyUI to unload its models and free cached memory (``POST /free``); never raises.
+
+    ComfyUI keeps models resident between jobs by design. With ``comfyFreeAfter``
+    WaterFree asks it to let go, so the next job in the GPU queue finds the
+    memory. A failure only means ComfyUI keeps its models; the images are done.
+    """
+    try:
+        # /free answers 200 with an empty body, so read it raw rather than as JSON.
+        _http(spec.comfy_url, '/free', {'unload_models': True, 'free_memory': True}, binary=True)
+        return True
+    except (GenerationFailed, ValueError):
+        return False
 
 
 def _choices(info, node, field):

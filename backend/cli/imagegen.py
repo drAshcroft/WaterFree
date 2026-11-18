@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from argparse import Namespace, _SubParsersAction
 
+from backend.cli._gpu import add_gpu_args, policy_from, run_gpu_action
 from backend.cli._common import (
     EXIT_DEP_MISSING,
     EXIT_OK,
@@ -62,6 +64,10 @@ def register(sub: _SubParsersAction) -> None:
     p_make.add_argument('--comfy-url', default=None)
     p_make.add_argument('--checkpoint', default=None, help='Registered ComfyUI checkpoint; required if more than one is available.')
     p_make.add_argument('--timeout', type=float, default=None, help='ComfyUI job timeout in seconds.')
+    p_make.add_argument('--comfy-free', dest='comfy_free_after', action='store_true', default=None,
+                        help='After the job, ask a ComfyUI on this machine to unload its models (POST /free) so the '
+                             'next GPU job finds the VRAM. ComfyUI keeps them loaded otherwise.')
+    add_gpu_args(p_make)
     add_workspace_arg(p_make)
 
     p_models = actions.add_parser("models", help="List presets and whether they fit this GPU")
@@ -75,7 +81,17 @@ def register(sub: _SubParsersAction) -> None:
     p_init = actions.add_parser("init", help="Write .waterfree/imagegen.json with every setting")
     add_workspace_arg(p_init)
 
-    p_unload = actions.add_parser("unload", help="Release the cached pipeline and free VRAM")
+    p_install = actions.add_parser(
+        "install", help="Download preset weights into the Hugging Face cache (skips what is cached)")
+    p_install.add_argument("presets", nargs="*", default=None, metavar="PRESET",
+                           help=f"Preset(s) to install: {', '.join(sorted(PRESETS))}, or 'all'. "
+                                "Default: the workspace's preset.")
+    p_install.add_argument("--hf-token", default="", help="Token for gated repos. Falls back to $HF_TOKEN.")
+    add_workspace_arg(p_install)
+
+    p_unload = actions.add_parser(
+        "unload", help="Make room on the GPU: wait for it, unload resident Ollama models (= `gpu evict`)")
+    add_gpu_args(p_unload, vram_check=False)
     add_workspace_arg(p_unload)
 
     p.set_defaults(_runner=run)
@@ -125,6 +141,13 @@ def run(args: Namespace) -> int:
             "backend": config.backend,
             "outputDir": str(output_dir_for(config, workspace)),
         }
+        if usable and config.backend == "diffusers" and config.preset in PRESETS:
+            # `make` never downloads, so a preset that is not cached is not usable yet.
+            installed = backend.is_installed(PRESETS[config.preset].repo_id)
+            payload["installed"] = installed
+            if not installed:
+                payload["usable"] = usable = False
+                payload["reason"] = f"Preset weights are not installed. Run: waterfree imagegen install {config.preset}"
         from backend.runtime_paths import find_shadowing  # noqa: PLC0415
         shadowing = find_shadowing()
         if shadowing:
@@ -139,9 +162,15 @@ def run(args: Namespace) -> int:
         return EXIT_OK
 
     if action == "unload":
-        backend.unload()
-        emit_json({"unloaded": True})
-        return EXIT_OK
+        # Each `imagegen make` is its own process and frees its pipeline when it
+        # finishes, so there is no cached pipeline to drop here. What callers
+        # want from "unload" is room on the GPU, which is `gpu evict`.
+        from backend.cli import gpu as area_gpu  # noqa: PLC0415
+        return run_gpu_action(lambda: {**area_gpu.evict(args), "unloaded": True,
+                                       "note": "Same as `waterfree gpu evict`."})
+
+    if action == "install":
+        return run_gpu_action(lambda: _install(args, workspace))
 
     if action == "make":
         return _make(args, workspace)
@@ -162,23 +191,33 @@ def _make(args: Namespace, workspace: str) -> int:
         offload=args.offload,
         backend=args.backend, image=args.image, mask=args.mask, strength=args.strength,
         loras=args.lora, comfy_url=args.comfy_url, comfy_checkpoint=args.checkpoint,
-        comfy_timeout=args.timeout,
+        comfy_timeout=args.timeout, comfy_free_after=args.comfy_free_after,
     )
-    try:
-        result = generate(
-            args.prompt,
-            config=config,
-            workspace_path=workspace,
-            count=args.count,
-            output_dir=args.output_dir,
-            hf_token=args.hf_token,
-        )
-    except backend.BackendUnavailable as exc:
-        return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
-    except backend.GenerationFailed as exc:
-        return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
-    except ValueError as exc:
-        return emit_error(str(exc), exit_code=EXIT_USAGE)
+    return run_gpu_action(lambda: generate(
+        args.prompt,
+        config=config,
+        workspace_path=workspace,
+        count=args.count,
+        output_dir=args.output_dir,
+        hf_token=args.hf_token,
+        policy=policy_from(args),
+        check_vram=not args.skip_vram_check,
+    ))
 
-    emit_json(result)
-    return EXIT_OK
+
+def _install(args: Namespace, workspace: str) -> dict:
+    requested = args.presets or [load_config(workspace).preset]
+    keys = sorted(PRESETS) if "all" in requested else list(dict.fromkeys(requested))
+    unknown = [k for k in keys if k not in PRESETS]
+    if unknown:
+        raise ValueError(f"Unknown preset(s): {', '.join(unknown)}. Choose from: {', '.join(sorted(PRESETS))}")
+    results = {}
+    for key in keys:
+        preset = PRESETS[key]
+        if backend.is_installed(preset.repo_id):
+            results[key] = {"repoId": preset.repo_id, "action": "present"}
+            continue
+        sys.stderr.write(f"imagegen: installing {key} ({preset.repo_id}, ~{preset.disk_gb:.0f} GB)\n")
+        path = backend.install(preset.repo_id, hf_token=args.hf_token)
+        results[key] = {"repoId": preset.repo_id, "action": "installed", "path": path}
+    return {"presets": results}

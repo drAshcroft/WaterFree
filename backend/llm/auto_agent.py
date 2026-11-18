@@ -1,8 +1,10 @@
 """Tool-capable model fallback around each LangChain request, never agent runs."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -10,9 +12,24 @@ from langchain_core.callbacks.manager import CallbackManager, AsyncCallbackManag
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
+from backend.gpu import ollama as gpu_ollama
 from backend.llm.chat_client import ChatTarget, ChatTrace
 
 log = logging.getLogger(__name__)
+
+
+def _gpu(target) -> AbstractContextManager:
+    """The shared GPU lease for a local-Ollama candidate; a no-op for remote providers."""
+    if target.provider_type != "ollama":
+        return nullcontext()
+    return gpu_ollama.access(target.base_url, label="agent")
+
+
+def _enter_gpu(target) -> AbstractContextManager:
+    """Enter :func:`_gpu` (it may wait for the GPU) -- run off the event loop by async callers."""
+    context = _gpu(target)
+    context.__enter__()
+    return context
 
 
 class AutoFallbackChatModel(BaseChatModel):
@@ -69,7 +86,8 @@ class AutoFallbackChatModel(BaseChatModel):
         config = self._config(run_manager)
         for target, model in self._links(attempts):
             try:
-                message = model.invoke(messages, config=config, stop=stop, **kwargs)
+                with _gpu(target):
+                    message = model.invoke(messages, config=config, stop=stop, **kwargs)
             except Exception as exc:
                 self._failed(attempts, target, exc)
                 continue
@@ -82,7 +100,11 @@ class AutoFallbackChatModel(BaseChatModel):
         config = self._config(run_manager, asynchronous=True)
         for target, model in self._links(attempts):
             try:
-                message = await model.ainvoke(messages, config=config, stop=stop, **kwargs)
+                gpu = await asyncio.to_thread(_enter_gpu, target)
+                try:
+                    message = await model.ainvoke(messages, config=config, stop=stop, **kwargs)
+                finally:
+                    gpu.__exit__(None, None, None)
             except Exception as exc:
                 self._failed(attempts, target, exc)
                 continue
@@ -96,9 +118,10 @@ class AutoFallbackChatModel(BaseChatModel):
         for target, model in self._links(attempts):
             emitted = False
             try:
-                for chunk in model.stream(messages, config=config, stop=stop, **kwargs):
-                    emitted = True
-                    yield ChatGenerationChunk(message=chunk)
+                with _gpu(target):
+                    for chunk in model.stream(messages, config=config, stop=stop, **kwargs):
+                        emitted = True
+                        yield ChatGenerationChunk(message=chunk)
                 if not emitted:
                     raise RuntimeError("Model returned an empty stream")
             except Exception as exc:
@@ -116,9 +139,13 @@ class AutoFallbackChatModel(BaseChatModel):
         for target, model in self._links(attempts):
             emitted = False
             try:
-                async for chunk in model.astream(messages, config=config, stop=stop, **kwargs):
-                    emitted = True
-                    yield ChatGenerationChunk(message=chunk)
+                gpu = await asyncio.to_thread(_enter_gpu, target)
+                try:
+                    async for chunk in model.astream(messages, config=config, stop=stop, **kwargs):
+                        emitted = True
+                        yield ChatGenerationChunk(message=chunk)
+                finally:
+                    gpu.__exit__(None, None, None)
                 if not emitted:
                     raise RuntimeError("Model returned an empty stream")
             except Exception as exc:
