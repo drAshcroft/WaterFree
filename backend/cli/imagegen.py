@@ -117,14 +117,20 @@ def run(args: Namespace) -> int:
             usable, reason = backend_comfy.is_available(config)
         else:
             usable, reason = backend.is_available()
-        emit_json({
+        payload = {
             "usable": usable,
             "reason": reason,
             "gpuVramGb": round(available_vram_gb(), 1),
             "preset": config.preset,
             "backend": config.backend,
             "outputDir": str(output_dir_for(config, workspace)),
-        })
+        }
+        from backend.runtime_paths import find_shadowing  # noqa: PLC0415
+        shadowing = find_shadowing()
+        if shadowing:
+            # Loose scripts named like installed packages (IMG-SYSPATH-001).
+            payload["shadowing"] = shadowing
+        emit_json(payload)
         return EXIT_OK if usable else EXIT_DEP_MISSING
 
     if action == "init":

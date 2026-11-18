@@ -145,18 +145,72 @@ class OllamaError(RuntimeError):
     """Raised when the Ollama daemon is unreachable or returns an error."""
 
 
-def list_models(base: str = _DEFAULT_BASE) -> list[str]:
-    """Return the names of all models available in the local Ollama installation."""
+class OllamaTimeout(OllamaError):
+    """The daemon accepted the request but did not answer in time.
+
+    Distinct from "unreachable": a refused connection means Ollama is not
+    running, while a timeout almost always means it is running but starved --
+    other models holding the GPU, or CPU-heavy processes sharing the host.
+    Callers that can wait longer or retry need to tell the two apart.
+    """
+
+    def __init__(self, message: str, *, timeout: float, endpoint: str) -> None:
+        super().__init__(message)
+        self.timeout = timeout
+        self.endpoint = endpoint
+
+
+class OllamaHTTPError(OllamaError):
+    """The daemon answered with an HTTP error status (404 unknown model, 503 busy, ...)."""
+
+    def __init__(self, message: str, *, status: int, detail: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
+
+
+# /api/tags only reads manifests, so 5 s is generous on an idle host. Callers
+# that run on a busy machine (see backend/vision) pass a longer `timeout`.
+LIST_TIMEOUT_SECONDS = 5.0
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a socket timeout, whether raw or wrapped by urllib.
+
+    urllib wraps a timeout during connect/send in URLError, but a timeout while
+    waiting for the response headers or body escapes as a bare TimeoutError.
+    """
+    if isinstance(exc, TimeoutError):
+        return True
+    return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+
+
+def _timeout_error(base: str, endpoint: str, timeout: float) -> OllamaTimeout:
+    return OllamaTimeout(
+        f"Ollama at {base} did not answer {endpoint} in {timeout:g} s; "
+        "the host may be under load (other models or GPU/CPU-heavy processes).",
+        timeout=timeout,
+        endpoint=endpoint,
+    )
+
+
+def list_models(base: str = _DEFAULT_BASE, timeout: float = LIST_TIMEOUT_SECONDS) -> list[str]:
+    """Return the names of all models available in the local Ollama installation.
+
+    Raises OllamaTimeout when the daemon is up but slow, OllamaError otherwise.
+    """
     try:
-        with urllib.request.urlopen(f"{base}/api/tags", timeout=5) as resp:
+        with urllib.request.urlopen(f"{base}/api/tags", timeout=timeout) as resp:
             data = json.loads(resp.read())
         return [m["name"] for m in data.get("models", [])]
-    except urllib.error.URLError as exc:
-        raise OllamaError(
-            f"Cannot connect to Ollama at {base}: {exc}\n"
-            "Make sure Ollama is running: ollama serve"
-        ) from exc
     except Exception as exc:
+        if _is_timeout(exc):
+            raise _timeout_error(base, "/api/tags", timeout) from exc
+        if isinstance(exc, urllib.error.URLError):
+            raise OllamaError(
+                f"Cannot connect to Ollama at {base}: {exc}\n"
+                "Make sure Ollama is running: ollama serve"
+            ) from exc
         raise OllamaError(f"Unexpected error listing Ollama models: {exc}") from exc
 
 
@@ -164,10 +218,11 @@ def chat(
     model: str,
     messages: list[dict],
     base: str = _DEFAULT_BASE,
-    timeout: int = 180,
+    timeout: float = 180,
     keep_alive: str | None = None,
     options: dict | None = None,
     images: list[str] | None = None,
+    response_format: str | dict | None = None,
 ) -> str:
     """
     Send a chat request to Ollama and return the assistant's response text.
@@ -177,6 +232,12 @@ def chat(
               model. Attached to the LAST user message, which is where Ollama
               expects them -- a multimodal turn is one message carrying both
               the question and its pixels, not a separate image message.
+    response_format: Ollama's `format` field -- "json", or a JSON schema dict
+              that constrains decoding to that shape (structured outputs).
+
+    Raises OllamaTimeout when no answer arrives within `timeout` seconds,
+    OllamaHTTPError when the daemon answers with an error status (404 for a
+    model that is not downloaded), and OllamaError for anything else.
     """
     payload = {
         "model": model,
@@ -189,6 +250,8 @@ def chat(
         payload["keep_alive"] = keep_alive
     if options:
         payload["options"] = options
+    if response_format:
+        payload["format"] = response_format
     body = json.dumps(payload).encode()
 
     req = urllib.request.Request(
@@ -203,8 +266,12 @@ def chat(
         return data["message"]["content"]
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
-        raise OllamaError(f"Ollama HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
+        raise OllamaHTTPError(
+            f"Ollama HTTP {exc.code}: {detail}", status=exc.code, detail=detail,
+        ) from exc
+    except (TimeoutError, urllib.error.URLError) as exc:
+        if _is_timeout(exc):
+            raise _timeout_error(base, "/api/chat", timeout) from exc
         raise OllamaError(
             f"Cannot reach Ollama at {base}: {exc}\n"
             "Make sure Ollama is running: ollama serve"
@@ -270,18 +337,34 @@ def pull(
         raise OllamaError(f"Pull of '{model}' failed: {exc}") from exc
 
 
-def has_model(model: str, base: str = _DEFAULT_BASE, *, strict: bool = False) -> bool:
+def has_model(
+    model: str,
+    base: str = _DEFAULT_BASE,
+    *,
+    strict: bool = False,
+    timeout: float = LIST_TIMEOUT_SECONDS,
+) -> bool:
     """True when `model` is already downloaded.
 
-    Tag-aware: a bare name matches any tag, while an explicit tag must match
-    exactly (with ":latest" implied), mirroring how Ollama itself resolves ids.
+    With `strict`, a failure to list models raises (OllamaTimeout when the
+    daemon is merely slow) instead of reporting the model as missing.
     """
     try:
-        installed = [name.lower() for name in list_models(base=base)]
+        installed = list_models(base=base, timeout=timeout)
     except OllamaError:
         if strict:
             raise
         return False
+    return model_in(model, installed)
+
+
+def model_in(model: str, installed: list[str]) -> bool:
+    """True when `model` is among `installed` model names.
+
+    Tag-aware: a bare name matches any tag, while an explicit tag must match
+    exactly (with ":latest" implied), mirroring how Ollama itself resolves ids.
+    """
+    installed = [name.lower() for name in installed]
     wanted = model.strip().lower()
     if ":" in wanted:
         return wanted in installed or f"{wanted}:latest" in installed

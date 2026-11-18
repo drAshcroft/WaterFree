@@ -29,7 +29,8 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from backend.testing.errors import TestingError
+from backend.testing.bounded import RunLimits, first_script_error, run_bounded
+from backend.testing.errors import NoTestsMatchedError, TestingError
 from backend.testing.results import TestResult, TestRunResult
 
 # Environment variables consulted for the Godot executable, highest first.
@@ -248,11 +249,55 @@ def detect_framework(project_root: Path) -> str | None:
 
 def is_godot_project(workspace_path: str) -> bool:
     """True when this workspace holds a Godot project with a test framework."""
+    return godot_evidence(workspace_path) is not None
+
+
+def godot_evidence(workspace_path: str) -> str | None:
+    """`project.godot + addons/gut` (path relative to the workspace), or None."""
     try:
         project_root = find_godot_project(workspace_path)
     except (GodotError, OSError):
-        return False
-    return detect_framework(project_root) is not None
+        return None
+    framework = detect_framework(project_root)
+    if framework is None:
+        return None
+    addon = "gdUnit4" if framework == "gdunit4" else "gut"
+    return f"{_relative_project_file(workspace_path, project_root)} + addons/{addon}"
+
+
+def _relative_project_file(workspace_path: str, project_root: Path) -> str:
+    try:
+        relative = project_root.relative_to(Path(workspace_path)).as_posix()
+    except ValueError:
+        relative = str(project_root)
+    return "project.godot" if relative in ("", ".") else f"{relative}/project.godot"
+
+
+_SCENE_TREE_RE = re.compile(r"^\s*extends\s+(?:SceneTree|MainLoop)\b", re.MULTILINE)
+
+
+def scene_tree_scripts(workspace_path: str) -> list[str]:
+    """`res://` paths of SceneTree/MainLoop entry scripts in the test folders.
+
+    These are hand-rolled harnesses run with `godot --script` (BrickWild's
+    `tests/run_all.gd`). Only the top level of `test/` and `tests/` is read,
+    and only each file's head, so this stays cheap enough for detection.
+    """
+    try:
+        project_root = find_godot_project(workspace_path)
+    except (GodotError, OSError):
+        return []
+    found: list[str] = []
+    for directory in test_directories(project_root):
+        for gd_file in sorted(directory.glob("*.gd")):
+            try:
+                with gd_file.open("r", encoding="utf-8", errors="ignore") as handle:
+                    head = handle.read(2048)
+            except OSError:
+                continue
+            if _SCENE_TREE_RE.search(head):
+                found.append(_res_path(project_root, gd_file))
+    return found
 
 
 def test_directories(project_root: Path) -> list[Path]:
@@ -459,6 +504,9 @@ def _summarize(results: list[TestResult], raw: str) -> TestRunResult:
 class GodotRunner:
     """Runs a Godot project's tests through whichever framework it installs."""
 
+    name = "godot"
+    limits: RunLimits | None = None
+
     def __init__(self, godot_path: str | None = None) -> None:
         self._godot_path_override = godot_path
 
@@ -474,17 +522,19 @@ class GodotRunner:
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
         project_root = find_godot_project(workspace_path)
         pattern = name_substr.lower()
+        known = scan_test_names(project_root)
         suites = sorted({
             test_id.split("::", 1)[0]
-            for test_id in scan_test_names(project_root)
+            for test_id in known
             if pattern in test_id.lower()
         })
         if not suites:
-            msg = f"No tests found matching '{name_substr}'"
-            return TestRunResult(
-                passed=0, failed=1,
-                results=[TestResult(name=name_substr, passed=False, error=msg)],
-                raw_output=msg,
+            # Decided from the sources, so the engine is never booted for a typo.
+            raise NoTestsMatchedError(
+                runner=self.name,
+                filter=name_substr,
+                available=len(known),
+                raw_output=f"No tests found matching '{name_substr}'",
             )
         return self._run(workspace_path, suites=suites, name_filter=pattern)
 
@@ -512,13 +562,11 @@ class GodotRunner:
         cmd = [binary, headless_flag(binary), "--path", str(project_root), *args]
 
         try:
-            proc = subprocess.run(
+            proc = run_bounded(
                 cmd,
                 cwd=str(project_root),
-                capture_output=True,
-                text=True,
                 timeout=_timeout_seconds(),
-                stdin=subprocess.DEVNULL,
+                limits=self.limits,
             )
         except subprocess.TimeoutExpired as exc:
             raise GodotError(
@@ -538,18 +586,23 @@ class GodotRunner:
 
         if not result.results and result.passed == 0 and result.failed == 0:
             # Engine ran but produced nothing parseable — surface it as a failure
-            # rather than a silent green.
+            # rather than a silent green. A parse error is the usual cause, so
+            # name the first one instead of sending the caller to the log.
+            first_error, location = first_script_error(proc.stderr, proc.stdout)
+            error = (
+                f"Godot exited with code {proc.returncode} but produced no "
+                "parseable test report. See `waterfree testing logs`."
+            )
+            if first_error:
+                error += f" First script error: {first_error}"
+                if location and location not in first_error:
+                    error += f" ({location})"
             return TestRunResult(
                 passed=0, failed=1,
-                results=[TestResult(
-                    name=f"godot:{framework}",
-                    passed=False,
-                    error=(
-                        f"Godot exited with code {proc.returncode} but produced no "
-                        "parseable test report. See `waterfree testing logs`."
-                    ),
-                )],
+                results=[TestResult(name=f"godot:{framework}", passed=False, error=error)],
                 raw_output=raw,
+                first_error=first_error,
+                first_error_location=location,
             )
         return result
 

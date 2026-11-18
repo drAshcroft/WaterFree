@@ -128,6 +128,7 @@ class QueryService:
         max_results: int = 50,
         offset: int = 0,
         file_pattern: str = "",
+        include_worktrees: bool = False,
     ) -> dict:
         flags = re.MULTILINE | (0 if case_sensitive else re.IGNORECASE)
         try:
@@ -137,7 +138,7 @@ class QueryService:
 
         root_path = root or "."
         all_matches: list[dict] = []
-        for file_path in collect_files(root_path):
+        for file_path in collect_files(root_path, include_worktrees=include_worktrees):
             rel_path = (
                 str(file_path.relative_to(root_path))
                 if Path(root_path) in file_path.parents

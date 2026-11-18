@@ -30,6 +30,13 @@ waterfree imagegen models     # presets, disk cost, and what fits this GPU
 PyTorch. CPU generation is deliberately not supported — it is minutes per image.
 LoRA loading also requires `peft` in that same Python environment.
 
+If `status` reports `shadowing`, or an import fails with an error from some
+unrelated script, a loose `.py` file is standing in for a real package (a
+scratch `h2.py` once broke `transformers`). **Never write one-off scripts into
+the shared venv root `C:\Projects\.local`**: on Windows that folder is on
+`sys.path` for every process using the venv. Use a temp dir or
+`C:\Projects\.local\scratch\` instead, and move any reported file away.
+
 **Weights download on first use** (7–24 GB depending on preset) into the
 Hugging Face cache, not the workspace. SD3.5 and FLUX are *gated*: accept the
 licence on the model's HF page and set `$HF_TOKEN`, or the download 401s.

@@ -346,8 +346,8 @@ class KnowledgeAddQualityGateTests(KnowledgeCliTestCase):
         warnings = result["warnings"]
         self.assertTrue(any(w["kind"] == "near_duplicate" and first in w["ids"] for w in warnings), warnings)
         self.assertTrue(any(w["kind"] == "no_hierarchy" for w in warnings))
-        self.assertIn("near-duplicate", err)
-        self.assertIn("knowledge update", err)
+        self.assertEqual(err, "")
+        self.assertIn("knowledge update", result["summary"])
 
         exit_code, result, _ = self.run_cli([
             "add", "--title", "Phaser container buttons drop taps on press scale",

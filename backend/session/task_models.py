@@ -224,6 +224,82 @@ register_enum_aliases(TaskStatus, {
 })
 
 
+# ── Typed blocker ─────────────────────────────────────────────────────────────
+# `dependsOn` covers work waiting on other work in the backlog. A blocker covers
+# what no task can unblock: a decision only a person can make, or something
+# outside the project (a vendor, an upstream release). Deliberately not a status:
+# a blocked task keeps its lifecycle status and simply drops out of the ready
+# queue until the blocker is cleared.
+
+class TaskBlocker(str, Enum):
+    HUMAN = "human"
+    EXTERNAL = "external"
+
+
+register_enum_aliases(TaskBlocker, {
+    "user": TaskBlocker.HUMAN,
+    "owner": TaskBlocker.HUMAN,
+    "person": TaskBlocker.HUMAN,
+    "decision": TaskBlocker.HUMAN,
+    "upstream": TaskBlocker.EXTERNAL,
+    "vendor": TaskBlocker.EXTERNAL,
+    "third-party": TaskBlocker.EXTERNAL,
+    "third_party": TaskBlocker.EXTERNAL,
+})
+
+
+def _blocker_from_payload(value: object, warnings: Optional[list[str]]) -> Optional[TaskBlocker]:
+    """Read path for `blockedOn`. Empty means unblocked.
+
+    An unrecognized non-empty value is read as `external` rather than dropped:
+    whoever wrote it meant "blocked", and silently returning the task to the
+    ready queue is the worse failure.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return coerce_enum(TaskBlocker, value, TaskBlocker.EXTERNAL, field="blockedOn", warnings=warnings)
+
+
+# ── Work reference ────────────────────────────────────────────────────────────
+
+@dataclass
+class TaskWorkRef:
+    """Where the work for a task lives: the branch and checkout it was done in.
+
+    Recorded by the todos CLI when a task starts (and refreshed from linked
+    worktrees), so work finished on an unmerged branch stays findable after the
+    agent that did it is gone.
+    """
+    branch: Optional[str] = None
+    worktree_path: Optional[str] = None
+    head_commit: Optional[str] = None
+    recorded_at: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "branch": self.branch,
+            "worktreePath": self.worktree_path,
+            "headCommit": self.head_commit,
+            "recordedAt": self.recorded_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> TaskWorkRef:
+        def text(key: str) -> Optional[str]:
+            value = d.get(key)
+            return str(value) if value not in (None, "") else None
+
+        return cls(
+            branch=text("branch"),
+            worktree_path=text("worktreePath"),
+            head_commit=text("headCommit"),
+            recorded_at=text("recordedAt"),
+        )
+
+    def is_empty(self) -> bool:
+        return not (self.branch or self.worktree_path or self.head_commit)
+
+
 # ── Payload shape guards ──────────────────────────────────────────────────────
 # Stored payloads can be the wrong *shape*, not just carry the wrong values —
 # the same outside writers that invent enum spellings also write a bare string
@@ -277,6 +353,7 @@ class Task:
     phase: Optional[str] = None
     depends_on: list[TaskDependency] = field(default_factory=list)
     blocked_reason: Optional[str] = None
+    blocked_on: Optional[TaskBlocker] = None
 
     # Ownership
     owner: TaskOwner = field(default_factory=TaskOwner)
@@ -288,11 +365,15 @@ class Task:
 
     # Lifecycle
     status: TaskStatus = TaskStatus.PENDING
+    # Overwritable current state (verdict / open items / rejected approaches);
+    # `ai_notes` stays the append-only history behind it.
+    state: Optional[str] = None
     human_notes: Optional[str] = None
     ai_notes: Optional[str] = None
     annotations: list = field(default_factory=list)  # list[IntentAnnotation] — avoid circular import
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    work_ref: Optional[TaskWorkRef] = None
 
     # Extended classification
     acceptance_criteria: Optional[str] = None
@@ -349,16 +430,20 @@ class Task:
             "phase": self.phase,
             "dependsOn": [d.to_dict() for d in self.depends_on],
             "blockedReason": self.blocked_reason,
+            "blockedOn": self.blocked_on.value if self.blocked_on else None,
             "owner": self.owner.to_dict(),
             "taskType": self.task_type.value,
             "estimatedMinutes": self.estimated_minutes,
             "actualMinutes": self.actual_minutes,
             "status": self.status.value,
+            # Ahead of the notes on purpose: readers see the current verdict first.
+            "state": self.state,
             "humanNotes": self.human_notes,
             "aiNotes": self.ai_notes,
             "annotations": [a.to_dict() for a in self.annotations],
             "startedAt": self.started_at,
             "completedAt": self.completed_at,
+            "workRef": self.work_ref.to_dict() if self.work_ref else None,
             "acceptanceCriteria": self.acceptance_criteria,
             "trigger": self.trigger,
             "timing": self.timing.value,
@@ -378,6 +463,7 @@ class Task:
         warnings: list[str] = []
         target_coord = _payload_dict(d.get("targetCoord"), field="targetCoord", warnings=warnings)
         owner = _payload_dict(d.get("owner"), field="owner", warnings=warnings)
+        work_ref = _payload_dict(d.get("workRef"), field="workRef", warnings=warnings)
         return cls(
             id=d.get("id", str(uuid.uuid4())),
             key=d.get("key", ""),
@@ -401,6 +487,7 @@ class Task:
                 ) if dep is not None
             ],
             blocked_reason=d.get("blockedReason"),
+            blocked_on=_blocker_from_payload(d.get("blockedOn"), warnings),
             owner=TaskOwner.from_dict(owner, warnings) if owner else TaskOwner(),
             task_type=coerce_enum(
                 TaskType, d.get("taskType"), TaskType.IMPL,
@@ -412,6 +499,7 @@ class Task:
                 TaskStatus, d.get("status"), TaskStatus.PENDING,
                 field="status", warnings=warnings,
             ),
+            state=d.get("state"),
             human_notes=d.get("humanNotes"),
             ai_notes=d.get("aiNotes"),
             annotations=[
@@ -420,6 +508,7 @@ class Task:
             ],
             started_at=d.get("startedAt"),
             completed_at=d.get("completedAt"),
+            work_ref=TaskWorkRef.from_dict(work_ref) if work_ref else None,
             acceptance_criteria=d.get("acceptanceCriteria"),
             trigger=d.get("trigger"),
             timing=coerce_enum(

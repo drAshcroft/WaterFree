@@ -19,6 +19,7 @@ Report first; `apply=True` performs the merges and date rewrites only.
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 from dataclasses import dataclass, field
@@ -252,9 +253,20 @@ def find_date_rewrites(entries: Iterable[KnowledgeEntry]) -> list[DateRewrite]:
 
 # ── retrieval statistics ───────────────────────────────────────────────────
 
-def retrieval_counts(records: Iterable[dict], *, since: datetime | None) -> tuple[dict[str, int], int]:
+_ID_PREFIX = re.compile(r"^[0-9a-f][0-9a-f-]{5,34}$")
+
+
+def retrieval_counts(records: Iterable[dict], *, since: datetime | None,
+                     known_ids: Iterable[str] | None = None) -> tuple[dict[str, int], int]:
+    """(entry id -> times retrieved, records considered).
+
+    `get` accepts a unique id prefix, so its argv may hold 'd35c8db3' rather
+    than the full id; with `known_ids` such prefixes are credited to the one
+    id they name (ambiguous or unknown prefixes are ignored).
+    """
     counts: dict[str, int] = {}
     considered = 0
+    ids = sorted(set(known_ids or ()))
     for record in records:
         if record.get("area") != "knowledge" or record.get("action") not in ("search", "browse", "get", "inject"):
             continue
@@ -272,9 +284,21 @@ def retrieval_counts(records: Iterable[dict], *, since: datetime | None) -> tupl
             counts[entry_id] = counts.get(entry_id, 0) + 1
         if record.get("action") == "get":
             for arg in record.get("argv") or []:
-                if isinstance(arg, str) and len(arg) == 36:
+                if not isinstance(arg, str):
+                    continue
+                if len(arg) == 36:
                     counts[arg] = counts.get(arg, 0) + 1
+                elif ids and _ID_PREFIX.match(arg.casefold()):
+                    match = _unique_prefix_match(ids, arg.casefold())
+                    if match:
+                        counts[match] = counts.get(match, 0) + 1
     return counts, considered
+
+
+def _unique_prefix_match(sorted_ids: list[str], prefix: str) -> str | None:
+    at = bisect.bisect_left(sorted_ids, prefix)
+    hits = [i for i in sorted_ids[at:at + 2] if i.startswith(prefix)]
+    return hits[0] if len(hits) == 1 else None
 
 
 # ── model-backed merge proposals ───────────────────────────────────────────
@@ -346,7 +370,8 @@ def consolidate(
     by_id = {e.id: e for e in entries}
 
     paths = usage_paths if usage_paths is not None else _default_usage_paths()
-    counts, considered = retrieval_counts(usage_log.read_records(paths), since=now - timedelta(days=window_days))
+    counts, considered = retrieval_counts(usage_log.read_records(paths), since=now - timedelta(days=window_days),
+                                          known_ids=by_id)
 
     report = ConsolidationReport(total_entries=len(entries), window_days=window_days, retrieval_records=considered)
 

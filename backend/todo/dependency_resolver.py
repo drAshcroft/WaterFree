@@ -81,13 +81,24 @@ class DependencyResolver:
     def blocked_condition_sql(self) -> str:
         return self._blocked_condition_sql()
 
+    def typed_blocker_sql(self) -> str:
+        """True for a task carrying a typed blocker (`blockedOn`: human/external)."""
+        return self._typed_blocker_sql()
+
     # ── SQL helpers ───────────────────────────────────────────────────────────
 
+    # A task is ready when no incomplete `blocks` dependency holds it AND it has
+    # no typed blocker. The blocker is read from the payload (the source of
+    # truth) rather than a denormalized column, so no schema migration is needed
+    # and an outside writer's payload edit can never leave it stale.
     def _ready_condition_sql(self) -> str:
-        return f"NOT EXISTS ({self._blocker_subquery_sql()})"
+        return f"(NOT EXISTS ({self._blocker_subquery_sql()}) AND NOT {self._typed_blocker_sql()})"
 
     def _blocked_condition_sql(self) -> str:
-        return f"EXISTS ({self._blocker_subquery_sql()})"
+        return f"(EXISTS ({self._blocker_subquery_sql()}) OR {self._typed_blocker_sql()})"
+
+    def _typed_blocker_sql(self) -> str:
+        return "(coalesce(json_extract(tasks.payload, '$.blockedOn'), '') != '')"
 
     def _blocker_subquery_sql(self) -> str:
         return """

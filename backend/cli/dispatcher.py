@@ -46,10 +46,41 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _selected_parser(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.ArgumentParser:
+    """The deepest subcommand parser `args` selected (e.g. the `todos update` parser)."""
+    current = parser
+    while True:
+        sub_action = next(
+            (action for action in current._actions if isinstance(action, argparse._SubParsersAction)),
+            None,
+        )
+        if sub_action is None:
+            return current
+        chosen = getattr(args, sub_action.dest, None)
+        child = sub_action.choices.get(chosen) if chosen is not None else None
+        if child is None:
+            return current
+        current = child
+
+
+def _parse_args(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    """`parse_args`, except unrecognized arguments are reported by the subcommand.
+
+    Plain `parse_args` reports an unknown flag against the top-level parser, so
+    `waterfree todos update X --bogus` printed `usage: waterfree [-h] <area> ...`
+    — no help for the command actually being typed. Same exit code (2) and same
+    message; only the usage line is the failing subcommand's.
+    """
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        _selected_parser(parser, args).error(f"unrecognized arguments: {' '.join(extras)}")
+    return args
+
+
 def dispatch(argv: Sequence[str]) -> int:
     parser = _build_parser()
     argv = list(argv)
-    args = parser.parse_args(argv)
+    args = _parse_args(parser, argv)
     runner = getattr(args, "_runner", None)
     if runner is None:
         parser.print_help(sys.stderr)

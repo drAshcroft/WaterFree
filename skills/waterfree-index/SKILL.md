@@ -134,6 +134,11 @@ waterfree index search-graph "AuthService" --workspace . --node-type class
 ```
 `--node-type` filter options: `function`, `class`, `module`, `method`.
 
+Indexing and `search-code` skip nested git worktrees — `worktrees/` inside any
+dot-folder (`.claude/worktrees`, `.kilo/worktrees`), `.worktrees/`, and any
+linked worktree checked out inside the tree — because they hold stale copies of
+the active code. Pass `search-code --include-worktrees` to search them too.
+
 ### Get source code for a symbol
 ```bash
 waterfree index get-snippet "auth.service.AuthService.login" --workspace .

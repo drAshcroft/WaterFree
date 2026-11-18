@@ -136,6 +136,19 @@ if ($selectedPackages.Name -contains "waterfree-assets") {
 Write-Host ""
 Write-Host "Installed $($selectedPackages.Count) skill(s) to $Destination"
 
+# A hook command that fails can do damage: for PreToolUse, exit code 2 blocks
+# the tool call, and an installed backend that predates an action exits 2 with
+# a usage error. Smoke-test each command with an empty event before merging it.
+function Test-HookGroup($group) {
+    foreach ($hook in @($group.hooks)) {
+        try {
+            '{}' | & cmd.exe /d /c $hook.command *> $null
+            if ($LASTEXITCODE -ne 0) { return $false }
+        } catch { return $false }
+    }
+    return $true
+}
+
 if ($InstallHooks) {
     # Merge each installed skill's hooks/claude-settings.hooks.json into the
     # user's settings.json. Idempotent: a hook whose command already exists is
@@ -165,7 +178,10 @@ if ($InstallHooks) {
                 foreach ($e in $existing) {
                     foreach ($h in @($e.hooks)) { if ($commands -contains $h.command) { $present = $true } }
                 }
-                if (-not $present) { $existing += $group; $added++ }
+                if (-not $present) {
+                    if (Test-HookGroup $group) { $existing += $group; $added++ }
+                    else { Write-Warning "Skipped $eventName hook '$($commands -join ', ')': it did not exit 0 on an empty event. Deploy the current backend first (see hooks/README.md)." }
+                }
             }
             $hooksTable[$eventName] = $existing
         }

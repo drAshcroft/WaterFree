@@ -479,6 +479,19 @@ function statusBadge(status) {
   return '<span class="badge ' + escapeHtml(status) + '">' + escapeHtml(formatLabel(status)) + "</span>";
 }
 
+// A typed blocker (blockedOn: human | external) says who the task waits for;
+// a bare blockedReason keeps the old "Blocked:" line.
+function renderBlocker(task) {
+  if (!task) { return ""; }
+  const blockerLabels = { human: "Waiting on a human decision", external: "Waiting on something external" };
+  const known = Object.prototype.hasOwnProperty.call(blockerLabels, task.blockedOn);
+  const label = known ? blockerLabels[task.blockedOn] : (task.blockedOn ? "Blocked (" + String(task.blockedOn) + ")" : "");
+  if (label) {
+    return '<p class="busy">' + escapeHtml(task.blockedReason ? label + ": " + task.blockedReason : label) + "</p>";
+  }
+  return task.blockedReason ? '<p class="busy">Blocked: ' + escapeHtml(task.blockedReason) + "</p>" : "";
+}
+
 function mkButton(label, action, data, primary, disabled) {
   const attrs = Object.entries(data || {})
     .map(function(e) { return "data-" + e[0].replace(/[A-Z]/g, function(m) { return "-" + m.toLowerCase(); }) + '="' + escapeHtml(e[1]) + '"'; })
@@ -684,7 +697,7 @@ function renderPlan(plan) {
       statusBadge(task.status),
       "</div>",
       '<p class="task-description">' + escapeHtml(task.description || task.title) + "</p>",
-      task.blockedReason ? '<p class="busy">Blocked: ' + escapeHtml(task.blockedReason) + "</p>" : "",
+      renderBlocker(task),
       '<div class="button-row">',
       mkButton("Open", "openTask", { taskId: task.id }, false, Boolean(state.busyMessage)),
       task.annotations && task.annotations.length === 0
@@ -756,7 +769,7 @@ function renderBacklog(backlogSummary) {
         statusBadge(nextTask.status || "pending"),
         "</div>",
         '<p class="location">' + escapeHtml(formatCoord(nextTask.targetCoord || {})) + "</p>",
-        nextTask.blockedReason ? '<p class="busy">Blocked: ' + escapeHtml(nextTask.blockedReason) + "</p>" : "",
+        renderBlocker(nextTask),
         "</div>",
       ].join("")
     : '<p class="empty">No ready backlog task.</p>';

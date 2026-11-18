@@ -20,6 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from backend.testing.bounded import RunLimits, run_bounded
 from backend.testing.errors import ToolchainError
 
 # Characters cmd.exe treats specially. Python 3.12+ quotes arguments correctly
@@ -112,24 +113,26 @@ def run_tool(
     workspace_path: str,
     timeout: int,
     env: dict[str, str] | None = None,
+    limits: RunLimits | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a resolved command, translating spawn failures into ToolchainError.
 
     `cmd[0]` is expected to have come from `resolve_tool` / `node_tool`; the
     OSError branch catches the residual cases (a pinned binary deleted between
     the lookup and the call, a broken shim) so callers never see WinError 2.
+
+    Goes through `run_bounded`, so `limits` (`--budget` / `--stall`) apply and
+    a timeout kills the whole process tree rather than just the `.cmd` shim.
+    `timeout` still raises subprocess.TimeoutExpired; budget/stall expiry
+    raises RunIncompleteError.
     """
     try:
-        return subprocess.run(
+        return run_bounded(
             cmd,
             cwd=workspace_path,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            stdin=subprocess.DEVNULL,
-            env={**os.environ, **env} if env else None,
-            encoding="utf-8",
-            errors="replace",
+            env=env,
+            limits=limits,
         )
     except OSError as exc:
         raise ToolchainError(f"Could not launch `{cmd[0]}`: {exc}") from exc

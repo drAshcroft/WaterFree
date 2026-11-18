@@ -82,6 +82,11 @@ internal static class Program
             : backendRoot + Path.PathSeparator + existing;
         // Don't litter the install tree / repo with __pycache__ on every run.
         psi.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
+        // `python -m` would otherwise prepend the caller's cwd to sys.path, so a
+        // scratch script there (h2.py, json.py, ...) could shadow a real package
+        // before backend.main gets to clean sys.path. Python 3.11+; ignored by
+        // older interpreters. backend is still found through PYTHONPATH above.
+        psi.Environment["PYTHONSAFEPATH"] = "1";
 
         try
         {

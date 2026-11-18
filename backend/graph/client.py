@@ -117,6 +117,7 @@ class GraphClient:
         max_results: int = 50,
         offset: int = 0,
         file_pattern: str = "",
+        include_worktrees: bool = False,
     ) -> dict:
         return self._engine.search_code(
             pattern=pattern,
@@ -126,6 +127,7 @@ class GraphClient:
             offset=offset,
             file_pattern=file_pattern,
             project=self._project or "",
+            include_worktrees=include_worktrees,
         )
 
     def find_qualified_name(self, short_name: str) -> Optional[str]:

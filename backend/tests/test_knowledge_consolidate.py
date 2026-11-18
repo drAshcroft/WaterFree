@@ -223,7 +223,7 @@ class ConsolidateCliTests(ConsolidateTestCase):
         with patch("backend.knowledge.consolidate.ollama_chat_fn", unavailable):
             code, payload, err = self.run_cli(["consolidate"])
         self.assertEqual(code, EXIT_OK)
-        self.assertIn("no local model for merge proposals", err)
+        self.assertIn("no local model for merge proposals", payload["notes"][0])
         self.assertEqual(payload["total_entries"], 1)
 
 

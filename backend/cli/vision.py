@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argparse import Namespace, _SubParsersAction
+from argparse import ArgumentParser, Namespace, _SubParsersAction
 
 from backend.cli._common import (
     EXIT_DEP_MISSING,
@@ -13,7 +13,7 @@ from backend.cli._common import (
     emit_json,
 )
 from backend.llm import ollama_client
-from backend.vision.analyze import VisionError, analyze
+from backend.vision.analyze import DEFAULT_TIMEOUT_SECONDS, VisionError, analyze
 from backend.vision.models import (
     DEFAULT_PURPOSE,
     PURPOSES,
@@ -31,42 +31,23 @@ def register(sub: _SubParsersAction) -> None:
 
     p_look = actions.add_parser("look", help="Analyze one or more images")
     p_look.add_argument("images", nargs="+", help="Image file path(s)")
+    _add_analysis_args(p_look)
+    add_workspace_arg(p_look)
+
     p_web = actions.add_parser("web", help="Capture a URL with Playwright and analyze it locally")
     p_web.add_argument("url", help="HTTP(S) website URL")
-    p_web.add_argument("--purpose", choices=sorted(PURPOSES), default=DEFAULT_PURPOSE)
-    p_web.add_argument("-q", "--question", default="")
-    p_web.add_argument("--model", default="")
-    p_web.add_argument("--tier", choices=sorted(TIERS), default="")
+    _add_analysis_args(p_web)
     p_web.add_argument("--mobile", action="store_true", help="Also capture and analyze a 390px mobile viewport")
     p_web.add_argument("--ready-selector", default="", help="Wait until this CSS selector is visible (useful for SPAs)")
     p_web.add_argument("--wait-ms", type=int, default=750, help="Settle time after DOM/selector readiness")
-    p_web.add_argument("--timeout-ms", type=int, default=30000)
+    p_web.add_argument(
+        "--timeout-ms", type=int, default=30000,
+        help="Page-load limit in milliseconds (the model call is bounded by --timeout).",
+    )
     p_web.add_argument("--output-dir", default="")
     p_web.add_argument("--full-page", action="store_true", help="Analyze the full-page capture instead of the viewport")
     p_web.add_argument("--capture-only", action="store_true", help="Save screenshots without invoking a vision model")
     add_workspace_arg(p_web)
-    p_look.add_argument(
-        "--purpose",
-        choices=sorted(PURPOSES),
-        default=DEFAULT_PURPOSE,
-        help=(
-            "What you want out of the image. Selects the model tier and the "
-            "framing of the question. Default: %(default)s."
-        ),
-    )
-    p_look.add_argument(
-        "-q", "--question",
-        default="",
-        help="Ask something specific instead of the purpose's default question.",
-    )
-    p_look.add_argument("--model", default="", help="Force a specific Ollama vision model.")
-    p_look.add_argument(
-        "--tier",
-        choices=sorted(TIERS),
-        default="",
-        help="Force a model tier, overriding the purpose's choice.",
-    )
-    add_workspace_arg(p_look)
 
     p_models = actions.add_parser("models", help="Show the vision tiers and what is downloaded")
     add_workspace_arg(p_models)
@@ -87,11 +68,62 @@ def register(sub: _SubParsersAction) -> None:
     p.set_defaults(_runner=run)
 
 
+def _add_analysis_args(parser: ArgumentParser) -> None:
+    """Flags shared by every action that runs the vision model (look, web)."""
+    parser.add_argument(
+        "--purpose",
+        choices=sorted(PURPOSES),
+        default=DEFAULT_PURPOSE,
+        help=(
+            "What you want out of the image. Selects the model tier and the "
+            "framing of the question. Default: %(default)s."
+        ),
+    )
+    parser.add_argument(
+        "-q", "--question",
+        default="",
+        help="Ask something specific instead of the purpose's default question.",
+    )
+    parser.add_argument("--model", default="", help="Force a specific Ollama vision model.")
+    parser.add_argument(
+        "--tier",
+        choices=sorted(TIERS),
+        default="",
+        help="Force a model tier, overriding the purpose's choice.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "Seconds to wait for the model on each attempt (default %(default)g, "
+            "or $WATERFREE_VISION_TIMEOUT). Raise it on a busy host."
+        ),
+    )
+    parser.add_argument(
+        "--labels",
+        default=None,
+        metavar="A,B,C",
+        help=(
+            "Comma-separated labels for --purpose classify (2-20). 'none' and "
+            "'uncertain' are always added; the order is shuffled per call."
+        ),
+    )
+
+
 def run(args: Namespace) -> int:
     action = args.action
 
     if action == "models":
-        emit_json({"tiers": installed_report()})
+        report = installed_report()
+        payload: dict = {"tiers": report}
+        if any(row["installed"] is None for row in report):
+            payload["warning"] = (
+                "Ollama did not say which models are downloaded (not running, or too "
+                "busy to answer), so `installed` is unknown. Check with `ollama list`."
+            )
+        emit_json(payload)
         return EXIT_OK
 
     if action == "purposes":
@@ -127,7 +159,8 @@ def _web(args: Namespace) -> int:
             args.url, purpose=args.purpose, question=args.question, model=args.model, tier=args.tier,
             workspace_path=args.workspace, output_dir=args.output_dir, mobile=args.mobile,
             ready_selector=args.ready_selector, wait_ms=args.wait_ms, timeout_ms=args.timeout_ms,
-            full_page=args.full_page, capture_only=args.capture_only,
+            full_page=args.full_page, capture_only=args.capture_only, timeout=args.timeout,
+            labels=args.labels,
         )
     except (VisionModelMissing, VisionError, ollama_client.OllamaError) as exc:
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)
@@ -145,6 +178,8 @@ def _look(args: Namespace) -> int:
             question=args.question,
             model=args.model,
             tier=args.tier,
+            timeout=args.timeout,
+            labels=args.labels,
         )
     except (VisionModelMissing, ollama_client.OllamaError) as exc:
         return emit_error(str(exc), exit_code=EXIT_DEP_MISSING)

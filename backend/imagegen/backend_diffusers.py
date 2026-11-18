@@ -39,19 +39,42 @@ class GenerationFailed(RuntimeError):
     """The pipeline loaded but the run failed."""
 
 
+def _import_failure(module: str, exc: BaseException) -> str:
+    """Describe an import that raised something other than a clean ImportError.
+
+    A loose script on sys.path with an installed package's name (a scratch
+    `h2.py` in the venv root, say) runs at import time and fails with whatever
+    it raises; name the file so the cause is visible (IMG-SYSPATH-001).
+    """
+    from backend.runtime_paths import find_shadowing  # noqa: PLC0415
+
+    shadows = find_shadowing()
+    detail = f"importing {module} failed: {type(exc).__name__}: {exc}"
+    if shadows:
+        files = "; ".join(f"{s['module']} -> {s['file']}" for s in shadows)
+        detail += f"\nA loose file is shadowing an installed package: {files}. Move it off sys.path."
+    return detail
+
+
 def is_available() -> tuple[bool, str]:
     """(usable, reason). Reason is empty when usable."""
     try:
         import torch  # noqa: PLC0415
     except ImportError:
         return False, "PyTorch is not installed."
+    except Exception as exc:  # noqa: BLE001 - a shadowing script can raise anything
+        return False, _import_failure("torch", exc)
     try:
         import diffusers  # noqa: PLC0415,F401
-    except ImportError:
+    except ImportError as exc:
+        if getattr(exc, "name", None) not in (None, "diffusers"):
+            return False, _import_failure("diffusers", exc)
         return False, (
             "diffusers is not installed. Install it with:\n"
             "  pip install diffusers accelerate sentencepiece protobuf"
         )
+    except Exception as exc:  # noqa: BLE001
+        return False, _import_failure("diffusers", exc)
     if not torch.cuda.is_available():
         return False, (
             "No CUDA device is visible to PyTorch. Generation on CPU is not "

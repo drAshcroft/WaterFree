@@ -9,8 +9,9 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from backend.session.enum_coercion import parse_enum
 from backend.session.models import (
@@ -26,6 +27,7 @@ from backend.session.models import (
     TaskTiming,
     TaskType,
 )
+from backend.session.task_models import TaskBlocker, TaskWorkRef
 from backend.todo.dependency_resolver import DependencyResolver
 from backend.todo.migration import maybe_import_legacy_json
 from backend.todo.utils import (
@@ -65,6 +67,7 @@ _SEARCH_FIELDS: tuple[tuple[str, str], ...] = (
     ("rationale", "rationale"),
     ("json_extract(payload, '$.acceptanceCriteria')", "acceptanceCriteria"),
     ("json_extract(payload, '$.trigger')", "trigger"),
+    ("json_extract(payload, '$.state')", "state"),
     ("json_extract(payload, '$.aiNotes')", "aiNotes"),
     ("json_extract(payload, '$.humanNotes')", "humanNotes"),
     ("target_file", "targetCoord.file"),
@@ -141,6 +144,98 @@ class ImportResult:
     created: list[Task] = field(default_factory=list)
     updated: list[Task] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)  # [{"index": i, "key": "...", "error": "..."}]
+
+
+@dataclass
+class DeleteResult:
+    deleted: list[Task] = field(default_factory=list)
+    # Remaining tasks whose dependsOn named a deleted task:
+    # [{"id", "key"?, "title", "dependsOn": [deleted key-or-id, ...]}]
+    dependents: list[dict] = field(default_factory=list)
+    detached: bool = False  # True when those dependsOn edges were removed too
+
+
+def _lookup_key(ref: str, key_to_id: dict[str, str]) -> Optional[str]:
+    """Task id for a key: exact match first, then an unambiguous case-insensitive one."""
+    if ref in key_to_id:
+        return key_to_id[ref]
+    folded = ref.casefold()
+    matches = {task_id for key, task_id in key_to_id.items() if key.casefold() == folded}
+    return matches.pop() if len(matches) == 1 else None
+
+
+def _parse_timestamp(value: object) -> Optional[datetime]:
+    """Parse a stored ISO timestamp; naive values are read as UTC. None if unusable."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _explicitly_set(patch: dict, field_name: str, previous: object) -> bool:
+    """True when the patch deliberately sets `field_name` to a new, non-empty value.
+
+    Whole-task editors (the VS Code todo board) echo every field back on save,
+    so a value equal to what was stored is not a decision to keep a date.
+    """
+    if field_name not in patch:
+        return False
+    value = patch.get(field_name)
+    return bool(value) and value != previous
+
+
+def _stamp_lifecycle_dates(
+    task: Task,
+    previous_status: TaskStatus,
+    previous_completed_at: Optional[str],
+    patch: dict,
+) -> None:
+    """Keep `startedAt`/`completedAt` in step with a status change.
+
+    * -> complete: `completedAt` = now, unless the patch sets a date itself.
+    * complete -> anything else (reopen): `completedAt` cleared, same exception.
+    * -> executing with no `startedAt` yet: `startedAt` = now. Later transitions
+      keep the first start, so a task's age survives being paused.
+    """
+    if task.status == previous_status:
+        return
+    if task.status == TaskStatus.COMPLETE or previous_status == TaskStatus.COMPLETE:
+        if not _explicitly_set(patch, "completedAt", previous_completed_at):
+            task.completed_at = now() if task.status == TaskStatus.COMPLETE else None
+    if task.status == TaskStatus.EXECUTING and not task.started_at:
+        task.started_at = now()
+
+
+def _blocker_from_input(value: object) -> Optional[TaskBlocker]:
+    """Write path for `blockedOn`: empty/null clears it, anything unknown is rejected."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return parse_enum(TaskBlocker, value, field="blockedOn")
+
+
+def _state_from_input(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _work_ref_from_input(value: object) -> Optional[TaskWorkRef]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TaskValidationError(
+            "workRef must be an object with branch, worktreePath, headCommit and recordedAt"
+        )
+    ref = TaskWorkRef.from_dict(value)
+    if ref.is_empty():
+        return None
+    if not ref.recorded_at:
+        ref.recorded_at = now()
+    return ref
 
 
 @dataclass
@@ -236,6 +331,8 @@ class TaskStore:
         priority: str = "",
         phase: str = "",
         ready_only: bool = False,
+        blocked: bool = False,
+        blocked_on: str = "",
         limit: int = 100,
         offset: int = 0,
     ) -> TaskStoreData:
@@ -247,6 +344,8 @@ class TaskStore:
             priority=priority,
             phase=phase,
             ready_only=ready_only,
+            blocked=blocked,
+            blocked_on=blocked_on,
             limit=limit,
             offset=offset,
         )
@@ -267,6 +366,8 @@ class TaskStore:
         priority: str = "",
         phase: str = "",
         ready_only: bool = False,
+        blocked: bool = False,
+        blocked_on: str = "",
     ) -> int:
         """Number of tasks matching the same filters `list_tasks` takes, ignoring any limit."""
         where_sql, params = self._filter_sql(
@@ -276,6 +377,8 @@ class TaskStore:
             priority=priority,
             phase=phase,
             ready_only=ready_only,
+            blocked=blocked,
+            blocked_on=blocked_on,
         )
         row = self._conn.execute(f"SELECT COUNT(*) FROM tasks {where_sql}", params).fetchone()
         return int(row[0]) if row else 0
@@ -478,31 +581,144 @@ class TaskStore:
             self._set_metadata("updated_at", data.updated_at)
             self._set_metadata("velocity_log", json.dumps(data.velocity_log, ensure_ascii=True))
 
-    def add_task(self, task_input: dict) -> Task:
+    def add_task(self, task_input: dict, *, strict_dependencies: bool = False) -> Task:
+        """Create one task.
+
+        `strict_dependencies` rejects a `dependsOn` entry that resolves to no
+        task (by id or key) instead of storing a dangling edge for `validate` to
+        find later — the CLI passes it; programmatic callers keep the lenient
+        historical behavior.
+        """
         data = self.load()
-        task = self._task_from_input(task_input, key_to_id=self._key_to_id(data.tasks))
+        known_ids = {task.id for task in data.tasks}
+        task = self._task_from_input(
+            task_input, key_to_id=self._key_to_id(data.tasks), known_ids=known_ids,
+        )
         self._check_key_unique(data.tasks, task)
+        if strict_dependencies:
+            self._check_dependencies(task, known_ids | {task.id})
         data.tasks.append(task)
         if task.phase and task.phase not in data.phases:
             data.phases.append(task.phase)
         self.save(data)
         return task
 
-    def update_task(self, task_id: str, patch: dict) -> Task:
+    def update_task(self, task_id: str, patch: dict, *, strict_dependencies: bool = False) -> Task:
+        """Patch one task, then apply the lifecycle rules that follow from it.
+
+        Status transitions stamp dates (see `_stamp_lifecycle_dates`): moving to
+        `complete` sets `completedAt`, reopening clears it, and the first move to
+        `executing` sets `startedAt`. A date set explicitly in the patch wins.
+        """
         data = self.load()
         task = next((candidate for candidate in data.tasks if candidate.id == task_id), None)
         if not task:
             raise TaskNotFoundError(f"Task not found: {task_id}")
 
-        self._apply_patch(task, patch, key_to_id=self._key_to_id(data.tasks))
+        known_ids = {candidate.id for candidate in data.tasks}
+        self._apply_update(task, patch, key_to_id=self._key_to_id(data.tasks), known_ids=known_ids)
         self._check_key_unique(data.tasks, task)
-        if task.status == TaskStatus.COMPLETE and task.timing == TaskTiming.RECURRING:
-            task.status = TaskStatus.PENDING
-            task.completed_at = None
+        if strict_dependencies and "dependsOn" in patch:
+            self._check_dependencies(task, known_ids)
         if task.phase and task.phase not in data.phases:
             data.phases.append(task.phase)
         self.save(data)
         return task
+
+    def resolve_refs(self, refs: Iterable[str]) -> tuple[list[Task], list[str]]:
+        """Map task ids/keys to tasks: (found, de-duplicated, in input order; refs matching nothing)."""
+        data = self.load()
+        by_id = {task.id: task for task in data.tasks}
+        key_to_id = self._key_to_id(data.tasks)
+        found: list[Task] = []
+        seen: set[str] = set()
+        missing: list[str] = []
+        for raw in refs:
+            ref = str(raw or "").strip()
+            if not ref:
+                continue
+            task_id = ref if ref in by_id else _lookup_key(ref, key_to_id)
+            if task_id is None:
+                if ref not in missing:
+                    missing.append(ref)
+                continue
+            if task_id not in seen:
+                seen.add(task_id)
+                found.append(by_id[task_id])
+        return found, missing
+
+    def delete_tasks(
+        self,
+        task_ids: Iterable[str],
+        *,
+        detach_dependents: bool = False,
+        dry_run: bool = False,
+    ) -> DeleteResult:
+        """Delete many tasks in one transaction.
+
+        Remaining tasks whose `dependsOn` names a deleted task are reported. With
+        `detach_dependents` those edges are removed as well — right for pruning
+        finished work, where the dependency was already satisfied; otherwise the
+        dependent would be blocked forever by a task that no longer exists.
+        """
+        ids = {str(task_id) for task_id in task_ids}
+        data = self.load()
+        deleted = [task for task in data.tasks if task.id in ids]
+        remaining = [task for task in data.tasks if task.id not in ids]
+        label = {task.id: task.key or task.id for task in deleted}
+        dependents: list[dict] = []
+        for task in remaining:
+            hits = [dep for dep in task.depends_on if dep.task_id in ids]
+            if not hits:
+                continue
+            dependents.append({
+                "id": task.id,
+                **({"key": task.key} if task.key else {}),
+                "title": task.title,
+                "dependsOn": [label[dep.task_id] for dep in hits],
+            })
+            if detach_dependents:
+                task.depends_on = [dep for dep in task.depends_on if dep.task_id not in ids]
+        if deleted and not dry_run:
+            data.tasks = remaining
+            self.save(data)
+        return DeleteResult(deleted=deleted, dependents=dependents, detached=detach_dependents)
+
+    def prune_candidates(
+        self,
+        *,
+        statuses: Iterable[TaskStatus | str],
+        older_than: Optional[timedelta] = None,
+        include_undated: bool = False,
+        reference_time: Optional[datetime] = None,
+    ) -> tuple[list[Task], list[Task]]:
+        """Finished tasks eligible for pruning: (selected, skipped for having no usable completedAt).
+
+        Only `complete`/`skipped` statuses may be pruned. With `older_than`, age is
+        measured from `completedAt`; a task without one has unknown age and is
+        only selected when `include_undated` is set.
+        """
+        allowed = {TaskStatus.COMPLETE, TaskStatus.SKIPPED}
+        wanted = {parse_enum(TaskStatus, status, field="status") for status in statuses}
+        if not wanted or not wanted <= allowed:
+            raise TaskValidationError("prune only removes finished work: status must be complete and/or skipped")
+        cutoff = None
+        if older_than is not None:
+            cutoff = (reference_time or datetime.now(timezone.utc)) - older_than
+        selected: list[Task] = []
+        undated: list[Task] = []
+        for task in self.load().tasks:
+            if task.status not in wanted:
+                continue
+            if cutoff is None:
+                selected.append(task)
+                continue
+            completed = _parse_timestamp(task.completed_at)
+            if completed is None:
+                (selected if include_undated else undated).append(task)
+            elif completed <= cutoff:
+                selected.append(task)
+        return selected, undated
 
     def import_tasks(self, items: list[dict], *, upsert: bool, dry_run: bool) -> ImportResult:
         """Validate and write a whole batch of task inputs in one transaction.
@@ -523,6 +739,9 @@ class TaskStore:
         plan: list[tuple[int, str, str, str, dict]] = []
 
         for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                errors.append({"index": index, "key": "", "error": "each task must be a JSON object"})
+                continue
             key = str(item.get("key", "")).strip()
             if not key:
                 plan.append((index, "create", "", str(uuid.uuid4()), item))
@@ -548,24 +767,21 @@ class TaskStore:
         # validation on the remaining valid items) — a --dry-run report should
         # surface everything wrong with the file in one call, not one category
         # at a time.
+        # Every key in the file was assigned an id in pass 1, so a dependency may
+        # name a task created anywhere in the same file — by `key`, or by key
+        # written into `taskId`.
         valid_ids = set(tasks_by_id) | {task_id for _, _, _, task_id, _ in plan}
         created: list[Task] = []
         updated: list[Task] = []
         for index, action, key, task_id, item in plan:
             try:
                 if action == "create":
-                    task = self._task_from_input(item, key_to_id=key_to_id)
+                    task = self._task_from_input(item, key_to_id=key_to_id, known_ids=valid_ids)
                     task.id = task_id
                 else:
                     task = tasks_by_id[task_id]
-                    self._apply_patch(task, item, key_to_id=key_to_id)
-                for dep in task.depends_on:
-                    if dep.task_id == task.id:
-                        raise TaskValidationError("task cannot depend on itself")
-                    if not dep.task_id or dep.task_id not in valid_ids:
-                        raise TaskValidationError(
-                            f"dependsOn references unknown task: {dep.task_id or '(empty)'}"
-                        )
+                    self._apply_update(task, item, key_to_id=key_to_id, known_ids=valid_ids)
+                self._check_dependencies(task, valid_ids)
             except ValueError as exc:
                 errors.append({"index": index, "key": key, "error": str(exc)})
                 continue
@@ -584,13 +800,7 @@ class TaskStore:
         return ImportResult(created=created, updated=updated)
 
     def delete_task(self, task_id: str) -> bool:
-        data = self.load()
-        before = len(data.tasks)
-        data.tasks = [task for task in data.tasks if task.id != task_id]
-        deleted = len(data.tasks) != before
-        if deleted:
-            self.save(data)
-        return deleted
+        return bool(self.delete_tasks([task_id]).deleted)
 
     def add_phase(self, name: str) -> list[str]:
         data = self.load()
@@ -761,7 +971,21 @@ class TaskStore:
         issues: list[ValidationIssue] = []
 
         for task in tasks:
-            if task.status not in active_statuses or not task.blocked_reason:
+            if task.status not in active_statuses:
+                continue
+            if task.blocked_on and not (task.blocked_reason or "").strip():
+                issues.append(ValidationIssue(
+                    "warning",
+                    "blocked_on_without_reason",
+                    f"task is blocked on {task.blocked_on.value} but has no blockedReason "
+                    "saying what it is waiting for",
+                    task.id,
+                    task.key,
+                    task.title,
+                ))
+            # A typed blocker is the legal representation of "waiting on a
+            # person or something outside the project": nothing to report.
+            if not task.blocked_reason or task.blocked_on:
                 continue
             blocking_deps = [
                 task_by_id.get(dep.task_id)
@@ -774,9 +998,11 @@ class TaskStore:
             )
             if not is_blocked_by_dependency:
                 issues.append(ValidationIssue(
-                    "error",
+                    "warning",
                     "ready_with_blocked_reason",
-                    "task has blockedReason but no incomplete blocking dependency",
+                    "task has blockedReason but no incomplete blocking dependency and no blockedOn, "
+                    "so it is still handed out as ready work; set blockedOn (human|external) "
+                    "or clear the reason",
                     task.id,
                     task.key,
                     task.title,
@@ -811,24 +1037,81 @@ class TaskStore:
             assigned_at=owner_payload.get("assignedAt"),
         )
 
-    def _resolve_dependency_refs(self, items: list[dict], key_to_id: dict[str, str]) -> list[TaskDependency]:
+    def _resolve_dependency_refs(
+        self,
+        items: object,
+        key_to_id: dict[str, str],
+        known_ids: Optional[set[str]] = None,
+    ) -> list[TaskDependency]:
+        """Turn `dependsOn` input into stored edges, resolving keys to ids.
+
+        Accepts `{"key": K}`, `{"taskId": ID}`, and — because it is the commonest
+        slip — a key written into `taskId`, or a bare string. A reference that is
+        not a known id but matches a key is stored as that task's id rather than
+        as a dangling edge `validate` would later report as unresolved.
+        """
+        if items is None:
+            return []
+        if not isinstance(items, list):
+            raise TaskValidationError("dependsOn must be a list of {\"key\"|\"taskId\", \"type\"} objects")
+        known = known_ids or set()
         resolved: list[TaskDependency] = []
         for item in items:
+            if isinstance(item, str):
+                item = {"taskId": item}
+            if not isinstance(item, dict):
+                raise TaskValidationError(
+                    f"dependsOn entries must be objects like {{\"key\": \"GOV-001\"}}; got {type(item).__name__}"
+                )
             dep_type = parse_enum(
                 DependencyType, item.get("type") or DependencyType.BLOCKS.value,
                 field="dependsOn[].type",
             )
             ref_key = item.get("key")
             if ref_key:
-                task_id = key_to_id.get(str(ref_key))
+                task_id = _lookup_key(str(ref_key).strip(), key_to_id)
                 if task_id is None:
                     raise TaskValidationError(f"dependsOn references unknown key: {ref_key}")
-                resolved.append(TaskDependency(task_id=task_id, type=dep_type))
             else:
-                resolved.append(TaskDependency(task_id=item.get("taskId", ""), type=dep_type))
+                task_id = str(item.get("taskId") or "").strip()
+                if task_id and task_id not in known:
+                    task_id = _lookup_key(task_id, key_to_id) or task_id
+            resolved.append(TaskDependency(task_id=task_id, type=dep_type))
         return resolved
 
-    def _task_from_input(self, task_input: dict, key_to_id: Optional[dict[str, str]] = None) -> Task:
+    def _check_dependencies(self, task: Task, valid_ids: set[str]) -> None:
+        """Reject self-references and edges to tasks that do not exist."""
+        for dep in task.depends_on:
+            if dep.task_id == task.id:
+                raise TaskValidationError("task cannot depend on itself")
+            if not dep.task_id or dep.task_id not in valid_ids:
+                raise TaskValidationError(
+                    f"dependsOn references unknown task: {dep.task_id or '(empty)'}"
+                )
+
+    def _apply_update(
+        self,
+        task: Task,
+        patch: dict,
+        *,
+        key_to_id: dict[str, str],
+        known_ids: set[str],
+    ) -> None:
+        """Patch an existing task, then the lifecycle rules that follow from the patch."""
+        previous_status = task.status
+        previous_completed_at = task.completed_at
+        self._apply_patch(task, patch, key_to_id=key_to_id, known_ids=known_ids)
+        _stamp_lifecycle_dates(task, previous_status, previous_completed_at, patch)
+        if task.status == TaskStatus.COMPLETE and task.timing == TaskTiming.RECURRING:
+            task.status = TaskStatus.PENDING
+            task.completed_at = None
+
+    def _task_from_input(
+        self,
+        task_input: dict,
+        key_to_id: Optional[dict[str, str]] = None,
+        known_ids: Optional[set[str]] = None,
+    ) -> Task:
         payload = dict(task_input)
         if "targetCoord" in payload:
             coord = CodeCoord.from_dict(payload["targetCoord"])
@@ -846,24 +1129,33 @@ class TaskStore:
             context_coords=[CodeCoord.from_dict(item) for item in payload.get("contextCoords", [])],
             priority=parse_enum(TaskPriority, payload.get("priority", TaskPriority.P2.value), field="priority"),
             phase=payload.get("phase"),
-            depends_on=self._resolve_dependency_refs(payload.get("dependsOn", []), key_to_id or {}),
+            depends_on=self._resolve_dependency_refs(payload.get("dependsOn", []), key_to_id or {}, known_ids),
             blocked_reason=payload.get("blockedReason"),
+            blocked_on=_blocker_from_input(payload.get("blockedOn")),
             owner=owner,
             task_type=parse_enum(TaskType, payload.get("taskType", TaskType.IMPL.value), field="taskType"),
             estimated_minutes=payload.get("estimatedMinutes"),
             actual_minutes=payload.get("actualMinutes"),
             status=parse_enum(TaskStatus, payload.get("status", TaskStatus.PENDING.value), field="status"),
+            state=_state_from_input(payload.get("state")),
             human_notes=payload.get("humanNotes"),
             ai_notes=payload.get("aiNotes"),
             annotations=[],
             started_at=payload.get("startedAt"),
             completed_at=payload.get("completedAt"),
+            work_ref=_work_ref_from_input(payload.get("workRef")),
             acceptance_criteria=payload.get("acceptanceCriteria") or None,
             trigger=payload.get("trigger") or None,
             timing=parse_enum(TaskTiming, payload.get("timing", TaskTiming.ONE_TIME.value), field="timing"),
         )
 
-    def _apply_patch(self, task: Task, patch: dict, key_to_id: Optional[dict[str, str]] = None) -> None:
+    def _apply_patch(
+        self,
+        task: Task,
+        patch: dict,
+        key_to_id: Optional[dict[str, str]] = None,
+        known_ids: Optional[set[str]] = None,
+    ) -> None:
         if "key" in patch:
             task.key = str(patch["key"]).strip()
         if "title" in patch:
@@ -878,6 +1170,12 @@ class TaskStore:
             task.phase = str(patch["phase"] or "").strip() or None
         if "blockedReason" in patch:
             task.blocked_reason = str(patch["blockedReason"] or "").strip() or None
+        if "blockedOn" in patch:
+            task.blocked_on = _blocker_from_input(patch["blockedOn"])
+        if "state" in patch:
+            task.state = _state_from_input(patch["state"])
+        if "workRef" in patch:
+            task.work_ref = _work_ref_from_input(patch["workRef"])
         if "owner" in patch:
             task.owner = self._owner_from_input(patch["owner"] or {})
         if "taskType" in patch:
@@ -901,7 +1199,7 @@ class TaskStore:
             coord.file = to_workspace_relative(self._workspace, coord.file)
             task.target_coord = coord
         if "dependsOn" in patch:
-            task.depends_on = self._resolve_dependency_refs(patch["dependsOn"] or [], key_to_id or {})
+            task.depends_on = self._resolve_dependency_refs(patch["dependsOn"] or [], key_to_id or {}, known_ids)
         if "contextCoords" in patch:
             task.context_coords = [CodeCoord.from_dict(item) for item in patch["contextCoords"] or []]
         if "acceptanceCriteria" in patch:
@@ -1008,6 +1306,8 @@ class TaskStore:
         priority: str = "",
         phase: str = "",
         ready_only: bool = False,
+        blocked: bool = False,
+        blocked_on: str = "",
     ) -> tuple[str, list[object]]:
         clauses: list[str] = []
         params: list[object] = []
@@ -1028,6 +1328,14 @@ class TaskStore:
             params.append(phase)
         if ready_only:
             clauses.append(self._deps.ready_condition_sql())
+        if blocked:
+            # Blocked by an incomplete dependency or by a typed blocker.
+            clauses.append(self._deps.blocked_condition_sql())
+        if blocked_on:
+            clauses.append("json_extract(payload, '$.blockedOn') = ?")
+            params.append(parse_enum(TaskBlocker, blocked_on, field="blockedOn").value)
+        if ready_only or blocked or blocked_on:
+            # Finished work is neither ready nor blocked.
             clauses.append("status NOT IN (?, ?)")
             params.extend([TaskStatus.COMPLETE.value, TaskStatus.SKIPPED.value])
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -1042,6 +1350,8 @@ class TaskStore:
         priority: str = "",
         phase: str = "",
         ready_only: bool = False,
+        blocked: bool = False,
+        blocked_on: str = "",
         limit: int = 100,
         offset: int = 0,
     ) -> list[Task]:
@@ -1052,6 +1362,8 @@ class TaskStore:
             priority=priority,
             phase=phase,
             ready_only=ready_only,
+            blocked=blocked,
+            blocked_on=blocked_on,
         )
         rows = self._conn.execute(
             f"""

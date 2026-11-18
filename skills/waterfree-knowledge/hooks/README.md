@@ -2,13 +2,14 @@
 
 `claude-settings.hooks.json` is a hooks fragment in the schema shared by
 Claude Code (`~/.claude/settings.json`) and Codex CLI (`~/.codex/hooks.json`).
-It wires three small reminders; each is one `waterfree` command that reads the
+It wires four small reminders; each is one `waterfree` command that reads the
 event JSON on stdin and prints either nothing or a short `additionalContext`.
 
 | Event | Command | What the agent sees |
 |-------|---------|---------------------|
 | `SessionStart` | `knowledge hook-session` | One line: how many shared lessons exist and how many were filed from this project, plus up to three of this project's most-retrieved entries. Silent when the store is empty. |
 | `UserPromptSubmit` | `knowledge hook-context` | Up to three summary rows, only when an entry contains every key term of the prompt (or its identifiers). Silent otherwise. Reads `user_prompt` (Claude) or `prompt` (Codex). |
+| `PreToolUse` (matcher `Bash`) | `knowledge hook-pretool` | Only when the Bash call sends an edit through a heredoc whose body contains backslashes and names a code/config file: one warning that the backslashes will be mangled (line continuations joined, escapes changed), pointing at the Edit tool and the merged lesson `202d702d`. Never blocks and never sets a permission decision; silent otherwise. Pure text matching, no store access unless it fires. |
 | `Stop` | `knowledge hook-stop` | When the final message says the fix took several attempts, needed a workaround, or had a non-obvious root cause, one `block` with a reason asking for the insight to be filed with `knowledge add` (or a one-line "not worth keeping"). Guarded by `stop_hook_active`, so it fires at most once per turn, and skipped when the message already mentions filing. |
 
 Install user-wide (idempotent; re-running never duplicates a hook):
@@ -27,6 +28,6 @@ knowledge hook-session`) before installing.
 Uninstall: remove the entries whose command starts with `waterfree knowledge hook-`.
 
 Every firing is logged by the usage log (`knowledge hook-session`,
-`hook-context`, `hook-stop`), so `waterfree usage summary --area knowledge`
+`hook-context`, `hook-pretool`, `hook-stop`), so `waterfree usage summary --area knowledge`
 shows how often each reminder fires and whether injected entries are then read
 with `knowledge get`.
