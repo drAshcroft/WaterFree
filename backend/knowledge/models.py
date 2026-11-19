@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Sequence
 
 
 def _normalize_hierarchy_segment(segment: object) -> str:
@@ -89,6 +89,11 @@ class KnowledgeEntry:
     updated_at: str = ""       # ISO-8601 timestamp of the last in-place revision ("" if never)
     revision: int = 1          # bumped by every in-place update; the id never changes
     scope: str = "global"      # "global" | "project" | "assets"; see class docstring
+    # Where `source_file` stood in git when the entry was filed or last given a
+    # --source-file: {repo, worktreePath, branch, commit, path, status,
+    # committed}. None when the file was not inside a git checkout. See
+    # backend/knowledge/source_ref.py.
+    source_ref: dict[str, Any] | None = None
 
     @classmethod
     def create(
@@ -104,6 +109,7 @@ class KnowledgeEntry:
         context: str = "",
         hierarchy_path: str | Sequence[object] | None = None,
         scope: str | None = None,
+        source_ref: dict[str, Any] | None = None,
     ) -> "KnowledgeEntry":
         normalized_path = normalize_hierarchy_path(hierarchy_path)
         return cls(
@@ -123,6 +129,7 @@ class KnowledgeEntry:
             context=context,
             hierarchy_path=normalized_path,
             scope=default_scope(normalized_path, scope),
+            source_ref=source_ref or None,
         )
 
     def hierarchy_segments(self) -> list[str]:
@@ -173,6 +180,7 @@ class KnowledgeEntry:
             "updatedAt": self.updated_at,
             "revision": self.revision,
             "scope": self.scope,
+            "sourceRef": self.source_ref,
         }
 
 

@@ -55,13 +55,37 @@ def take_last_output() -> tuple[int, Any]:
     return out
 
 
-def emit_json(obj: Any) -> None:
-    """Print a JSON value to stdout, indented for human inspection."""
-    text = json.dumps(obj, indent=2)
+def emit_json(obj: Any, *, compact: bool = False) -> None:
+    """Print a JSON value to stdout, indented for human inspection.
+
+    `compact=True` is for byte-budgeted outputs (receipts, titles-only rows):
+    an envelope holding a list of row objects keeps one key per line and one
+    minified line per row; anything else is printed on a single line.
+    """
+    text = _compact_json(obj) if compact else json.dumps(obj, indent=2)
     sys.stdout.write(text)
     sys.stdout.write("\n")
     _last_output["bytes"] += len(text) + 1
     _last_output["payload"] = obj
+
+
+def _compact_json(obj: Any) -> str:
+    def one(value: Any) -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    def is_rows(value: Any) -> bool:
+        return isinstance(value, list) and bool(value) and all(isinstance(item, dict) for item in value)
+
+    if not (isinstance(obj, dict) and any(is_rows(v) for v in obj.values())):
+        return one(obj)
+    lines = []
+    for key, value in obj.items():
+        if is_rows(value):
+            rows = ",\n".join(f"  {one(item)}" for item in value)
+            lines.append(f"{json.dumps(key)}:[\n{rows}\n]")
+        else:
+            lines.append(f"{json.dumps(key)}:{one(value)}")
+    return "{\n" + ",\n".join(lines) + "\n}"
 
 
 def emit_raw(text: str) -> None:

@@ -156,6 +156,43 @@ def parse(query: str) -> dict:
     return facets
 
 
+def group_packs(hits: list[dict]) -> list[dict]:
+    """One row per pack, most matching files first."""
+    by_pack: dict[tuple, int] = {}
+    for h in hits:
+        key = (h["pack"], h["publisher"], h["licence"], h["imported"], h["pack_path"])
+        by_pack[key] = by_pack.get(key, 0) + 1
+    return [
+        {"pack": pack, "publisher": pub, "licence": lic, "imported": bool(imp),
+         "pack_path": path, "files": n}
+        for (pack, pub, lic, imp, path), n in sorted(by_pack.items(), key=lambda kv: -kv[1])
+    ]
+
+
+def group_subjects(hits: list[dict]) -> list[dict]:
+    """Collapse a material's map files, a mesh's LODs and a sprite's
+    resolutions into the one thing they all depict, in first-hit order."""
+    groups: dict[tuple, dict] = {}
+    for h in hits:
+        g = groups.setdefault(
+            (h["pack"], h["subject"]),
+            {"subject": h["subject"], "pack": h["pack"], "files": 0, "kinds": set(),
+             "prefab": "", "mesh": "", "row": h},
+        )
+        g["files"] += 1
+        g["kinds"].add(h["kind"])
+        g["prefab"] = g["prefab"] or h["prefab"]
+        g["mesh"] = g["mesh"] or h["mesh"]
+    out = []
+    for g in groups.values():
+        h = g.pop("row")
+        g["kinds"] = sorted(g["kinds"])
+        g.update(imported=bool(h["imported"]), context=h["context"], variant=h["variant"],
+                 licence=h["licence"], publisher=h["publisher"], path=h["path"])
+        out.append(g)
+    return out
+
+
 def build_sql(f: dict, limit: int, strict: str = "strong") -> tuple[str, list]:
     """Build the query at one of three precision tiers.
 
@@ -278,8 +315,32 @@ def main() -> int:
         print(f"bad query: {exc}", file=sys.stderr)
         return 2
 
+    total = con.execute(
+        sql.replace("SELECT a.*, bm25(asset_fts, 10.0, 8.0, 4.0, 2.0, 1.0, 1.5, 3.0, 5.0) AS rank",
+                    "SELECT COUNT(*) AS n")
+           .replace("SELECT a.*, 0 AS rank", "SELECT COUNT(*) AS n")
+           .replace(" ORDER BY rank LIMIT ?", "")
+           .replace(" ORDER BY a.imported DESC, a.pack, a.name LIMIT ?", ""),
+        params[:-1],
+    ).fetchone()[0]
+
     if args.json:
-        print(json.dumps({"query": query, "facets": f, "results": hits}, indent=2))
+        # Same grouping and --limit as the text output: --subjects/--packs
+        # fetch up to 5000 raw rows to group, which must never reach stdout.
+        payload: dict = {"query": query, "facets": f, "tier": tier, "total": total}
+        if args.packs or args.subjects:
+            groups = group_packs(hits) if args.packs else group_subjects(hits)
+            payload["mode"] = "packs" if args.packs else "subjects"
+            payload["groups"] = groups[: args.limit]
+            payload["returned"] = len(payload["groups"])
+            payload["more"] = max(0, len(groups) - args.limit)
+            payload["groupedFrom"] = len(hits)
+        else:
+            payload["mode"] = "assets"
+            payload["results"] = hits
+            payload["returned"] = len(hits)
+            payload["more"] = max(0, total - len(hits))
+        print(json.dumps(payload, indent=2))
         return 0
 
     applied = []
@@ -296,63 +357,35 @@ def main() -> int:
     if f["text"]:
         applied.append("text=" + " ".join(f["text"]))
 
-    total = con.execute(
-        sql.replace("SELECT a.*, bm25(asset_fts, 10.0, 8.0, 4.0, 2.0, 1.0, 1.5, 3.0, 5.0) AS rank",
-                    "SELECT COUNT(*) AS n")
-           .replace("SELECT a.*, 0 AS rank", "SELECT COUNT(*) AS n")
-           .replace(" ORDER BY rank LIMIT ?", "")
-           .replace(" ORDER BY a.imported DESC, a.pack, a.name LIMIT ?", ""),
-        params[:-1],
-    ).fetchone()[0]
-
     print(f"\n{query!r}  ->  {' | '.join(applied) or 'no filters'}")
     if tier:
         print(tier)
     print(f"{total} matching assets\n")
 
     if args.packs:
-        by_pack: dict[tuple, int] = {}
-        for h in hits:
-            key = (h["pack"], h["publisher"], h["licence"], h["imported"],
-                   h["pack_path"])
-            by_pack[key] = by_pack.get(key, 0) + 1
-        for (pack, pub, lic, imp, path), n in sorted(
-            by_pack.items(), key=lambda kv: -kv[1]
-        )[: args.limit]:
-            tag = "imported" if imp else "CACHED - import first"
-            print(f"  {n:5}  {pack[:42]:42} {pub[:20]:20} [{tag}]")
-            print(f"         {lic[:70]}")
-            print(f"         {path}")
+        for p in group_packs(hits)[: args.limit]:
+            tag = "imported" if p["imported"] else "CACHED - import first"
+            print(f"  {p['files']:5}  {p['pack'][:42]:42} {p['publisher'][:20]:20} [{tag}]")
+            print(f"         {p['licence'][:70]}")
+            print(f"         {p['pack_path']}")
         return 0
 
     if args.subjects:
-        # Collapse a material's five map files, a mesh's LODs and a sprite's
-        # resolutions into the one thing they all depict.
-        groups: dict[tuple, dict] = {}
-        for h in hits:
-            key = (h["pack"], h["subject"])
-            g = groups.setdefault(
-                key, {"n": 0, "kinds": set(), "row": h, "prefab": "", "mesh": ""}
-            )
-            g["n"] += 1
-            g["kinds"].add(h["kind"])
-            g["prefab"] = g["prefab"] or h["prefab"]
-            g["mesh"] = g["mesh"] or h["mesh"]
-        for (pack, subject), g in list(groups.items())[: args.limit]:
-            h = g["row"]
-            tag = "" if h["imported"] else "  [CACHED - import first]"
-            context = h["context"]
-            where = f"  -  {context}" if context else ""
-            print(f"  {subject[:44]:44} {'+'.join(sorted(g['kinds']))[:22]:22}"
-                  f" {g['n']} file{'s' if g['n'] != 1 else ''}{tag}")
-            print(f"      {pack}{where}")
+        groups = group_subjects(hits)
+        for g in groups[: args.limit]:
+            tag = "" if g["imported"] else "  [CACHED - import first]"
+            where = f"  -  {g['context']}" if g["context"] else ""
+            n = g["files"]
+            print(f"  {g['subject'][:44]:44} {'+'.join(g['kinds'])[:22]:22}"
+                  f" {n} file{'s' if n != 1 else ''}{tag}")
+            print(f"      {g['pack']}{where}")
             extra = []
             if g["prefab"]:
                 extra.append(f"prefab: {g['prefab']}")
             if g["mesh"]:
                 extra.append(f"mesh: {g['mesh']}")
-            if h["variant"]:
-                extra.append(h["variant"])
+            if g["variant"]:
+                extra.append(g["variant"])
             if extra:
                 print(f"      {' | '.join(extra)}")
         if len(groups) > args.limit:

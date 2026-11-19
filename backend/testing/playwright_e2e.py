@@ -21,7 +21,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from backend.testing.errors import ToolchainError
+from backend.testing.bounded import RunLimits
+from backend.testing.errors import NoTestsMatchedError, ToolchainError
 from backend.testing.results import TestResult, TestRunResult
 from backend.testing.toolchain import check_filter_arg, node_tool, run_tool
 
@@ -105,6 +106,9 @@ def _error_text(attempt: dict) -> str:
 class PlaywrightRunner:
     """Drives `playwright test` and parses its JSON report."""
 
+    name = "playwright"
+    limits: RunLimits | None = None
+
     def list_tests(self, workspace_path: str) -> list[str]:
         raw = self._invoke(workspace_path, ["--list"], timeout=120)
         results = parse_playwright_json(raw.report)
@@ -125,11 +129,10 @@ class PlaywrightRunner:
         check_filter_arg(name_substr)
         result = self._run(workspace_path, ["--grep", name_substr])
         if not result.results:
-            msg = f"No Playwright tests found matching '{name_substr}'"
-            return TestRunResult(
-                passed=0, failed=1,
-                results=[TestResult(name=name_substr, passed=False, error=msg)],
-                raw_output=result.raw_output or msg,
+            raise NoTestsMatchedError(
+                runner=self.name,
+                filter=name_substr,
+                raw_output=result.raw_output,
             )
         return result
 
@@ -156,6 +159,7 @@ class PlaywrightRunner:
                 workspace_path=workspace_path,
                 timeout=timeout,
                 env={"PLAYWRIGHT_JSON_OUTPUT_NAME": str(report_path)},
+                limits=self.limits,
             )
         except subprocess.TimeoutExpired as exc:
             raise ToolchainError(

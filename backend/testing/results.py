@@ -31,6 +31,17 @@ class TestRunResult:
     results: list[TestResult] = field(default_factory=list)
     raw_output: str = ""
     skipped: int = 0
+    # Set when the run produced no trustworthy verdict: killed by --budget or
+    # --stall, or (godot-script) finished without printing any lane summary.
+    # The CLI exits 4 for these whatever the counts say — an incomplete run is
+    # never reported as passed.
+    incomplete: bool = False
+    incomplete_reason: str | None = None
+    first_error: str | None = None
+    first_error_location: str | None = None
+    # Runner-specific provenance (godot-script: native exit code, command,
+    # git fingerprint, parsed lanes). Rendered verbatim under "receipt".
+    receipt: dict | None = None
 
     def __post_init__(self):
         self.skipped = max(self.skipped, sum(r.skipped for r in self.results))

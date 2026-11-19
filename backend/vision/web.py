@@ -5,7 +5,12 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from backend.vision.analyze import VisionError, analyze
+from backend.vision.analyze import (
+    DEFAULT_TIMEOUT_SECONDS,
+    VisionError,
+    analyze,
+    check_request,
+)
 from backend.vision.models import DEFAULT_PURPOSE
 
 
@@ -19,7 +24,7 @@ def capture_web(
     if not 0 <= wait_ms <= 30_000 or not 1000 <= timeout_ms <= 120_000:
         raise ValueError("wait-ms must be 0–30000 and timeout-ms must be 1000–120000.")
     try:
-        from playwright.sync_api import sync_playwright, Error
+        from playwright.sync_api import Error, sync_playwright
     except ImportError as exc:
         raise VisionError("Playwright is required for web capture; install playwright and its Chromium browser.") from exc
     destination = Path(output_dir).expanduser() if output_dir else Path(workspace_path or ".") / ".waterfree" / "vision-web" / uuid.uuid4().hex
@@ -68,7 +73,11 @@ def analyze_web(
     url: str, *, purpose: str = DEFAULT_PURPOSE, question: str = "", model: str = "", tier: str = "",
     workspace_path: str = "", output_dir: str = "", mobile: bool = False, ready_selector: str = "",
     wait_ms: int = 750, timeout_ms: int = 30_000, full_page: bool = False, capture_only: bool = False,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS, labels: str | list[str] | None = None,
 ) -> dict:
+    """`timeout_ms` bounds page loading; `timeout` (seconds) bounds each vision-model call."""
+    if not capture_only:
+        check_request(purpose, labels)  # fail on usage before launching a browser
     captures = capture_web(
         url, workspace_path=workspace_path, output_dir=output_dir, mobile=mobile,
         ready_selector=ready_selector, wait_ms=wait_ms, timeout_ms=timeout_ms,
@@ -76,7 +85,8 @@ def analyze_web(
     analyses = [] if capture_only else [
         {"breakpoint": capture["breakpoint"], **analyze(
             [capture["full_page" if full_page else "viewport"]],
-            purpose=purpose, question=question, model=model, tier=tier,
+            purpose=purpose, question=question, model=model, tier=tier, timeout=timeout,
+            labels=labels,
         )} for capture in captures
     ]
     return {"url": url, "capture_mode": "full_page" if full_page else "viewport", "captures": captures, "analyses": analyses}

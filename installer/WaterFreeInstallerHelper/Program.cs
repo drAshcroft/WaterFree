@@ -27,6 +27,10 @@ internal static class Program
         "waterfree-qa-summary"
     };
 
+    // Outcome of the last VS Code extension install, written under
+    // <install-dir>\logs\installer\ on every install (see WriteExtensionStatus).
+    private const string ExtensionStatusFileName = "vscode-extension-status.json";
+
     private static int Main(string[] args)
     {
         var installDir = GetArgValue(args, "--install-dir");
@@ -66,10 +70,14 @@ internal static class Program
             RemoveClaudeConfig(log);
 
             InstallSkills(log, installDir);
-            InstallVsixIfPossible(log, vsixPath);
+            // Non-fatal by design: a VS Code hiccup must not roll back the whole
+            // product, so the outcome goes to a status file rather than the exit
+            // code. build_installer.ps1 -Deploy reads it and reports it.
+            var extension = InstallVsixIfPossible(log, vsixPath);
+            WriteExtensionStatus(log, installDir, extension);
             SmokeTest(log, exePath);
 
-            log.Info("Install helper completed successfully.");
+            log.Info($"Install helper completed successfully. VS Code extension: {extension.Status}.");
             return 0;
         }
         catch (Exception ex)
@@ -582,29 +590,35 @@ internal static class Program
         log.Info($"Smoke test OK: waterfree runtime dependencies verified.\n{stdout}");
     }
 
-    private static void InstallVsixIfPossible(InstallerLog log, string? vsixPath)
+    private static ExtensionInstallResult InstallVsixIfPossible(InstallerLog log, string? vsixPath)
     {
         if (string.IsNullOrWhiteSpace(vsixPath))
         {
-            log.Info("VSIX path not provided; skipping VS Code install.");
-            return;
+            return ReportExtension(log, new ExtensionInstallResult(
+                ExtensionInstallStatus.Skipped, "VSIX path not provided; skipping VS Code install."));
         }
 
         vsixPath = Path.GetFullPath(vsixPath);
         if (!File.Exists(vsixPath))
         {
-            log.Info($"VSIX not found; skipping VS Code install: {vsixPath}");
-            return;
+            return ReportExtension(log, new ExtensionInstallResult(
+                ExtensionInstallStatus.Skipped, $"VSIX not found; skipping VS Code install: {vsixPath}", vsixPath));
         }
+
+        var vsixVersion = TryReadVsixVersion(vsixPath);
+        var label = $"WaterFree extension v{vsixVersion ?? "?"}";
+        var manualInstall = $"code --install-extension \"{vsixPath}\" --force";
 
         var codeCmd = FindVsCodeCommand();
         if (string.IsNullOrWhiteSpace(codeCmd))
         {
-            log.Info("VS Code CLI not found; skipping VSIX install.");
-            return;
+            return ReportExtension(log, new ExtensionInstallResult(
+                ExtensionInstallStatus.Skipped,
+                $"VS Code CLI not found; {label} was not installed. If you use VS Code, run: {manualInstall}",
+                vsixPath, vsixVersion));
         }
 
-        log.Info($"Installing VSIX via: {codeCmd}");
+        log.Info($"Installing {label} via: {codeCmd}");
 
         // .cmd files cannot be launched directly with UseShellExecute=false;
         // they must be invoked through cmd.exe.
@@ -640,19 +654,161 @@ internal static class Program
             };
         }
 
-        using var proc = new Process { StartInfo = psi };
-        proc.Start();
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
-
-        if (proc.ExitCode != 0)
+        int exitCode;
+        string stdout;
+        string stderr;
+        try
         {
-            log.Info($"VS Code extension install failed (non-fatal): exit={proc.ExitCode} stdout={stdout} stderr={stderr}");
-            return;
+            using var proc = new Process { StartInfo = psi };
+            proc.Start();
+            stdout = proc.StandardOutput.ReadToEnd();
+            stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            exitCode = proc.ExitCode;
+        }
+        catch (Exception ex)
+        {
+            return ReportExtension(log, new ExtensionInstallResult(
+                ExtensionInstallStatus.Failed,
+                $"{label} was NOT installed: could not run the VS Code CLI ({ex.Message}). Run: {manualInstall}",
+                vsixPath, vsixVersion, codeCmd));
         }
 
-        log.Info($"VS Code extension installed. stdout={stdout}");
+        log.Info($"VS Code CLI exit={exitCode} stdout={stdout} stderr={stderr}");
+        var output = Truncate($"{stdout}\n{stderr}".Trim(), 4000);
+        var vsCodeRunning = IsVsCodeRunning();
+
+        if (exitCode != 0)
+        {
+            var needsRestart = LooksLikeRestartRequired(output);
+            return ReportExtension(log, new ExtensionInstallResult(
+                needsRestart ? ExtensionInstallStatus.RestartRequired : ExtensionInstallStatus.Failed,
+                needsRestart
+                    ? $"{label} was NOT installed: VS Code is holding the previous copy. Close every VS Code window, then run: {manualInstall}"
+                    : $"{label} was NOT installed (VS Code CLI exit={exitCode}). Run: {manualInstall}",
+                vsixPath, vsixVersion, codeCmd, exitCode, vsCodeRunning, output));
+        }
+
+        if (vsCodeRunning)
+        {
+            // The new version is on disk, but every open window keeps running
+            // the old one (and the backend it spawned was stopped above when the
+            // runtime was replaced) until it is reloaded.
+            return ReportExtension(log, new ExtensionInstallResult(
+                ExtensionInstallStatus.ReloadRequired,
+                $"{label} installed, but VS Code is running: open windows keep the previous version until reloaded. " +
+                "Run 'Developer: Reload Window' in each window, or restart VS Code.",
+                vsixPath, vsixVersion, codeCmd, exitCode, vsCodeRunning, output));
+        }
+
+        return ReportExtension(log, new ExtensionInstallResult(
+            ExtensionInstallStatus.Installed, $"{label} installed.",
+            vsixPath, vsixVersion, codeCmd, exitCode, vsCodeRunning, output));
+    }
+
+    // Anything but a clean install is logged at WARN with one fixed prefix, so
+    // an incomplete extension update stands out in the helper log.
+    private static ExtensionInstallResult ReportExtension(InstallerLog log, ExtensionInstallResult result)
+    {
+        var line = $"VS Code extension {result.Status}: {result.Message}";
+        if (result.Status == ExtensionInstallStatus.Installed)
+        {
+            log.Info(line);
+        }
+        else
+        {
+            log.Warn(line);
+        }
+        return result;
+    }
+
+    private static void WriteExtensionStatus(InstallerLog log, string installDir, ExtensionInstallResult result)
+    {
+        var path = Path.Combine(installDir, "logs", "installer", ExtensionStatusFileName);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var status = new JsonObject
+            {
+                ["status"] = result.Status,
+                ["message"] = result.Message,
+                ["vsixVersion"] = result.VsixVersion,
+                ["vsixPath"] = result.VsixPath,
+                ["codeCli"] = result.CodeCli,
+                ["exitCode"] = result.ExitCode,
+                ["vsCodeRunning"] = result.VsCodeRunning,
+                ["output"] = result.Output,
+                ["helperLog"] = log.LogPath,
+                ["timestampUtc"] = DateTime.UtcNow.ToString("O")
+            };
+            // Relaxed escaping: people open this file too, and the default
+            // encoder turns every quote in the message into ".
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            };
+            File.WriteAllText(path, status.ToJsonString(options), new UTF8Encoding(false));
+            log.Info($"VS Code extension status written: {path}");
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: reporting must never fail the install.
+            log.Info($"Could not write VS Code extension status {path}: {ex.Message}");
+        }
+    }
+
+    // VS Code will not replace an extension folder a running instance still
+    // holds: a same-version reinstall answers "Please restart VS Code before
+    // reinstalling ...", and locked files surface as EBUSY/EPERM.
+    private static bool LooksLikeRestartRequired(string output)
+    {
+        return output.Contains("restart", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("EBUSY", StringComparison.Ordinal)
+            || output.Contains("EPERM", StringComparison.Ordinal)
+            || output.Contains("resource busy or locked", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsVsCodeRunning()
+    {
+        foreach (var name in new[] { "Code", "Code - Insiders" })
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName(name);
+                var running = procs.Length > 0;
+                foreach (var proc in procs) proc.Dispose();
+                if (running) return true;
+            }
+            catch
+            {
+                // can't enumerate — treat as not running
+            }
+        }
+        return false;
+    }
+
+    // The version VS Code will see: extension/package.json inside the vsix
+    // (build_installer.ps1 stamps the MSI's ProductVersion into it).
+    private static string? TryReadVsixVersion(string vsixPath)
+    {
+        try
+        {
+            using var zip = ZipFile.OpenRead(vsixPath);
+            var entry = zip.GetEntry("extension/package.json");
+            if (entry is null) return null;
+            using var stream = entry.Open();
+            return JsonNode.Parse(stream)?["version"]?.GetValue<string>();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        return value.Length <= max ? value : value.Substring(0, max) + "...";
     }
 
     private static string? FindVsCodeCommand()
@@ -723,6 +879,27 @@ internal static class Program
     }
 }
 
+internal static class ExtensionInstallStatus
+{
+    public const string Installed = "installed";
+    // Installed, but open VS Code windows still run the previous version.
+    public const string ReloadRequired = "reload-required";
+    // Not installed: VS Code holds the old copy; close it and install again.
+    public const string RestartRequired = "restart-required";
+    public const string Failed = "failed";
+    public const string Skipped = "skipped";
+}
+
+internal sealed record ExtensionInstallResult(
+    string Status,
+    string Message,
+    string? VsixPath = null,
+    string? VsixVersion = null,
+    string? CodeCli = null,
+    int? ExitCode = null,
+    bool VsCodeRunning = false,
+    string? Output = null);
+
 internal sealed class InstallerLog : IDisposable
 {
     private readonly string _logPath;
@@ -756,6 +933,8 @@ internal sealed class InstallerLog : IDisposable
     }
 
     public void Info(string message) => Write("INFO", message);
+
+    public void Warn(string message) => Write("WARN", message);
 
     public void Error(string message) => Write("ERROR", message);
 

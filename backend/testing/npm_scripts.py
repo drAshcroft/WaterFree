@@ -28,7 +28,12 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from backend.testing.errors import NoTestsDiscoveredError
+from backend.testing.bounded import RunLimits
+from backend.testing.errors import (
+    NoTestsDiscoveredError,
+    NoTestsMatchedError,
+    RunIncompleteError,
+)
 from backend.testing.results import TestResult, TestRunResult
 from backend.testing.toolchain import check_filter_arg, npm, run_tool
 
@@ -180,6 +185,9 @@ def _tail(raw: str, limit: int = 40) -> str:
 class NpmScriptRunner:
     """Runs each `test:*` npm script as one test unit."""
 
+    name = "npm-scripts"
+    limits: RunLimits | None = None
+
     def __init__(self, *, workers: int | None = None, timeout: int | None = None) -> None:
         self._workers = workers
         self._timeout = timeout
@@ -195,13 +203,14 @@ class NpmScriptRunner:
     def run_one(self, workspace_path: str, name_substr: str) -> TestRunResult:
         check_filter_arg(name_substr)
         pattern = name_substr.lower()
-        matched = [s for s in test_scripts(workspace_path) if pattern in s.lower()]
+        scripts = test_scripts(workspace_path)
+        matched = [s for s in scripts if pattern in s.lower()]
         if not matched:
-            msg = f"No npm test script matching '{name_substr}'"
-            return TestRunResult(
-                passed=0, failed=1,
-                results=[TestResult(name=name_substr, passed=False, error=msg)],
-                raw_output=msg,
+            raise NoTestsMatchedError(
+                runner=self.name,
+                filter=name_substr,
+                available=len(scripts),
+                raw_output=f"No npm test script matching '{name_substr}'",
             )
         return self._run(workspace_path, matched)
 
@@ -226,7 +235,12 @@ class NpmScriptRunner:
 
         results: list[TestResult] = []
         transcript: list[str] = []
+        stopped: list[tuple[str, RunIncompleteError]] = []
         for script, exit_code, raw in outputs:
+            if isinstance(exit_code, RunIncompleteError):
+                stopped.append((script, exit_code))
+                transcript.append(f"$ npm run {script}\n{exit_code.raw_output}")
+                continue
             transcript.append(f"$ npm run {script}\n{raw}")
             parsed = parse_script_output(script, raw, exit_code=exit_code)
             results.extend(parsed or [TestResult(
@@ -236,16 +250,33 @@ class NpmScriptRunner:
                 else f"exited with code {exit_code}\n{_tail(raw)}",
             )])
 
-        return TestRunResult(
+        result = TestRunResult(
             passed=sum(1 for r in results if r.passed),
             failed=sum(1 for r in results if not r.passed),
             results=results,
             raw_output="\n\n".join(transcript),
         )
+        if stopped:
+            # One budget for the whole run: if any script was stopped, the run
+            # has no verdict. The scripts that did finish are kept as partial
+            # results so the caller does not lose them.
+            first = stopped[0][1]
+            names = ", ".join(s for s, _ in stopped)
+            raise RunIncompleteError(
+                f"npm script(s) {names} were stopped ({first.reason}). {first}",
+                reason=first.reason,
+                elapsed=max(exc.elapsed for _, exc in stopped),
+                limit=first.limit,
+                first_error=first.first_error,
+                first_error_location=first.first_error_location,
+                raw_output=result.raw_output,
+                partial=result,
+            )
+        return result
 
     def _run_script(
         self, npm_bin: str, workspace_path: str, script: str, timeout: int,
-    ) -> tuple[str, int, str]:
+    ) -> tuple[str, int | RunIncompleteError, str]:
         try:
             proc = run_tool(
                 [npm_bin, "run", "--silent", script],
@@ -255,9 +286,12 @@ class NpmScriptRunner:
                 # without this node picks the console codepage and the output we
                 # parse arrives mojibaked on Windows.
                 env={"FORCE_COLOR": "0", "NO_COLOR": "1"},
+                limits=self.limits,
             )
         except subprocess.TimeoutExpired:
             return script, 124, f"`npm run {script}` timed out after {timeout}s."
+        except RunIncompleteError as exc:
+            return script, exc, exc.raw_output
         return script, proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 

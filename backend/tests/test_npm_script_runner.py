@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from backend.testing import npm_scripts
+from backend.testing.errors import NoTestsMatchedError, RunIncompleteError
 from backend.testing.npm_scripts import (
     NpmScriptRunner,
     is_npm_scripts_project,
@@ -125,7 +126,7 @@ class OutputParsingTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     def _runner_with(self, outputs: dict[str, tuple[int, str]]):
         """An NpmScriptRunner whose subprocess calls are stubbed."""
-        def fake_run(cmd, *, workspace_path, timeout, env=None):
+        def fake_run(cmd, *, workspace_path, timeout, env=None, limits=None):
             script = cmd[-1]
             code, text = outputs[script]
             return mock.Mock(returncode=code, stdout=text, stderr="")
@@ -160,11 +161,38 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.passed, 1)
         self.assertEqual(result.failed, 0)
 
-    def test_run_one_reports_a_miss_as_a_failure(self) -> None:
+    def test_run_one_miss_is_a_no_match_error_not_a_failure(self) -> None:
+        """A typo'd script name is a selection problem (exit 4), not a red test."""
         with TemporaryDirectory() as tmp:
-            _write_package(Path(tmp), {"test:rng": "tsx rng.ts"})
-            result = NpmScriptRunner(workers=1).run_one(tmp, "nothing-like-this")
-        self.assertEqual(result.failed, 1)
+            _write_package(Path(tmp), {"test:rng": "tsx rng.ts", "test:ai": "tsx ai.ts"})
+            with self.assertRaises(NoTestsMatchedError) as ctx:
+                NpmScriptRunner(workers=1).run_one(tmp, "nothing-like-this")
+        self.assertEqual(ctx.exception.runner, "npm-scripts")
+        self.assertEqual(ctx.exception.filter, "nothing-like-this")
+        self.assertEqual(ctx.exception.available, 2)
+
+    def test_a_stopped_script_makes_the_run_incomplete_and_keeps_finished_ones(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _write_package(Path(tmp), {"test:a": "tsx a.ts", "test:hang": "tsx hang.ts"})
+
+            def fake_run(cmd, *, workspace_path, timeout, env=None, limits=None):
+                if cmd[-1] == "test:hang":
+                    raise RunIncompleteError(
+                        "stopped", reason="stall", elapsed=2.0, limit=1.0,
+                        raw_output="Running...\n",
+                    )
+                return mock.Mock(returncode=0, stdout="  ✓  alpha\n", stderr="")
+
+            with mock.patch.object(npm_scripts, "run_tool", side_effect=fake_run), \
+                 mock.patch.object(npm_scripts, "npm", return_value=r"C:\node\npm.CMD"):
+                with self.assertRaises(RunIncompleteError) as ctx:
+                    NpmScriptRunner(workers=2).run_all(tmp)
+
+        exc = ctx.exception
+        self.assertEqual(exc.reason, "stall")
+        self.assertIn("test:hang", str(exc))
+        self.assertEqual(exc.partial.passed, 1)
+        self.assertIn("npm run test:a", exc.raw_output)
 
     def test_script_without_recognisable_output_still_reports_one_result(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -524,7 +524,10 @@ class TodosListPagingCliTests(unittest.TestCase):
         self.assertEqual(page["returned"], 2)
         self.assertTrue(page["truncated"])
         self.assertEqual(page["nextOffset"], 2)
-        self.assertIn("only 2 were returned", err.getvalue())
+        # The note travels in the envelope; stderr stays empty so PowerShell
+        # does not report a successful call as a NativeCommandError.
+        self.assertIn("only 2 were returned", page["hint"])
+        self.assertEqual(err.getvalue(), "")
 
         _, rest = _run(["todos", "list", "--workspace", str(workspace), "--limit", "2", "--offset", "2"])
         self.assertEqual(rest["total"], 3)
@@ -599,13 +602,15 @@ class TodosGetAndNotesCliTests(unittest.TestCase):
         with redirect_stderr(err):
             _, result = _run(["todos", "update", *ws, task["id"], "--ai-notes", "short"])
         self.assertEqual(result["aiNotes"], "short")
-        self.assertIn("aiNotes shrank", err.getvalue())
-        self.assertIn("--append-ai-notes", err.getvalue())
+        self.assertIn("aiNotes shrank", result["warnings"][0])
+        self.assertIn("--append-ai-notes", result["warnings"][0])
+        self.assertEqual(err.getvalue(), "")
 
         err = io.StringIO()
         with redirect_stderr(err):
             _, result = _run(["todos", "update", *ws, task["id"], "--ai-notes", "short but a bit longer"])
         self.assertEqual(err.getvalue(), "")
+        self.assertNotIn("warnings", result)
 
     def test_replace_and_append_for_the_same_field_are_exclusive(self) -> None:
         workspace = self.make_workspace()

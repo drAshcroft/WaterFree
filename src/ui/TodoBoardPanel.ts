@@ -40,11 +40,13 @@ export interface TodoBoardTaskData {
   phase?: string | null;
   dependsOn: TodoBoardDependency[];
   blockedReason?: string | null;
+  blockedOn?: "human" | "external" | null;
   owner: TodoBoardOwner;
   taskType: TodoTaskType;
   estimatedMinutes?: number | null;
   actualMinutes?: number | null;
   status: TodoStatus;
+  state?: string | null;
   humanNotes?: string | null;
   aiNotes?: string | null;
   annotations: unknown[];

@@ -8,8 +8,12 @@ import sys
 import time
 from typing import Sequence
 
+from backend.cli import animgen as area_animgen
+from backend.cli import audiogen as area_audiogen
+from backend.cli import gpu as area_gpu
 from backend.cli import imagegen as area_imagegen
 from backend.cli import index as area_index
+from backend.cli import meshgen as area_meshgen
 from backend.cli import knowledge as area_knowledge
 from backend.cli import qa as area_qa
 from backend.cli import qa_summary as area_qa_summary
@@ -41,15 +45,50 @@ def _build_parser() -> argparse.ArgumentParser:
     area_writing_grade.register(sub)
     area_vision.register(sub)
     area_imagegen.register(sub)
+    area_meshgen.register(sub)
+    area_audiogen.register(sub)
+    area_animgen.register(sub)
+    area_gpu.register(sub)
     area_usage.register(sub)
 
     return parser
 
 
+def _selected_parser(parser: argparse.ArgumentParser, args: argparse.Namespace) -> argparse.ArgumentParser:
+    """The deepest subcommand parser `args` selected (e.g. the `todos update` parser)."""
+    current = parser
+    while True:
+        sub_action = next(
+            (action for action in current._actions if isinstance(action, argparse._SubParsersAction)),
+            None,
+        )
+        if sub_action is None:
+            return current
+        chosen = getattr(args, sub_action.dest, None)
+        child = sub_action.choices.get(chosen) if chosen is not None else None
+        if child is None:
+            return current
+        current = child
+
+
+def _parse_args(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    """`parse_args`, except unrecognized arguments are reported by the subcommand.
+
+    Plain `parse_args` reports an unknown flag against the top-level parser, so
+    `waterfree todos update X --bogus` printed `usage: waterfree [-h] <area> ...`
+    — no help for the command actually being typed. Same exit code (2) and same
+    message; only the usage line is the failing subcommand's.
+    """
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        _selected_parser(parser, args).error(f"unrecognized arguments: {' '.join(extras)}")
+    return args
+
+
 def dispatch(argv: Sequence[str]) -> int:
     parser = _build_parser()
     argv = list(argv)
-    args = parser.parse_args(argv)
+    args = _parse_args(parser, argv)
     runner = getattr(args, "_runner", None)
     if runner is None:
         parser.print_help(sys.stderr)
@@ -59,6 +98,10 @@ def dispatch(argv: Sequence[str]) -> int:
     # never changes the exit code; `waterfree usage ...` itself is not logged so
     # reading the log does not pollute it.
     take_last_output()
+    # Names this process in `waterfree gpu status` if it ends up holding the GPU
+    # lease -- directly (imagegen/meshgen/audiogen) or via an Ollama call.
+    from backend.gpu.lease import set_command_label
+    set_command_label(f"{args.area} {getattr(args, 'action', '')}".strip())
     started = time.perf_counter()
     exit_code = EXIT_INTERNAL
     try:

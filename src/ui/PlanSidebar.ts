@@ -53,6 +53,7 @@ export interface TaskData {
   owner: TaskOwner;
   taskType: TaskType;
   blockedReason?: string;
+  blockedOn?: "human" | "external" | null;
   status: "pending" | "annotating" | "negotiating" | "executing" | "complete" | "skipped";
   annotations: AnnotationData[];
 }
@@ -83,6 +84,7 @@ export interface BacklogTaskData {
   owner: TaskOwner;
   targetCoord: CodeCoord;
   blockedReason?: string;
+  blockedOn?: "human" | "external" | null;
   status: "pending" | "annotating" | "negotiating" | "executing" | "complete" | "skipped";
 }
 

@@ -39,19 +39,42 @@ class GenerationFailed(RuntimeError):
     """The pipeline loaded but the run failed."""
 
 
+def _import_failure(module: str, exc: BaseException) -> str:
+    """Describe an import that raised something other than a clean ImportError.
+
+    A loose script on sys.path with an installed package's name (a scratch
+    `h2.py` in the venv root, say) runs at import time and fails with whatever
+    it raises; name the file so the cause is visible (IMG-SYSPATH-001).
+    """
+    from backend.runtime_paths import find_shadowing  # noqa: PLC0415
+
+    shadows = find_shadowing()
+    detail = f"importing {module} failed: {type(exc).__name__}: {exc}"
+    if shadows:
+        files = "; ".join(f"{s['module']} -> {s['file']}" for s in shadows)
+        detail += f"\nA loose file is shadowing an installed package: {files}. Move it off sys.path."
+    return detail
+
+
 def is_available() -> tuple[bool, str]:
     """(usable, reason). Reason is empty when usable."""
     try:
         import torch  # noqa: PLC0415
     except ImportError:
         return False, "PyTorch is not installed."
+    except Exception as exc:  # noqa: BLE001 - a shadowing script can raise anything
+        return False, _import_failure("torch", exc)
     try:
         import diffusers  # noqa: PLC0415,F401
-    except ImportError:
+    except ImportError as exc:
+        if getattr(exc, "name", None) not in (None, "diffusers"):
+            return False, _import_failure("diffusers", exc)
         return False, (
             "diffusers is not installed. Install it with:\n"
             "  pip install diffusers accelerate sentencepiece protobuf"
         )
+    except Exception as exc:  # noqa: BLE001
+        return False, _import_failure("diffusers", exc)
     if not torch.cuda.is_available():
         return False, (
             "No CUDA device is visible to PyTorch. Generation on CPU is not "
@@ -92,16 +115,12 @@ def load_pipeline(spec: ResolvedGeneration, *, hf_token: str = "") -> Any:
         raise GenerationFailed(f"Unknown dtype '{spec.dtype}'.")
 
     pipeline_class = _pipeline_class(spec.preset.pipeline)
-    token = hf_token.strip() or os.environ.get("HF_TOKEN", "").strip()
-    kwargs: dict[str, Any] = {"torch_dtype": dtype}
-    if token:
-        # SD3.5 and FLUX are gated repos: without an accepted licence and a
-        # token, the download 401s with a message that does not mention either.
-        kwargs["token"] = token
+    # `make` never downloads: weights arrive through `waterfree imagegen install`,
+    # so a 10-20 GB fetch never starts inside an agent's timed tool call (GPU-004).
+    kwargs: dict[str, Any] = {"torch_dtype": dtype, "local_files_only": True}
 
     try:
-        with DownloadProgress(spec.repo_id):
-            pipeline = pipeline_class.from_pretrained(spec.repo_id, **kwargs)
+        pipeline = pipeline_class.from_pretrained(spec.repo_id, **kwargs)
         if spec.mode != "txt2img":
             conversion = _pipeline_class("AutoPipelineForInpainting" if spec.mask else "AutoPipelineForImage2Image")
             pipeline = conversion.from_pipe(pipeline)
@@ -118,7 +137,11 @@ def load_pipeline(spec: ResolvedGeneration, *, hf_token: str = "") -> Any:
         if names:
             pipeline.set_adapters(names, adapter_weights=weights)
     except Exception as exc:
-        raise GenerationFailed(_download_hint(spec, exc)) from exc
+        if _looks_not_installed(exc):
+            raise NotInstalled(
+                f"'{spec.repo_id}' is not installed in the local Hugging Face cache. "
+                f"Install it with: waterfree imagegen install {spec.preset.key}") from exc
+        raise GenerationFailed(_download_hint_for(spec.repo_id, exc, disk_gb=spec.preset.disk_gb)) from exc
 
     _apply_memory_strategy(pipeline, spec)
     _PIPELINE_CACHE[cache_key] = pipeline
@@ -245,21 +268,68 @@ def _supports_negative_prompt(spec: ResolvedGeneration) -> bool:
     return spec.guidance > 0.0
 
 
-def _download_hint(spec: ResolvedGeneration, exc: Exception) -> str:
+class NotInstalled(BackendUnavailable):
+    """The preset's weights are not in the local Hugging Face cache."""
+
+
+def is_installed(repo_id: str) -> bool:
+    """True when the pipeline's weights are fully in the local HF cache (no network)."""
+    try:
+        import diffusers  # noqa: PLC0415
+        diffusers.DiffusionPipeline.download(repo_id, local_files_only=True)
+        return True
+    except Exception:  # noqa: BLE001 - any failure here means "not usable offline"
+        return False
+
+
+def install(repo_id: str, *, hf_token: str = "") -> str:
+    """Download whatever the pipeline needs that the HF cache lacks; return the snapshot path.
+
+    `DiffusionPipeline.download` fetches only the files `from_pretrained` would
+    load (no alternate single-file checkpoints or unused variants), and skips
+    anything already cached -- nothing is downloaded twice.
+    """
+    require_available()
+    import diffusers  # noqa: PLC0415
+
+    from backend.engines.hf_cache import avoid_symlink_race  # noqa: PLC0415
+    avoid_symlink_race()
+    token = hf_token.strip() or os.environ.get("HF_TOKEN", "").strip()
+    kwargs: dict[str, Any] = {}
+    if token:
+        # SD3.5 and FLUX are gated repos: without an accepted licence and a
+        # token, the download 401s with a message that does not mention either.
+        kwargs["token"] = token
+    try:
+        with DownloadProgress(repo_id):
+            return str(diffusers.DiffusionPipeline.download(repo_id, **kwargs))
+    except Exception as exc:
+        raise GenerationFailed(_download_hint_for(repo_id, exc)) from exc
+
+
+def _looks_not_installed(exc: Exception) -> bool:
+    """from_pretrained(local_files_only=True) on an uncached repo; the wording varies by version."""
+    lowered = str(exc).lower()
+    return any(marker in lowered for marker in (
+        "local_files_only", "offline mode", "cannot find the requested files",
+        "couldn't connect", "does not appear to have", "no such file or directory",
+        "is not a local folder", "cannot find an appropriate cached snapshot",
+    ))
+
+
+def _download_hint_for(repo_id: str, exc: Exception, *, disk_gb: float | None = None) -> str:
     detail = str(exc)
-    base = f"Could not load '{spec.repo_id}': {detail}"
+    base = f"Could not load '{repo_id}': {detail}"
     lowered = detail.lower()
     if "401" in detail or "gated" in lowered or "authorized" in lowered:
         return (
-            f"{base}\n\n'{spec.repo_id}' is a gated repository. Accept its licence "
-            f"at https://huggingface.co/{spec.repo_id} then set $HF_TOKEN "
+            f"{base}\n\n'{repo_id}' is a gated repository. Accept its licence "
+            f"at https://huggingface.co/{repo_id} then set $HF_TOKEN "
             "(https://huggingface.co/settings/tokens)."
         )
     if "connection" in lowered or "resolve" in lowered or "timed out" in lowered:
-        return (
-            f"{base}\n\nThe weights are downloaded on first use "
-            f"(~{spec.preset.disk_gb:.0f} GB for this preset) and need network access."
-        )
+        size = f" (~{disk_gb:.0f} GB for this preset)" if disk_gb else ""
+        return f"{base}\n\nInstalling the weights{size} needs network access."
     return base
 
 

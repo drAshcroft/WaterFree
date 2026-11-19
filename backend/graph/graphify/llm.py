@@ -771,7 +771,11 @@ def _call_openai_compat(
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
         kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
-    resp = client.chat.completions.create(**kwargs)
+    # WaterFree: a local Ollama shares this machine's GPU with imagegen/meshgen/
+    # audiogen -- wait while one of them holds it (no-op for remote endpoints).
+    from backend.gpu import ollama as _gpu_ollama
+    with _gpu_ollama.access(base_url):
+        resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
     raw_content = resp.choices[0].message.content

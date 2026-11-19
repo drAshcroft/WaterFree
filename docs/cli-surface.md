@@ -29,7 +29,7 @@ waterfree <area> <action> [--workspace <path>] [flags] [positional]
 ```
 
 - **area** — one of: `todos`, `knowledge`, `index`, `testing`, `qa-summary`,
-  `writing-grade`, `vision`, `imagegen`, `usage`
+  `writing-grade`, `vision`, `imagegen`, `meshgen`, `audiogen`, `animgen`, `gpu`, `usage`
 - **action** — area-specific verb (e.g. `list`, `add`, `search`, `delete`)
 - **--workspace** — path to the project root. Defaults to CWD. Required for
   every `todos`, `index`, and `testing` action. Knowledge is global, but accepts
@@ -59,37 +59,58 @@ Mirrors `backend/mcp_todos.py`. Backed by `.waterfree/tasks.db` via
 
 | Action       | Flags / args                                                                       | MCP equivalent |
 |--------------|------------------------------------------------------------------------------------|----------------|
-| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--limit N`, `--offset N`, `--full` | `list_tasks` |
-| `search`     | `<query>` (positional), `--limit N`, `--phrase`, `--full`                          | `search_tasks` |
-| `get`        | `<task-id\|key>`, `--full`                                                        | - (single task lookup) |
-| `get-next`   | `--owner NAME`, `--full`                                                           | `get_next_task` |
-| `get-ready`  | `--limit N`, `--full`                                                              | `get_ready_tasks` |
+| `list`       | `--status`, `--priority`, `--phase`, `--owner`, `--ready-only`, `--blocked`, `--blocked-on human\|external`, `--limit N`, `--offset N`, `--full`, `--fields F,...` | `list_tasks` |
+| `search`     | `<query>` (positional), `--limit N`, `--phrase`, `--full`, `--fields F,...`        | `search_tasks` |
+| `get`        | `<task-id\|key>`, `--full`, `--fields F,...`, `--notes-only`, `--tail N`          | - (single task lookup) |
+| `get-next`   | `--owner NAME`, `--full`, `--fields F,...`                                         | `get_next_task` |
+| `get-ready`  | `--limit N`, `--full`, `--fields F,...`                                            | `get_ready_tasks` |
 | `schema`     | `--workspace`                                                                      | - (task schema) |
 | `task-types` | `--workspace`                                                                      | - (enum discovery) |
 | `validate`   | `--workspace`                                                                      | - (backlog validation) |
 | `add`        | `--title T`, `--description D`, `--key`, `--priority`, `--phase`, `--owner-type`, `--target-file`, `--target-line`, `--json-file <path\|->`, `--full` | `add_task` |
-| `update`     | `<task-id\|key>`, `--status`, `--priority`, `--phase`, `--owner-type`, `--owner-name`, `--append-ai-notes`, `--append-human-notes`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--patch '<json>'`, `--patch-file <path\|->`, `--full` | `update_task` |
-| `delete`     | `<task-id\|key>`                                                                   | `delete_task` |
+| `update`     | `<task-id\|key>`, `--status`, `--priority`, `--phase`, `--key`, `--title`, `--description`, `--acceptance-criteria`, `--owner-type`, `--owner-name`, `--blocked-on human\|external`, `--blocked-reason`, `--unblock`, `--state`, `--state-file <path\|->`, `--append-ai-notes`, `--append-ai-notes-file <path\|->`, `--append-human-notes`, `--append-human-notes-file <path\|->`, `--ai-notes`, `--human-notes`, `--actual-minutes`, `--branch`, `--worktree`, `--patch '<json>'`, `--patch-file <path\|->`, `--full`, `--quiet` | `update_task` |
+| `delete`     | `<task-id\|key>` or `--ids-file <path\|->` (`--ignore-missing`), `--dry-run`       | `delete_task` |
+| `prune`      | `--status complete\|skipped` (repeatable), `--older-than AGE`, `--include-undated`, `--export FILE`, `--dry-run` | — (bulk delete of finished work) |
 | `import`     | `--file <path\|->`, `--upsert`, `--dry-run`, `--full`                             | — (bulk `add_task`/`update_task`) |
 
 All actions accept `--workspace` (default: CWD). Read/write actions emit
 **compact** JSON (null/empty/default fields omitted) unless `--full` is passed.
+`--fields` projects exactly the named top-level task fields (nulls included) on
+`list`, `search`, `get`, `get-next` and `get-ready`.
 `list`, `search`, and `get-ready` all return `{ "tasks": [...], "total": N }`
 envelopes; `list` also includes `phases`. Wherever an action takes a task id,
 the task's stable `key` is accepted too (case-insensitive): `get`, `update`,
-`delete`.
+`delete`. An unrecognized flag reports the failing subcommand's usage
+(`usage: waterfree todos update ...`), exit `2` — this applies to every area.
+
+**stdout only.** The todos area writes nothing informational to stderr
+(PowerShell turns any native stderr into a NativeCommandError, so a note there
+makes a successful call look failed). Advisories are JSON: `hint` on envelopes
+and a `warnings` string list on task results (`add`, `update`, `get`). stderr
+carries only errors, which always exit non-zero.
+
+**Worktrees.** The todos area (only) maps a linked git worktree that has no
+`.waterfree/tasks.db` of its own onto the main checkout's store (the parent of
+`git rev-parse --git-common-dir`), so worktree agents need no `--workspace`.
+This also applies to an explicit `--workspace` naming such a worktree; any other
+explicit `--workspace` is used as given, and a worktree with its own store keeps
+it. Redirected results carry `"workspace": "<main checkout>"` and
+`"resolvedFrom": "worktree"`. When neither location has a store, read actions
+exit `3` naming the main checkout; `add`/`import` create the store there.
 
 `list` pages: `total` is always the unpaged count for the given filters, and
 the envelope also carries `returned`, `offset`, `limit` and `truncated`. When
-the page was cut it adds `nextOffset` and prints a one-line note on stderr, so
-a capped dump is never mistaken for the whole backlog.
+the page was cut it adds `nextOffset` and a `hint`, so a capped dump is never
+mistaken for the whole backlog. `--blocked` lists unfinished tasks blocked by an
+incomplete `blocks` dependency or a typed blocker; `--blocked-on` filters on the
+typed blocker kind.
 
 `search` matches **terms**: every whitespace-separated word must appear
 somewhere in the task, in any field and any order. `_` and `-` are treated as
 spaces on both sides (`mode lever` finds `mode_lever`). A double-quoted run
 inside the query must be contiguous; `--phrase` makes the whole query one
 contiguous phrase. A task whose `key` equals the query sorts first. Searched
-fields: key, title, description, rationale, acceptanceCriteria, trigger,
+fields: key, title, description, rationale, acceptanceCriteria, trigger, state,
 aiNotes, humanNotes, targetCoord file/class/method, owner name, phase. The
 default row is a summary (`id`, `key`, `title`, `status`, `priority`, `phase`,
 `owner`, plus a `match` snippet naming the field that hit); `--full` emits whole
@@ -100,10 +121,61 @@ limit truncated the result.
 On `update`, discrete flags cover the
 common edits without JSON; `--patch` is for fields without a flag and discrete
 flags win on conflict. `--append-ai-notes` / `--append-human-notes` add a
-paragraph to the existing notes; `--ai-notes` / `--human-notes` replace them
-and warn on stderr when the replacement is less than half the length of what
-it discarded. The replace and append flags for one field are mutually exclusive. `add --json-file` reads one complete task object, while
+paragraph to the existing notes (the `*-file` variants read the paragraph from a
+UTF-8 file or `-` for stdin); `--ai-notes` / `--human-notes` replace them and add
+a `warnings` entry when the replacement is less than half the length of what it
+discarded. The replace and append flags for one field are mutually exclusive,
+and at most one input per call may read stdin. `add --json-file` reads one complete task object, while
 `update --patch-file` reads one JSON patch object; both accept `-` for stdin.
+
+Lifecycle dates are stamped on status changes made through `update` and
+`import --upsert`: moving to `complete` sets `completedAt`, reopening clears it,
+and the first move to `executing` sets `startedAt`; a date set explicitly in the
+patch (and different from the stored one) wins. Tasks created already complete
+are not back-dated.
+
+`state` is an overwritable markdown field for the current verdict, open items
+and rejected approaches (soft cap ~1,500 characters; `aiNotes` stays the
+append-only history). `update --state TEXT` / `--state-file <path|->` replace it
+wholesale (`--state ''` clears it). It is printed before the notes, searched, and
+projectable. `get --notes-only` emits id/key/title/status, `state`, `aiNotes` and
+`humanNotes`; `--tail N` (implies `--notes-only`) keeps the last N paragraphs of
+each notes field and reports `truncated`. `get` adds a `warnings` entry when
+`aiNotes` exceeds ~5,000 characters, and `update` warns when `state` exceeds its
+soft cap.
+
+`blockedOn` (`human` | `external` | null) is a typed blocker for work waiting on
+a person or something outside the project. `update --blocked-on KIND
+--blocked-reason TEXT` sets it (a reason is required unless one is already
+stored); `--unblock` clears both fields. A task with `blockedOn` keeps its status
+but is excluded from `get-next`, `get-ready` and `list --ready-only`.
+
+`workRef` (`{branch, worktreePath, headCommit, recordedAt}`) records where a
+task's work lives. `update` sets it automatically when the task moves to
+`executing` from inside a checkout of the store's repository, and refreshes it
+when an executing task is updated (or completed) from a linked worktree, unless
+it already names a different worktree that still exists. `--branch` /
+`--worktree` set it explicitly; `--patch '{"workRef": null}'` clears it. When a
+task has a `workRef`, `get` adds `workStatus`: live `branch`, `headCommit`,
+`dirtyFiles`, `ahead`/`behind` against `main` (or `master`), `pathExists`, and
+the newest file under `artifacts/<KEY>/` as `receipt`. A deleted worktree
+degrades to the stored values (`pathExists: false`, plus `branchExists` and
+ahead/behind from the main repository when the branch survives).
+
+`delete --ids-file` reads ids/keys (one per line, `#` comments allowed, or a JSON
+array / `{"tasks": [...]}` such as `list --fields id` output) and deletes them in
+one transaction. If any entry matches no task nothing is deleted and the exit
+code is `3` (`notFound` lists them) unless `--ignore-missing`. Output:
+`{deletedCount, matched, tasks, notFound, dryRun}`; remaining tasks whose
+`dependsOn` named a deleted task are reported as `orphanedDependents` (single
+deletes report them too). `prune` deletes finished tasks (`--status`, default
+`complete`; only `complete`/`skipped` are accepted) after writing them to
+`--export FILE` — required unless `--dry-run`, merged into an existing export,
+replaced atomically, and nothing is deleted if the export fails (exit `1`).
+`--older-than 30d|12h|2w` measures from `completedAt`; tasks without one are
+reported as `skippedUndated` unless `--include-undated`. Dependency edges from
+remaining tasks to pruned tasks are removed (`detachedDependencies`) so those
+tasks stay ready. The export is a valid `import --file` input.
 All JSON file and stdin inputs use UTF-8 (with an optional UTF-8 BOM); malformed
 UTF-8 and invalid Unicode return a usage error before any task is persisted.
 When combined, file data is applied first, then inline JSON and discrete flags
@@ -112,18 +184,23 @@ override it. File paths are resolved relative to CWD.
 `task-types` prints the accepted `taskType` values. Invalid enum values reported
 by task writes include the accepted values inline.
 `validate` checks the persisted backlog for missing required fields, duplicate
-keys, unresolved dependencies, dependency cycles, title-convention warnings, and
-tasks that carry a `blockedReason` but would otherwise appear ready. It returns
+keys, unresolved dependencies and dependency cycles (errors), plus warnings for
+title conventions, tasks that carry a `blockedReason` with neither an incomplete
+dependency nor a `blockedOn` (`ready_with_blocked_reason`), and `blockedOn`
+without a reason (`blocked_on_without_reason`). It returns
 `{ "ok": bool, "issueCount": N, "errorCount": N, "warningCount": N, "issues": [...] }`
 and exits `2` when errors are present.
 
 Tasks have an optional stable `key` (e.g. `GOV-001`), settable via `add --key`
-or `update --patch '{"key": "..."}'`. It must be unique across the workspace
+or `update --key`. It must be unique across the workspace
 (`add`/`update` reject a collision with exit code 2). Entries in `dependsOn`
 accept `{"key": "GOV-001", "type": "blocks"}` as an alternative to
 `{"taskId": "<uuid>", "type": "blocks"}` — resolved to the real id at write
 time, so tasks can reference each other by a name you chose instead of a
-generated UUID. `search`/`list`/`get-*` include `key` in their output when set.
+generated UUID. A key written into `taskId` (or a bare string entry) is resolved
+the same way, including keys created earlier in the same `import` file. On the
+CLI, `add`/`update` reject a `dependsOn` entry that names no task.
+`search`/`list`/`get-*` include `key` in their output when set.
 
 `import` reads a JSON file (`--file backlog.json`, or `--file -` for stdin —
 same convention as `knowledge add --code -`) containing either a bare array of
@@ -145,16 +222,17 @@ muscle-memory compatibility but does not change the global store location.
 
 | Action          | Flags / args |
 |-----------------|--------------|
-| `search`        | `<query>`, `--limit N`, `--repo NAME`, `--scope default\|all\|global\|project\|assets`, `--workspace` (its basename is the preferred repo), `--full` |
-| `browse`        | `--path P`, `--depth N`, `--include-entries`, `--entry-limit N`, `--workspace`, `--full` |
-| `get`           | `<entry-id>`, `--workspace` |
-| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin; both optional), `--snippet-type` (required with code, defaults to `convention` without), `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context`, `--source-repo-url`, `--hierarchy-path`, `--scope global\|project\|assets`, `--no-check`, `--workspace` |
-| `update`        | `<entry-id>`, any of `--title`, `--description`, `--code` / `--code-file`, `--snippet-type`, `--tag T` (repeatable; replaces the list), `--context`, `--source-repo`, `--source-file`, `--source-repo-url`, `--hierarchy-path`, `--workspace` |
+| `search`        | `<query>`, `--limit N`, `--repo NAME`, `--path P`, `--scope default\|all\|global\|project\|assets`, `--workspace` (its basename is the preferred repo), `--full` or `--brief` |
+| `browse`        | `[PATH]` or `--path P`, `--depth N`, `--include-entries` / `--list`, `--entry-limit N`, `--workspace`, `--full` |
+| `get`           | `<entry-id>` (full id, unique id prefix of 6+ chars, or exact title), `--text`, `--workspace` |
+| `history`       | `<entry-id>` (also a deleted entry's id/prefix), `--field F` (repeatable), `--limit N` (50), `--full`, `--workspace` |
+| `add`           | `--title`, `--description`, `--code-file PATH` (or `--code -` for stdin; both optional), `--snippet-type` (required with code, defaults to `convention` without), `--source-repo`, `--source-file`, `--tag T` (repeatable), `--context` or `--context-file PATH\|-`, `--source-repo-url`, `--hierarchy-path`, `--scope global\|project\|assets`, `--no-check`, `--force`, `--dry-run`, `--quiet`, `--workspace` |
+| `update`        | `<entry-id>` (id, unique prefix or exact title), any of `--title`, `--description` / `--description-file` / `--append-description`, `--code` / `--code-file`, `--snippet-type`, `--tag T` (repeatable; replaces the list), `--context` / `--context-file` / `--append-context`, `--source-repo`, `--source-file`, `--source-repo-url`, `--hierarchy-path`, `--scope`; or `--restore-revision N` [`--restore-field F`]; `--quiet`, `--workspace` |
 | `hook-context`  | reads a Claude Code `UserPromptSubmit` event on stdin; `--max-rows N` (3), `--min-terms N` (2), `--max-terms N` (12), `--workspace`. Prints `hookSpecificOutput.additionalContext` only when an entry contains every key term (identifiers first) of the prompt; otherwise prints nothing. Fragment: `skills/waterfree-knowledge/hooks/claude-settings.hooks.json`, installed with `install_claude.ps1 -InstallHooks`. |
 | `hook-session`  | reads a `SessionStart` event on stdin; `--max-rows N` (3), `--workspace`. Prints one orientation line (shared-lesson count, this project's count, its most-retrieved entries); nothing for an empty store. |
 | `hook-stop`     | reads a `Stop` event on stdin; `--workspace`. When `last_assistant_message` carries a lesson marker (several attempts, workaround, root cause, turned out, gotcha, did not work) and `stop_hook_active` is false, prints `decision: block` with a one-paragraph reason asking for the insight to be filed; otherwise nothing. |
 | `consolidate`   | `--window N` (days of retrieval history, 90), `--min-age N` (30), `--threshold F` (0.5), `--max-groups N` (25), `--max-group-size N` (5), `--include-assets`, `--no-llm`, `--model M`, `--apply`, `--report-file PATH`, `--workspace` |
-| `delete`        | `<entry-id>`, `--workspace` |
+| `delete`        | `<entry-id>` (full id or unique prefix; not a title), `--workspace` |
 | `list-sources`  | `--workspace`, `--full` |
 | `stats`         | `--workspace`, `--full` |
 
@@ -162,28 +240,65 @@ Note: `--code-file` is the preferred way to pass a snippet body; shell-escaping
 multi-line code through argv is painful. `--code -` reads from stdin. Code is
 optional: a lesson, decision or convention with nothing to paste is stored with
 an empty `code` and is deduplicated on title + description + context instead of
-on the code hash. `knowledge search` returns `{ "entries": [...], "total": N, "preferred_repo": ..., "hint"? }`.
+on the code hash. `knowledge search` returns `{ "entries": [...], "total": N, "preferred_repo": ..., "scope": ..., "mode": "summary"|"brief"|"full", "hint"?, "suggestions"? }`.
 Ranking is precision-first: entries containing every query word come first
 (BM25 order within the tier), then any-word matches re-ranked by how many
 distinct query words their title/description/tags contain (code only breaks
 ties). Entries whose `source_repo` basename equals the `--workspace` basename
-sort first within each tier; `--repo` restricts to one repo. Default rows omit
-`code` and `context` (they carry `code_chars`/`context_chars`); `--full`
-restores them and `get <id>` returns one entry.
+sort first within each tier, and the preferred repo's all-word matches are
+fetched separately before the tier is cut to `--limit`, so they are never
+dropped in favour of other repos'; `--repo` restricts to one repo (applied in
+SQL before the row limit). Default rows omit `code` and `context` (they carry
+`code_chars`/`context_chars`, and `source_note` when present); `--full` restores
+them and `get <id>` returns one entry. `--brief` rows are exactly `id`, `title`,
+`hierarchy_path`, `source_repo`, printed one minified row per line (~2.3 KB for
+10 real rows against ~9 KB default). A `--path` that matches no node adds the
+nearest paths to the hint.
 Every entry carries a `scope`: `global` (default), `project` (visible only to searches
 whose `--workspace`/cwd basename matches its `source_repo`) or `assets` (automatic for
 `assets/*` hierarchy paths). `search --scope` defaults to global + own-project; `all`
 or a single scope override it. Existing databases are backfilled once on open:
 `assets/*` rows become `assets`, entries whose title starts with their own repo name
 become `project`, the rest stay `global`. `stats` reports `by_scope`.
-`add` runs a non-blocking quality gate unless `--no-check`: `warnings` lists a
-`near_duplicate` (an entry already contains every word of the title, with its ids),
-`no_hierarchy`, and `reads_like_a_trace` (narrative rather than instruction); each is
-also printed on stderr.
-`get` returns one entry (exit 3 when unknown). `update` revises an entry in
-place: the id is kept, `revision` is incremented, `updated_at` is stamped, the
-full-text index is refreshed, and only the passed fields change; it exits 2 when
-no field was given or when the revised content would collide with another entry.
+`add` runs a quality gate unless `--no-check`: `warnings` lists a
+`near_duplicate` (an entry already contains every word of the title; `ids`,
+`titles`, `shared_terms`, and `recent_id` when the twin was filed from the same
+repo in the last 15 minutes), `no_hierarchy`, and `reads_like_a_trace`
+(first-person narration; `evidence` quotes the sentences; numbered lists alone
+do not count). Only `near_duplicate` blocks: exit 2, nothing saved, unless
+`--force` or the body is an exact duplicate. The add JSON starts with `added`,
+`id`, `saved`, `summary`, `revision`; an exact duplicate returns `added: false`,
+`saved: true` and the existing `id`/`revision` (`duplicate_of`); a blocked add
+returns `id: null`, `blocked: true`, `duplicate_of`. Advice goes into `notes`
+(`saved anyway as <id>; revise with knowledge update <id>`, path normalisation,
+an uncommitted `--source-file`); like todos, the knowledge area writes nothing
+informational to stderr unless stderr is an interactive terminal, which gets a
+readable copy. `--quiet` prints only `{id, added, revision}` plus `warnings`
+(the kinds) when the gate fired (blocked: `{id: null, added: false, blocked,
+duplicate_of}`). With `--source-file` inside a git checkout, `add`/`update` record
+`source_ref` `{repo, worktreePath, branch, commit, path, status, committed}` (one
+`git status` call; nothing outside git); rows then carry `source_note`
+(`uncommitted in worktree X ...`, or `<file> is not in this workspace` when the
+reader's checkout of the same repo lacks it).
+`get` returns one entry (exit 3 when unknown). `get`/`update`/`delete`/`history`
+accept a unique id prefix of 6+ hex characters; an ambiguous prefix exits 2 and
+lists `id  title` candidates on stderr, a shorter one exits 2. `update` revises
+an entry in place: the id is kept, `revision` is incremented, `updated_at` is
+stamped, the full-text index is refreshed, and only the passed fields change; it
+exits 2 when no field was given or when the revised content would collide with
+another entry. `--append-description`/`--append-context` add a paragraph; a
+replace that discards more than half of the old text (by words) adds a `warnings`
+string to the update result (`--quiet`: a `warnings` count).
+Every changed field's previous value goes to the `knowledge_entry_history` table
+(`delete` snapshots all fields first); `history <id>` lists rows `{revision,
+field, change, changed_at, old_chars, old_value}` newest first (values over 400
+chars clipped unless `--full`), and `update <id> --restore-revision N` puts the
+revision-N values back as a new revision. `update --quiet` prints only `{id,
+updated, revision}`. `browse` takes the path positionally or as `--path`; a path
+with no node returns `hint` + `suggestions` (nearest paths ignoring case,
+spaces and separators, then trailing segments and edit distance), a node with a
+separator twin returns `see_also`, and `--include-entries`/`--list` rows use the
+search-row shape (`--full` for code/context).
 `consolidate` is the store's maintenance pass: it groups near-duplicate entries
 (title vocabulary overlap, or title+description overlap within one hierarchy),
 asks the local model on the `knowledge_consolidate` stage for one merged entry per
@@ -239,7 +354,7 @@ graph DB.
 |----------------------|--------------|
 | `build`              | (alias: `index`) — full index |
 | `status`             | — |
-| `search-code`        | `<query>`, `--max N` |
+| `search-code`        | `<query>`, `--max N`, `--include-worktrees` (nested git worktrees are skipped by default) |
 | `search-graph`       | `<query>`, `--node-type T`, `--limit N` |
 | `get-snippet`        | `<qualified-name>`, `--scope procedure|neighbors|class` |
 | `trace`              | `<function>`, `--direction callers|callees|both`, `--depth N`, `--budget-tokens N` (1500; 0 = unlimited) |
@@ -251,15 +366,46 @@ All actions except `list-projects` accept `--workspace`.
 
 ## Area: testing
 
-Mirrors `backend/mcp_testing.py`. Auto-detects unittest/pytest/jest/vitest.
+Mirrors `backend/mcp_testing.py`. Auto-detects godot → pytest → jest → vitest →
+unittest → npm-scripts → dotnet; `playwright` and `godot-script` are opt-in only.
 
 | Action       | Flags / args |
 |--------------|--------------|
-| `run`        | `--workspace`, `--full`, `--summary` |
-| `run-one`    | `<name-substring>`, `--workspace`, `--full`, `--summary` |
-| `list`       | `--workspace`, `--full` |
+| `run`        | `--workspace`, `--full`, `--summary`, runner flags (below) |
+| `run-one`    | `<name-substring>`, `--workspace`, `--full`, `--summary`, runner flags |
+| `list`       | `--workspace`, `--full`, runner flags |
 | `logs`       | — |
 | `summarize`  | `--workspace` |
+| `await`      | `--log PATH`, `--until REGEX`, `--timeout DURATION` (30m), `--pid N`, `--summary-pattern REGEX`, `--max-lines N` (60), `--fresh` \| `--include-existing` |
+
+Runner flags: `--runner {dotnet,godot,godot-script,jest,npm-scripts,playwright,pytest,unittest,vitest}`,
+`--godot-path`, `--budget DURATION`, `--stall DURATION`, and for `godot-script`
+only: `--script res://...` (implies `--runner godot-script`), `--lane NAME`
+(repeatable), `--arg=VALUE` (repeatable), `--junit-xml PATH`. Durations: `90`,
+`90s`, `5m`, `1h30m`, `250ms`.
+
+Exit codes for `run`/`run-one`: `0` green, `1` a test failed, `2` usage, `4`
+the tests did not produce a verdict — no framework, toolchain missing, zero
+tests discovered, **run-one matched nothing**, or the run was **incomplete**
+(`--budget`/`--stall` kill, godot-script with no lane summary).
+
+Result JSON: `runner`, `passed`, `failed`, `skipped`, `total`, `results[]`,
+`elapsedSeconds`; plus `incomplete: true`, `reason` (`budget` | `stall` |
+`timeout` | `no_summary`), `limitSeconds`, `error`, `firstError` /
+`firstErrorLocation` (first Godot `SCRIPT ERROR`/`Parse Error` and its
+`file:line`) when the run has no verdict; `receipt` for `godot-script`
+(native `exitCode`, `command`, git `fingerprint` {`head`, `dirty`},
+`lanes[]`, `verdict`, `junit`, `receiptFile` holding full stdout/stderr).
+
+A zero-match `run-one` prints a JSON error on stdout (exit 4):
+`{error, code: "no_tests_matched", runner, filter, available, skipped}`; when
+the runner was auto-detected it adds `autoDetected`, `otherRunners[]`
+(`runner`, `evidence`, `matches` where the runner can list statically,
+`retry`, `optIn`) and a `hint`.
+
+`await` prints `{matched, reason: matched|pid_exited|timeout, elapsedSeconds,
+log, matchLine, summaryLines[], summaryLineCount, bytesRead, logExists}`; exit
+0 matched, 4 otherwise. Only content written after the call started counts.
 
 `--summary` adds a `summary` key to the JSON: an LLM root-cause grouping of the
 failures, produced by `backend/testing/summary.py`. It is advisory — if the
@@ -330,14 +476,25 @@ retains both viewport and full-page screenshots before local analysis.
 
 | Action      | Flags / args |
 |-------------|--------------|
-| `look`      | `<image>...` (up to 4), `--purpose`, `-q/--question`, `--model`, `--tier`, `--workspace` |
-| `web`       | `<url>`, `--purpose`, `--question`, `--model`, `--tier`, `--mobile`, `--ready-selector`, `--wait-ms`, `--timeout-ms`, `--full-page`, `--capture-only`, `--output-dir`, `--workspace` |
+| `look`      | `<image>...` (up to 4; exactly 1 for classify), `--purpose`, `-q/--question`, `--model`, `--tier`, `--timeout SECONDS`, `--labels A,B,C`, `--workspace` |
+| `web`       | `<url>`, `--purpose`, `--question`, `--model`, `--tier`, `--timeout SECONDS`, `--labels A,B,C`, `--mobile`, `--ready-selector`, `--wait-ms`, `--timeout-ms`, `--full-page`, `--capture-only`, `--output-dir`, `--workspace` |
 | `models`    | `--workspace` |
 | `purposes`  | `--workspace` |
 | `pull`      | `--tier {small,large}` or `--model <id>`, `--workspace` |
 
 Purposes select both the model tier and the framing of the question:
-`describe` (small), and `triage` / `ui` / `function` / `text` / `compare` (large).
+`describe` (small), and `triage` / `ui` / `function` / `text` / `compare` /
+`classify` (large). A custom `-q` question lifts `describe` to the large tier
+(the small tier agrees with candidates a question names); `--tier` / `--model`
+override. Results carry `tier`, `tierReason`, `advisory` and a `warnings` list
+of `{code, message}` — e.g. `leading-question` when `-q` names candidate answers
+(parenthesised lists, "such as", "e.g.", "X or Y or Z", "is there a ...").
+
+`classify` requires `--labels` (2–20, comma-separated; missing is exit `2`),
+always adds `none` and `uncertain`, shuffles the order per call (recorded as
+`labelOrder`) and returns `{label, evidence, confidence: low|medium|high}`. An
+out-of-set label gets one stricter retry, then `label: "uncertain"` with the raw
+reply in `answer`.
 
 Two tiers: `small` = moondream (~1.7 GB), `large` = qwen2.5vl:7b (~6 GB).
 Override per-invocation with `--model`, or globally with
@@ -346,6 +503,15 @@ Override per-invocation with `--model`, or globally with
 **Nothing is downloaded implicitly.** A missing model exits `4` with the exact
 `waterfree vision pull` command — these are gigabytes, and a describe should
 never silently cost 6 GB of disk.
+
+**Busy host.** `--timeout` (default 300 s, `$WATERFREE_VISION_TIMEOUT`) bounds
+each model attempt (`web --timeout-ms` is page loading only). Timeouts and
+Ollama 503s are retried with backoff (`$WATERFREE_VISION_RETRIES`, default 1,
+max 3); when all fail, exit `4` with "Ollama did not answer in N s ...; the
+host may be under load" naming `--timeout`. The pre-flight model listing waits
+at most `$WATERFREE_VISION_LIST_TIMEOUT` (10 s) and, if Ollama is too busy,
+proceeds with a `model-check-skipped` warning; `--model` skips it. `models`
+reports `installed: null` when Ollama cannot be asked.
 
 Images are downscaled to 1280px on the long edge (`$WATERFREE_VISION_MAX_EDGE`)
 and re-encoded as PNG before being sent.
@@ -358,19 +524,32 @@ HTTP backend uses an existing server and its registered checkpoints/LoRAs.
 
 | Action    | Flags / args |
 |-----------|--------------|
-| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--backend {diffusers,comfy}`, `--image`, `--mask`, `--strength`, repeatable `--lora PATH=WEIGHT`, `--comfy-url`, `--checkpoint`, `--timeout`, `--workspace` |
+| `make`    | `<prompt>`, `-n/--count`, `--preset`, `--steps`, `--guidance`, `--width`, `--height`, `--negative-prompt`, `--seed`, `--offload`, `--output-dir`, `--hf-token`, `--backend {diffusers,comfy}`, `--image`, `--mask`, `--strength`, repeatable `--lora PATH=WEIGHT`, `--comfy-url`, `--checkpoint`, `--timeout`, `--comfy-free` (after the job, `POST /free` to a ComfyUI on this machine so the next GPU job finds the memory; `comfyFreeAfter` in imagegen.json; off by default), GPU queue flags, `--workspace` |
 | `models`  | `--workspace` |
 | `status`  | `--workspace`, `--backend`, `--comfy-url` |
+| `install` | `[PRESET ...\|all]` (default: the workspace's preset), `--hf-token`, `--workspace` |
 | `init`    | `--workspace` |
-| `unload`  | `--workspace` |
+| `unload`  | GPU queue flags, `--workspace` — same as `gpu evict` |
 
 Presets: `sd35-medium` (default, ~11 GB), `sdxl` (~7 GB), `sdxl-turbo` (~7 GB),
-`flux-schnell` (~24 GB, needs sequential offload on a 12 GB card). Settings
+`flux-schnell` (~24 GB, needs sequential offload on a 12 GB card). The VRAM
+preflight uses needs measured per (preset, offload) on an RTX 3060 12 GB
+(`MEASURED_VRAM_GB` in `backend/imagegen/generate.py`, 2026-11-18): sd35-medium
+model 10.3 / sequential 3.3; sdxl model 7.9 / sequential 3.4; sdxl-turbo none
+9.2 / model 5.6 / sequential 1.0. `--offload none` does not fit 12 GB for sdxl
+(spilled 3.2 GB) or sd35-medium (crashed) and is refused. Settings
 resolve in three layers, later winning: preset defaults → `.waterfree/imagegen.json`
 → CLI flags.
 
-Weights download to the Hugging Face cache on first use, not the workspace.
-SD3.5 and FLUX are gated repos: accept the licence and set `$HF_TOKEN`.
+**`make` never downloads.** Weights live in the Hugging Face cache and arrive
+through `imagegen install`, which fetches only what the pipeline loads and skips
+anything already cached. A preset that is not installed makes `status` and
+`make` exit `4` with the install command. SD3.5 and FLUX are gated repos:
+accept the licence and set `$HF_TOKEN` before installing.
+
+`make` takes the exclusive GPU lease (see "GPU scheduling"). Each invocation is
+its own process and frees its pipeline when done, so `unload` has nothing of its
+own to release; it makes room on the GPU instead.
 
 Images and a reproducibility sidecar `.json` are written to
 `<workspace>/.waterfree/generated`. A batch shares one generator, so only the
@@ -381,12 +560,206 @@ hashes, editing mode and LoRA weights. Diffusers load progress on stderr reports
 observed cache-byte growth with unknown totals left null. ComfyUI job timeouts
 report the job ID without interrupting another user's work.
 
+## GPU scheduling
+
+Implemented in `backend/gpu/`. One machine-wide lease coordinates every local
+GPU user, so two agents (or an agent and a person) can run GPU commands at once
+without one OOM-crashing the other or silently spilling into system RAM.
+
+- **exclusive** — `imagegen make`, `meshgen make`, `audiogen design|speak|sfx`,
+  `animgen make`, `gpu run`, `gpu evict`. One holder. After taking it the command unloads
+  resident Ollama models and checks free VRAM (`nvidia-smi`) against the job's
+  measured need, refusing (exit `4`) rather than starting a job that would spill.
+- **shared** — every Ollama-backed area (vision, qa, qa-summary, writing-grade,
+  tutorializer, graphify, the agent's local fallback). Many may hold it at once.
+  A CLI command holds it from its first Ollama request until it exits;
+  `waterfree serve` takes it per request. Only the local daemon counts
+  (loopback host on Ollama's own port); remote endpoints take no lease.
+- **FIFO queue.** Nothing jumps an incompatible request queued ahead of it, so
+  neither side starves. State is `%LOCALAPPDATA%\WaterFree\gpu\state.json`;
+  entries carry pid + process creation time, and a dead holder is pruned on the
+  next read, so a crashed command never blocks the GPU.
+- **Engines die with their command.** trellis-server / moss-tts-server run in a
+  Windows Job Object with kill-on-close; a killed command cannot orphan a server
+  that pins VRAM.
+- **Spills are reported.** A job that outgrows the card *after* the preflight is
+  silently moved into system RAM by the NVIDIA Windows driver and slows down
+  many times. Every engine process (and imagegen's in-process diffusers run) is
+  watched through Windows' `GPU Process Memory` counters (`backend/gpu/spill.py`):
+  when its shared usage grows 256 MB past its own baseline a warning goes to
+  stderr, and the result JSON carries `vramSpill: {vramSpillMb, sharedPeakMb,
+  dedicatedPeakMb, spilled}`.
+
+GPU queue flags (on every exclusive action):
+
+| Flag | Meaning |
+|------|---------|
+| `--wait-timeout SECONDS` | How long to queue (default 1800, `$WATERFREE_GPU_WAIT_TIMEOUT`). Progress on stderr names the holder and your queue position. |
+| `--no-wait` | Fail at once if busy. |
+| `--skip-vram-check` | Start below the measured VRAM need anyway (expect a large slowdown). |
+| `--quiet` | No progress on stderr. |
+
+A busy GPU exits `4` with `{"gpuBusy": true, "holders": [...], "queue": [...]}`;
+too little VRAM exits `4` with `{"insufficientVram": true, "needGb", "gpu",
+"otherGpuProcesses"}`. `$WATERFREE_GPU_SCHEDULER=0` turns all of it off.
+
+## Area: gpu
+
+| Action   | Flags / args |
+|----------|--------------|
+| `status` | — : holders, queue, free VRAM, resident Ollama models, other GPU processes, installed engines/models |
+| `evict`  | GPU queue flags — wait for the GPU, unload resident Ollama models |
+| `run`    | `--vram-gb N`, `--label`, GPU queue flags, `-- <command> [args]` — run any program (a Whisper script, a ComfyUI batch) under the exclusive lease; its output and exit code pass through, and WaterFree commands it runs inherit the lease |
+
+## Area: meshgen
+
+Implemented in `backend/meshgen/` on [trellis.cpp](https://github.com/pwilkin/trellis.cpp)
+(TRELLIS.2-4B, Q8_0). One image of one object in, a UV-unwrapped GLB with PBR
+textures out, plus a sidecar `.json` (input hash, seed, settings, engine and
+model revision, licence, triangle count).
+
+| Action    | Flags / args |
+|-----------|--------------|
+| `make`    | `<image>...` (max 16), `--res {512,1024,1536}`, `--faces N`, `--atlas PX`, `--no-texture`, `--bg-removal {auto,birefnet,threshold}`, `--uv {xatlas,box}`, `--steps`, `--seed`, `--model-set`, `--copyright`, `--preview`, `--output-dir`, GPU queue flags, `--workspace` |
+| `preview` | `<glb>...`, `--size PX` (default 512), `--quiet` — front/three-quarter/side/back PNGs + a 2x2 grid beside each GLB, for `waterfree vision`. Headless Chromium (Playwright) with a vendored, hash-pinned `<model-viewer>` 4.0.0 (`backend/meshgen/viewer/`); ~7 s per mesh |
+| `status`  | `--workspace` — exit `4` with the install command if anything is missing |
+| `install` | `--model-set` — engine (~0.7 GB) + weights (~10 GB) |
+| `init`    | `--workspace` — writes `.waterfree/meshgen.json` |
+
+Default `--res 1024`. **Triangle count is fixed by the engine**: trellis.cpp
+v0.8.1 decimates to ~150K triangles at res 512 and ~300K at 1024, and neither
+its CLI nor its server accepts a target (`--faces`/`faces` exist only on its
+unreleased main branch). `--faces` is therefore refused rather than silently
+ignored; decimate afterwards for game use until WaterFree's own decimation
+pass lands (GPU-009). Measured on an RTX 3060 12 GB / i7-4790: res 512 ≈ 2.7-3.4
+min and 2.5 GB VRAM per mesh, res 1024 ≈ 10.7 min and 4.5 GB (most of it
+CPU-side remeshing). One trellis-server serves the whole batch. Output goes to
+`<workspace>/.waterfree/generated/meshes`. TRELLIS.2 is MIT, but its image
+encoder (DINOv3) is under Meta's DINOv3 License; every sidecar records that.
+
+## Area: audiogen
+
+Implemented in `backend/audiogen/` on [openmoss](https://github.com/pwilkin/openmoss).
+Three model sets, one per role, loaded one at a time:
+
+| Role     | Model | Output | Measured (RTX 3060) |
+|----------|-------|--------|---------------------|
+| `voice`  | MOSS-VoiceGenerator 1.7B (BF16) | 24 kHz mono | ~2 s per candidate after a ~20-35 s load; 8.9 GB free |
+| `speech` | MOSS-TTS-Local-Transformer v1.5 (Q8_0) | 48 kHz stereo | ~1.6× real time after a ~20 s load; 10.3 GB free |
+| `sfx`    | MOSS-SoundEffect v2.0 (BF16), Vulkan build | 48 kHz mono | ~2.7 min per clip (the DiT always denoises 30 s); 9.3 GB free |
+
+Voice and speech run openmoss's CUDA build; SFX runs its Vulkan build, whose
+DAC-VAE decode took 8.7 s against the CUDA build's 577 s on the RTX 3060. Both
+backbones run at `--n-ctx 4096` (`nCtx` in audiogen.json): at the engine's 8192
+the speech model no longer fits a 12 GB card next to the desktop and silently
+spills into system RAM (~13× slower per line).
+
+| Action         | Flags / args |
+|----------------|--------------|
+| `design`       | `<description>`, `--text LINE`, `-n` (1-8, default 3), `--seed`, `--channels`, `--language`, `--output-dir`, GPU queue flags, `--workspace` |
+| `save-voice`   | `<name>`, `--from WAV`, `--description`, `--transcript`, `--force`, `--workspace` |
+| `voices`       | `--workspace` |
+| `remove-voice` | `<name>`, `--workspace` |
+| `speak`        | `[TEXT]` or `--lines FILE` (.txt, or .json `[{"text","voice","name","seed"}]`), `--voice`, `--instruction`, `--seed`, `--channels {native,mono,stereo}`, `--language`, `--output-dir`, GPU queue flags, `--workspace` |
+| `sfx`          | `[PROMPT]` or `--prompts FILE`, `-n`, `--seconds` (≤30), `--steps`, `--cfg`, `--negative-prompt`, `--seed`, `--channels`, `--output-dir`, GPU queue flags, `--workspace` |
+| `status`       | `--workspace` — also reports whether the optional QA engine is installed |
+| `install`      | `[voice\|speech\|sfx\|all\|qa]` — `all` is the three generator roles; `qa` (opt-in) is the Whisper + CLAP checker |
+| `init`         | `--workspace` — writes `.waterfree/audiogen.json` |
+
+`design`, `speak` and `sfx` take `--qa` (opt-in, user decision 2026-11-18):
+after openmoss stops, inside the same lease, faster-whisper large-v3 transcribes
+each spoken take and CLAP scores each SFX against its prompt
+(`backend/audiogen/qa.py`, its own venv). Each file gets `qa`: for speech `wer`,
+`misread` (wrong words), `dropped`, `added`, `repeated`, `spellingVariants`
+(near-identical spellings such as traveller/traveler, not errors) and `review`
+(any misread word, a stutter, or >15% real errors); design candidates and SFX
+variants of one prompt get a `rank`. The result's `qa` lists `review` and `best`.
+
+The NPC workflow is design → listen → `save-voice` → `speak`. Saved voices live
+in the project at `.waterfree/voices/<name>.wav + .json`; the speech server
+reads that folder as its voice registry, so each voice's reference is encoded
+once per batch, not once per line. Candidates and lines use consecutive seeds
+from `--seed`, recorded in every sidecar. Output goes to
+`<workspace>/.waterfree/generated/audio/{voice-design,speech,sfx}`.
+
+## Area: animgen
+
+Implemented in `backend/animgen/` on [NVIDIA Kimodo](https://github.com/nv-tlabs/kimodo)
+v1.2 (Kimodo-SOMA-RP-v1.2). A text prompt in; a humanoid motion clip out as BVH
+(77-joint SOMA skeleton, cm, Y up, 30 fps, T-pose rest pose), FBX (via a headless
+Blender, after the GPU is released), Kimodo NPZ, and a sidecar `.json` (prompt,
+seed, settings, stats, engine/weight revisions, licences).
+
+| Action    | Flags / args |
+|-----------|--------------|
+| `make`    | `[PROMPT...]` and/or `--prompts FILE` (.txt, or .json `[{"name","text"\|"segments","seconds","seed","inPlace","loop","path","constraints"}]`), `-n` (1-8), `--seconds` (0.5-10), `--steps`, `--seed`, `--in-place`, `--loop`, `--path X,Z ...`, `--constraints FILE`, `--no-preview`, `--no-postprocess`, `--tpose {standard,seed}`, `--fbx {auto,always,never}`, `--skip-ram-check`, `--output-dir`, GPU queue flags, `--workspace` |
+| `status`  | `--workspace` — engine, weights, Blender, free RAM, cached prompts; exit `4` with the install command if missing |
+| `install` | — builds the venv (uv, Python 3.12, torch cu126, Kimodo with its C++ extension) and fetches the weights; needs a C++ compiler and an HF token with Meta Llama 3 access |
+| `init`    | `--workspace` — writes `.waterfree/animgen.json` |
+
+**The text encoder runs on the CPU** (user decision, 2026-11-18): LLM2Vec over
+Llama-3-8B-Instruct in bf16, ~15.5 GB of RAM and ~100 s to load. Every prompt's
+embedding is cached under `%LOCALAPPDATA%\WaterFree\cache\animgen-text-embeddings`
+(keyed by text + encoder revisions), so the encoder loads only when a batch has
+a prompt never seen before. Only then does `make` check free system RAM, and it
+refuses below ~17 GB (`ramGb`), exiting `4` with `{"insufficientRam": true,
+"needGb", "availableGb", "largestPrograms": [{name, gb, processes}]}` so the
+human knows what to close; `--skip-ram-check` overrides.
+
+Measured on an RTX 3060 12 GB / i7-4790 / 32 GB: VRAM +1.3-1.5 GB; worker
+start ~25 s; ~9-13 s per 3 s clip at 100 steps; plus, with new prompts, ~100 s
+to load the encoder and 11-22 s to encode each prompt. One worker serves the
+whole batch. Output goes to `<workspace>/.waterfree/generated/animations`.
+`--in-place` subtracts Kimodo's smoothed root trajectory (hip sway and turning
+stay); `rootTravelM` in the result is the travel as generated.
+
+- **Loops** (`--loop`, ANIM-003): the clip is generated longer (cycle × 1.4 +
+  1.5 s, ≤ 10 s); the frame pair with the best heading-normalised pose +
+  velocity match inside the target length range is cut, the last few frames
+  are slerp-blended into the rigidly moved lead-in, and the clip ends on a copy
+  of its first pose (engines expect last key = first). The result reports
+  `loop.seamStepM` vs `typicalStepM`. A loop is one prompt, without path/constraints.
+- **Paths and constraints** (ANIM-006): `"path": [[x, z], ...]` waypoints
+  (metres; start at 0,0 facing +z, +x = the character's left) become Kimodo's
+  root2d constraint at a constant pace; `"constraints"` passes a Kimodo
+  constraints JSON (its demo's format) through, validated by type.
+- **Previews** (ANIM-005): `<name>.png` beside each clip, front and side stick
+  figures at eight times plus the top-down root path, for `waterfree vision`.
+- **Unity** (ANIM-004, verified on Unity 6000.5 in batch mode): the FBX imports
+  as a valid Humanoid avatar (all required bones, 55 mapped), scale 1, 30 fps,
+  the clip named after the file. Blender's BVH importer never shortens the
+  scene, so the exporter sets the frame range itself; without that a 4 s clip
+  imported as 8.3 s.
+
+## Engines and weights
+
+Pinned in `backend/engines/catalog.py` (release asset or Hugging Face commit +
+SHA-256 for every file). Installed to `%LOCALAPPDATA%\WaterFree\engines\<engine>\<version>`
+and `%LOCALAPPDATA%\WaterFree\models\<set>` (`$WATERFREE_ENGINES_DIR`,
+`$WATERFREE_MODELS_DIR`). Installs adopt files already present after verifying
+their hash, resume interrupted downloads, and never fetch anything twice;
+`make`-type actions never download. Engine logs: `%LOCALAPPDATA%\WaterFree\logs\engines`.
+
+Python engines are the exception (`backend/engines/pyenv.py`): Kimodo (animgen)
+and the audio QA checker (faster-whisper + CLAP) are PyTorch projects whose
+pins WaterFree's own venv cannot share (Kimodo needs `transformers==5.1.0`;
+faster-whisper 1.2.1 needs `av<19`), so each is a uv-built venv at
+`engines\<key>\<version>\venv`, installed stage by stage and import-checked by
+`backend/engines/hf_fetch.py`, with weights in the Hugging Face cache like
+imagegen's. `install` records the revisions it got; engine processes run with
+`HF_HUB_OFFLINE=1`, and `status` reports a weight repo as stale if the cache's
+`refs/main` has moved since install. WaterFree's own HF downloads (imagegen
+install) force copy mode on Windows machines without symlink support, avoiding
+a race in huggingface_hub's symlink probe (`backend/engines/hf_cache.py`, GPU-010).
+
 ## Out of scope (deliberately)
 
 - **No `debug` area.** The `waterfree-debug` skill is being removed (T8); its
   MCP server (`backend/mcp_debug.py`) goes with it.
 - **No daemon mode.** Each CLI invocation is a short-lived process. The VS Code
-  extension keeps using `waterfree serve` for the persistent bridge.
+  extension keeps using `waterfree serve` for the persistent bridge. GPU engines
+  likewise live for one command (GPU-001); a warm-engine broker would sit on the
+  same lease if model load time ever dominates.
 - **No shell completion (yet).** Possible follow-up.
 
 ## JSON contract notes

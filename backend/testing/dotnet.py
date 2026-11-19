@@ -23,7 +23,13 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from backend.testing.errors import NoTestsDiscoveredError, ToolchainError
+from backend.testing.bounded import RunLimits
+from backend.testing.errors import (
+    NoTestsDiscoveredError,
+    NoTestsMatchedError,
+    RunIncompleteError,
+    ToolchainError,
+)
 from backend.testing.results import TestResult, TestRunResult
 from backend.testing.toolchain import check_filter_arg, dotnet, run_tool
 
@@ -202,6 +208,9 @@ def _scan_source(text: str) -> list[str]:
 class DotnetRunner:
     """Runs a .NET solution's tests through `dotnet test`, parsing the TRX log."""
 
+    name = "dotnet"
+    limits: RunLimits | None = None
+
     def list_tests(self, workspace_path: str) -> list[str]:
         return scan_test_names(workspace_path)
 
@@ -217,11 +226,11 @@ class DotnetRunner:
             test_filter=f"FullyQualifiedName~{name_substr}",
         )
         if not result.results:
-            msg = f"No tests found matching '{name_substr}'"
-            return TestRunResult(
-                passed=0, failed=1,
-                results=[TestResult(name=name_substr, passed=False, error=msg)],
-                raw_output=result.raw_output or msg,
+            raise NoTestsMatchedError(
+                runner=self.name,
+                filter=name_substr,
+                available=len(scan_test_names(workspace_path)),
+                raw_output=result.raw_output,
             )
         return result
 
@@ -238,6 +247,7 @@ class DotnetRunner:
         results_dir = _fresh_results_dir(workspace_path)
         transcript: list[str] = []
         results: list[TestResult] = []
+        exit_codes: list[int] = []
 
         for target in targets:
             cmd = [
@@ -255,12 +265,18 @@ class DotnetRunner:
                     cmd,
                     workspace_path=workspace_path,
                     timeout=_timeout_seconds(),
+                    limits=self.limits,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ToolchainError(
                     f"`dotnet test` timed out after {_timeout_seconds()}s. "
                     "Raise WATERFREE_DOTNET_TIMEOUT if the suite is genuinely slow."
                 ) from exc
+            except RunIncompleteError as exc:
+                # Keep the earlier targets' output in the log.
+                exc.raw_output = "\n\n".join(transcript + [exc.raw_output])
+                raise
+            exit_codes.append(proc.returncode)
             transcript.append(
                 f"$ {' '.join(cmd)}\n\n{proc.stdout or ''}{proc.stderr or ''}"
             )
@@ -269,12 +285,47 @@ class DotnetRunner:
         for trx in sorted(results_dir.glob("*.trx"), key=lambda p: p.stat().st_mtime):
             results.extend(parse_trx(trx.read_text(encoding="utf-8", errors="ignore")))
 
+        if not results:
+            failure = _build_failure(raw, exit_codes)
+            if failure is not None:
+                return TestRunResult(passed=0, failed=1, results=[failure], raw_output=raw)
+
         return TestRunResult(
             passed=sum(1 for r in results if r.passed),
             failed=sum(1 for r in results if not r.passed and not r.skipped),
             results=results,
             raw_output=raw,
         )
+
+
+# VSTest's wording when --filter selects nothing, and Microsoft.Testing.Platform's
+# "zero tests ran" exit code. Neither is a build failure.
+_NO_MATCH_TEXT = "No test matches the given testcase filter"
+_MTP_ZERO_TESTS_EXIT = 8
+_MSBUILD_ERROR_RE = re.compile(r":\s*error\s+[A-Z]+\d+\s*:", re.IGNORECASE)
+
+
+def _build_failure(raw: str, exit_codes: list[int]) -> TestResult | None:
+    """A failing result when `dotnet test` died before running anything.
+
+    No TRX and a non-zero exit is almost always a compile error. Reporting it
+    as "no tests matched" (or "discovered no tests") sent people looking for a
+    naming problem in a project that simply did not build.
+    """
+    failing = [code for code in exit_codes if code not in (0, _MTP_ZERO_TESTS_EXIT)]
+    if not failing or _NO_MATCH_TEXT in raw:
+        return None
+    errors = [line.strip() for line in raw.splitlines() if _MSBUILD_ERROR_RE.search(line)]
+    unique = list(dict.fromkeys(errors))
+    detail = "\n".join(unique[:5]) if unique else "\n".join(raw.strip().splitlines()[-20:])
+    return TestResult(
+        name="dotnet test (build)",
+        passed=False,
+        error=(
+            f"`dotnet test` exited {failing[0]} without producing any TRX results, "
+            f"which usually means the build failed.\n{detail}"
+        ),
+    )
 
 
 def _timeout_seconds() -> int:

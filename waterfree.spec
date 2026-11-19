@@ -157,6 +157,22 @@ datas_extra += _collect_data_tree(
     "backend/qa/personas",
 )
 
+# animgen hands these two files to *other* interpreters -- the Kimodo venv's
+# python and Blender's -- so they must exist on disk as .py source. The module
+# sweep above only puts them in the PYZ as bytecode, which neither can run.
+datas_extra += [
+    (str(_ROOT / "backend" / "animgen" / name), "backend/animgen")
+    for name in ("kimodo_worker.py", "blender_bvh_to_fbx.py")
+]
+# Same for the audio QA worker and the install helper every Python engine's venv runs.
+datas_extra += [
+    (str(_ROOT / "backend" / "audiogen" / "audioqa_worker.py"), "backend/audiogen"),
+    (str(_ROOT / "backend" / "engines" / "hf_fetch.py"), "backend/engines"),
+]
+
+# meshgen preview serves the vendored <model-viewer> bundle to headless Chromium.
+datas_extra += _collect_data_tree(_ROOT / "backend" / "meshgen" / "viewer", "backend/meshgen/viewer")
+
 # Collect graphify package — includes skill*.md and always_on/*.md data files
 try:
     d, b, h = collect_all("backend.graph.graphify")

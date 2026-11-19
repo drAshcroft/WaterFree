@@ -75,7 +75,43 @@ _EXCLUDE_DIRS = {
     "obj", "bin",
     # Unity
     "Library", "Temp", "Logs", "UserSettings",
+    # git worktree convention for sibling checkouts
+    ".worktrees",
 }
+
+
+def _is_worktree_container(name: str, parent: str) -> bool:
+    """`worktrees/` inside a dot-folder: .claude/worktrees, .kilo/worktrees, .git/worktrees ...
+
+    Agent tools park whole checkouts there; indexing or searching them returns
+    stale copies of the active code (IDX-WT-001). Same rule as graphify's
+    detect._is_noise_dir.
+    """
+    return name == "worktrees" and os.path.basename(os.path.normpath(parent)).startswith(".")
+
+
+def _is_linked_worktree(dirpath: str, filenames: list[str]) -> bool:
+    """A linked git worktree has a `.git` *file* pointing into `<repo>/.git/worktrees/<name>`.
+
+    Submodules also use a `.git` file, but it points into `.git/modules/`, so
+    they are kept.
+    """
+    if ".git" not in filenames:
+        return False
+    try:
+        head = (Path(dirpath) / ".git").read_text(encoding="utf-8", errors="replace")[:1024]
+    except OSError:
+        return False
+    return head.startswith("gitdir:") and "/worktrees/" in head.replace("\\", "/")
+
+
+def _prune_dirs(dirpath: str, dirnames: list[str], *, include_worktrees: bool) -> None:
+    """Remove excluded child directories in place so os.walk never descends into them."""
+    dirnames[:] = [
+        d for d in dirnames
+        if d not in _EXCLUDE_DIRS
+        and (include_worktrees or not _is_worktree_container(d, dirpath))
+    ]
 
 MAX_FILE_BYTES = 500_000
 
@@ -741,8 +777,9 @@ def _build_ignore_spec(root: Path):
     root_str = str(root)
 
     for dirpath, dirnames, filenames in os.walk(root_str):
-        # Prune excluded directories so we never descend into them.
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+        # Prune excluded directories so we never descend into them. Worktree
+        # copies carry their own .gitignore files, which are irrelevant here.
+        _prune_dirs(dirpath, dirnames, include_worktrees=False)
 
         if ".gitignore" not in filenames:
             continue
@@ -771,14 +808,23 @@ def _build_ignore_spec(root: Path):
     return _pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 
-def collect_files(root_path: str) -> list[Path]:
+def collect_files(root_path: str, *, include_worktrees: bool = False) -> list[Path]:
+    """Source files under `root_path`, skipping build output, caches and, unless
+    `include_worktrees`, nested git worktrees (tool worktree folders and any
+    linked worktree checked out inside the tree). The root itself is always
+    walked, so indexing from inside a worktree still works."""
     files = []
     root = Path(root_path)
     ignore_spec = _build_ignore_spec(root)
+    root_norm = os.path.normcase(os.path.abspath(root_path))
 
     for dirpath, dirnames, filenames in os.walk(root_path):
-        # Prune excluded directories in-place so os.walk never descends into them.
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+        if (not include_worktrees
+                and os.path.normcase(os.path.abspath(dirpath)) != root_norm
+                and _is_linked_worktree(dirpath, filenames)):
+            dirnames[:] = []
+            continue
+        _prune_dirs(dirpath, dirnames, include_worktrees=include_worktrees)
 
         for filename in filenames:
             if Path(filename).suffix.lower() not in _EXT_LANG:

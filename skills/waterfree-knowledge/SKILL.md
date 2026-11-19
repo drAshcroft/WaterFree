@@ -45,14 +45,31 @@ future sessions across **any** project. Good candidates:
 - **API preferences** the user tends to reuse
 - **Coding styles** the user prefers
 
-**Before adding:** run `waterfree knowledge search` first to avoid duplicates.
-`add` also runs a quality gate and reports `warnings` (never blocks): a
-`near_duplicate` when an existing entry contains every word of the new title
-(revise it with `update <id>` instead), `no_hierarchy` when no
-`--hierarchy-path` was given, and `reads_like_a_trace` when the description is
-a log of what you did rather than an instruction. Write entries as
-"do X when Y, because Z"; that is what transfers to the next session.
-`--no-check` skips the gate for bulk imports.
+**Before adding:** run `waterfree knowledge search "<title words>" --brief` first
+to avoid duplicates (titles only, about a quarter of the default output).
+
+`add` runs a quality gate. Only `near_duplicate` blocks (exit 2, nothing saved):
+an existing entry contains every word of the new title; the warning lists the
+ids, titles and `shared_terms`. Revise that entry with `update <id>`, or pass
+`--force` after review. If the twin is one **you** filed from the same repo in
+the last ~15 minutes, the message says `you saved this as <id> moments ago` and
+carries `recent_id`: update that entry, do not file a second copy. The other
+warnings never block, **the entry is saved anyway**: `no_hierarchy` (no
+`--hierarchy-path`) and `reads_like_a_trace` (first-person narration such as
+"I ran X, then I tried Y"; its `evidence` quotes the sentences). Numbered
+how-to lists are fine. Write entries as "do X when Y, because Z"; that is what
+transfers to the next session. `--no-check` skips the gate for bulk imports.
+
+How to read the result: the JSON starts with `added` (a new row was created),
+`id` and `saved` (the content is in the store under `id`), then `summary`.
+`summary` is the one-line outcome (`saved: <id> ...` or `not saved: ...`);
+`notes` carries advice such as `saved anyway as <id>; revise with knowledge
+update <id>` and path normalisation; `warnings` lists what the gate found.
+Nothing informational goes to stderr when the output is piped (PowerShell would
+report it as a failed command); an interactive terminal gets a readable copy.
+An identical body that already
+exists returns `added: false`, `saved: true` and the existing `id` + `revision`
+(`duplicate_of`). Do not retry an add that printed `saved`; use `update <id>`.
 
 ### What makes a good entry
 
@@ -74,6 +91,17 @@ exists. The id is kept (so anything citing it still resolves), `revision` is
 bumped and `updated_at` stamped; only the fields you pass change. Prefer this
 over add-then-delete, which changes the id and leaves two copies if either
 half fails.
+
+**To add a caveat, append; do not replace.** `--context "..."` replaces the
+whole context; `--append-context "..."` (and `--append-description`) adds a
+paragraph and keeps what is there. A replace that throws away more than half
+of the old text prints a warning. Every replaced value is kept: `knowledge
+history <id>` lists them newest first, and `knowledge update <id>
+--restore-revision N` (optionally `--restore-field context`) puts them back.
+
+Ids: `get`, `update`, `delete` and `history` accept the full id or a unique
+prefix of at least 6 characters (the 8-char form is fine). An ambiguous prefix
+exits 2 and lists the candidates. `get`/`update` also accept an exact title.
 
 ## Reminder hooks (opt-in, Claude Code and Codex)
 
@@ -130,15 +158,17 @@ for agent muscle memory, but it does not change the global store location.
 ### Search
 ```bash
 waterfree knowledge search "retry with exponential backoff" --limit 10
-waterfree knowledge search "authentication middleware"
+waterfree knowledge search "authentication middleware" --brief    # titles only: duplicate checks, orientation
 waterfree knowledge search "sqlite connection pooling"
 ```
 
 Full-text search over title, description, tags, and code. Entries containing
 **every** query word rank first; any-word matches follow, ordered by how many
 of your words their title/description/tags contain. Entries from the current
-workspace's own repo come before other projects' within each tier (pass
-`--workspace` so the preference is right); `--repo NAME` restricts to one repo.
+workspace's own repo come before other projects' within each tier, and an own
+entry that contains every word is never cut by `--limit` in favour of another
+project's (pass `--workspace` so the preference is right); `--repo NAME`
+restricts to one repo.
 
 Every entry has a **scope**: `global` (any project may see it; the default),
 `project` (only searches run from its own source repo see it; use for lessons
@@ -148,12 +178,21 @@ the current workspace's own project entries. Pass `--scope all` to see
 everything, or `global` / `project` / `assets` for exactly one. Set it on
 `add --scope project` or change it with `update <id> --scope ...`.
 
-Returns `{"entries": [...], "total": N, "preferred_repo": "...", "scope": "...", "hint"?: "..."}`.
+Returns `{"entries": [...], "total": N, "preferred_repo": "...", "scope": "...", "mode": "summary|brief|full", "hint"?: "..."}`.
 Default rows are summaries: `id`, `title`, `description` (clipped), `snippet_type`,
 `source_repo`, `source_file`, `tags`, `hierarchy_path`, `code_chars`,
-`context_chars`, `revision`. Add `--full` to include `code` and `context`, or
-call `get <id>` for the one entry you chose — that keeps a search at a few
-hundred bytes per row instead of several KB.
+`context_chars`, `revision`, and `source_note` when there is one (see below).
+`--brief` rows are only `id`, `title`, `hierarchy_path`, `source_repo`, one
+minified line each (~2 KB for 10 rows instead of ~9 KB). Add `--full` to include
+`code` and `context`, or call `get <id>` for the one entry you chose.
+
+**`source_note`** warns about the cited file: `uncommitted in worktree <path>
+(branch <b>, untracked when filed)` means the file existed only in another
+agent's uncommitted worktree when the entry was filed (do not assume it is on
+your branch; do not create a clashing file or `class_name`), and `<file> is not
+in this workspace` means your checkout of that repo does not have it. `add` /
+`update --source-file` record the branch, worktree, commit and committed status
+automatically (`source_ref` on `get`); outside git nothing is recorded.
 
 ### Get one entry
 
@@ -161,20 +200,39 @@ Use `waterfree knowledge get <id> --text` for long prose or code bodies. It emit
 real newlines instead of JSON string escapes; omit `--text` for machine-readable JSON.
 ```bash
 waterfree knowledge get <entry-id>
+waterfree knowledge get d35c8db3          # a unique id prefix (6+ chars) works too
 ```
 
-Returns the full entry as JSON (same shape as a search hit). Exit code 3 when
-the id is unknown.
+Returns the full entry as JSON (same shape as a `--full` search hit, plus
+`source_ref`). Exit code 3 when the id is unknown, 2 when a prefix is ambiguous
+(the candidates are listed) or shorter than 6 characters.
 
 ### Browse the taxonomy
 ```bash
-waterfree knowledge browse --path platform/auth --depth 2 --include-entries
+waterfree knowledge browse platform/auth --depth 2 --include-entries
+waterfree knowledge browse "Procedural \ Buildings" --list
 waterfree knowledge browse --depth 1
 ```
 
 Use browse when the question is category-first, exploratory, or the subject
 already has an obvious taxonomy. It returns child nodes, subtree counts, and
-optionally sample entries from the selected branch.
+optionally the branch's entries. The path may be positional or `--path`; case,
+extra spaces and `\` separators are normalised. A path with no node returns a
+`hint` and `suggestions` naming the nearest existing paths (so `Procedural
+buildings` points at `procedural/buildings`); when two nodes differ only by
+separators, `see_also` names the other. `--include-entries` / `--list` rows have
+the compact search-row shape; add `--full` for `code` and `context`.
+
+### History of an entry
+```bash
+waterfree knowledge history <entry-id>                    # newest first; long values clipped
+waterfree knowledge history <entry-id> --field context --full
+waterfree knowledge update <entry-id> --restore-revision 2 --restore-field context
+```
+
+Each row is `{revision, field, change, changed_at, old_chars, old_value}`:
+`old_value` is what the field held at `revision`. `change` is `update`,
+`restore` or `delete`; a deleted entry's last values stay readable by id.
 
 ### Add a snippet
 
@@ -193,7 +251,10 @@ You can also stream code via stdin with `--code-file -` and your shell's reader:
 `Get-Content my_snippet.py | waterfree knowledge add --code-file - …` in PowerShell.
 
 Returns JSON with the new entry id. If the code is identical to an existing
-entry, `added` is `false` (deduplicated by SHA-256 of code).
+entry, `added` is `false` and `id` / `revision` name the existing entry
+(deduplicated by SHA-256 of code). Long context can come from
+`--context-file <UTF-8 file>` (or `-` for stdin; only one of the `*-file`
+flags may read stdin). `--quiet` prints only `{"id", "added", "revision"}`.
 
 ### Prose-only entries (lessons, decisions, conventions)
 
@@ -211,24 +272,31 @@ different lessons never collide.
 
 ### Update a snippet
 ```bash
-waterfree knowledge update <entry-id> --description "..." --context "..."
+waterfree knowledge update <entry-id> --append-context "Also breaks when ..." --quiet   # keep the old text
+waterfree knowledge update <entry-id> --description "..." --context-file caveats.md
 waterfree knowledge update <entry-id> --code-file revised.py
 waterfree knowledge update <entry-id> --tag python --tag retry   # replaces the whole tag list
 waterfree knowledge update <entry-id> --title "..." --hierarchy-path platform/auth/jwt
 ```
 
-Accepts any of `--title`, `--description`, `--code` / `--code-file`,
-`--snippet-type`, `--tag` (repeatable; replaces the list), `--context`,
-`--source-repo`, `--source-file`, `--source-repo-url`, `--hierarchy-path`.
-Returns the revised entry plus `updated` (the field names changed) and
-`revision`. Exit code 3 for an unknown id; exit code 2 when no field was passed
-or when the revised content would duplicate another entry (the entry is left
-unchanged).
+Accepts any of `--title`, `--description` / `--description-file` /
+`--append-description`, `--code` / `--code-file`, `--snippet-type`, `--tag`
+(repeatable; replaces the list), `--context` / `--context-file` /
+`--append-context`, `--source-repo`, `--source-file` (re-records its git
+status), `--source-repo-url`, `--hierarchy-path`, `--scope`; or
+`--restore-revision N` [`--restore-field F`] alone. Returns the revised entry
+plus `updated` (the field names changed) and `revision`; `--quiet` prints only
+`{"id", "updated", "revision"}`. Exit code 3 for an unknown id; exit code 2 when
+no field was passed, the id prefix is ambiguous, or the revised content would
+duplicate another entry (the entry is left unchanged).
 
 ### Delete a snippet
 ```bash
 waterfree knowledge delete <entry-id>
 ```
+
+Takes a full id or unique prefix (not a title). The deleted fields stay
+readable with `knowledge history <id>`.
 
 ### List indexed sources
 ```bash

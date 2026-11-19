@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.testing import godot
+from backend.testing.errors import NoTestsMatchedError
 from backend.testing.godot import (
     GodotError,
     GodotRunner,
@@ -326,7 +327,7 @@ class RunnerTests(unittest.TestCase):
 
         with mock.patch.object(godot, "resolve_godot_binary", return_value="godot"), \
              mock.patch.object(godot, "headless_flag", return_value="--headless"), \
-             mock.patch.object(godot.subprocess, "run", side_effect=fake_run):
+             mock.patch.object(godot, "run_bounded", side_effect=fake_run):
             result = GodotRunner().run_all(workspace)
         return result, recorded
 
@@ -361,21 +362,35 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(result.results[0].passed)
             self.assertIn("no parseable test report", result.results[0].error)
 
+    def test_unparseable_run_names_the_first_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = _make_project(Path(tmp))
+            (project / "test").mkdir()
+            stdout = (
+                "SCRIPT ERROR: Parse Error: Identifier \"foo\" not declared in the current scope.\n"
+                "          at: GDScript::reload (res://test/test_movement.gd:7)\n"
+            )
+            result, _ = self._run_with_stub(project, tmp, xml=None, stdout=stdout)
+            self.assertEqual(result.first_error_location, "res://test/test_movement.gd:7")
+            self.assertIn("Parse Error", result.results[0].error)
+
     def test_run_one_without_match_does_not_launch_godot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = _make_project(Path(tmp))
             _make_suite(project, "test/test_movement.gd", ["test_walks"])
-            with mock.patch.object(godot.subprocess, "run") as spawn:
-                result = GodotRunner().run_one(tmp, "nonexistent")
+            with mock.patch.object(godot, "run_bounded") as spawn:
+                with self.assertRaises(NoTestsMatchedError) as ctx:
+                    GodotRunner().run_one(tmp, "nonexistent")
             spawn.assert_not_called()
-            self.assertEqual(result.failed, 1)
-            self.assertIn("No tests found matching", result.results[0].error)
+            self.assertEqual(ctx.exception.runner, "godot")
+            self.assertEqual(ctx.exception.filter, "nonexistent")
+            self.assertEqual(ctx.exception.available, 1)
 
     def test_list_tests_does_not_launch_godot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = _make_project(Path(tmp))
             _make_suite(project, "test/test_movement.gd", ["test_walks", "test_jumps"])
-            with mock.patch.object(godot.subprocess, "run") as spawn:
+            with mock.patch.object(godot, "run_bounded") as spawn:
                 names = GodotRunner().list_tests(tmp)
             spawn.assert_not_called()
             self.assertEqual(len(names), 2)

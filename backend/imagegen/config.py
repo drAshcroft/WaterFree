@@ -141,6 +141,10 @@ class ImageGenConfig:
     comfy_url: str = "http://127.0.0.1:8188"
     comfy_checkpoint: str = ""
     comfy_timeout: float = 300.0
+    # After a job on a ComfyUI running on this machine, ask it to unload its
+    # models (POST /free) so the next GPU job in the queue finds the memory.
+    # Off by default: keeping models resident is ComfyUI's own design (GPU-008).
+    comfy_free_after: bool = False
 
     def resolved_preset(self) -> ModelPreset:
         key = self.preset.strip().lower()
@@ -182,7 +186,7 @@ class ImageGenConfig:
             mask=str(Path(self.mask).expanduser().resolve()) if self.mask else '',
             strength=float(self.strength), loras=loras,
             comfy_url=self.comfy_url, comfy_checkpoint=self.comfy_checkpoint,
-            comfy_timeout=float(self.comfy_timeout),
+            comfy_timeout=float(self.comfy_timeout), comfy_free_after=bool(self.comfy_free_after),
         )
 
 
@@ -208,6 +212,7 @@ class ResolvedGeneration:
     comfy_url: str = "http://127.0.0.1:8188"
     comfy_checkpoint: str = ""
     comfy_timeout: float = 300.0
+    comfy_free_after: bool = False
 
     @property
     def mode(self) -> str:

@@ -122,6 +122,11 @@ def register(sub: _SubParsersAction) -> None:
     add_workspace_arg(p_search_code)
     p_search_code.add_argument("query")
     p_search_code.add_argument("--max", dest="max_results", type=int, default=20)
+    p_search_code.add_argument(
+        "--include-worktrees", action="store_true",
+        help="Also search nested git worktrees (.claude/worktrees, .kilo/worktrees, linked "
+             "checkouts). Off by default: they hold stale copies of the active code.",
+    )
 
     p_search_graph = actions.add_parser("search-graph",
                                         help="Search graph nodes by qualified name")
@@ -222,7 +227,8 @@ def run(args: Namespace) -> int:
     client = _client_indexed(workspace)
 
     if action == "search-code":
-        emit_json(client.search_code(pattern=args.query, max_results=args.max_results))
+        emit_json(client.search_code(pattern=args.query, max_results=args.max_results,
+                                     include_worktrees=args.include_worktrees))
         return EXIT_OK
 
     if action == "search-graph":

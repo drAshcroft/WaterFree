@@ -31,7 +31,7 @@ Flags:
 | `--subjects` | **Prefer this.** Groups files by the thing they depict, collapsing a material's five map files, LODs and resolution variants into one row. |
 | `--packs` | Summarise by pack — the "which pack should I import" view. |
 | `--limit N` | Rows to show (default 25). |
-| `--json` | Machine-readable output. |
+| `--json` | Machine-readable output, bounded by `--limit` like the text view. Envelope: `mode` (`assets`/`subjects`/`packs`), `total`, `returned`, `more`; grouped modes put rows in `groups` (subject or pack, `files`, `kinds`, licence, path), plain mode in `results`. |
 
 ## Query language
 
@@ -96,6 +96,11 @@ uploaded. Search the selected visuals with:
 assetsearch.cmd "sword icon" --semantic-visual --limit 15
 assetsearch.cmd "fantasy potion" --semantic-visual --json
 ```
+
+If a semantic search crashes while importing `transformers`/`huggingface_hub`
+with an error from an unrelated script, a loose `.py` in the shared venv root
+`C:\Projects\.local` is shadowing a package (that folder is on `sys.path` on
+Windows). Never write scratch scripts there; move the named file away.
 
 To refresh after importing assets, audit the candidate scope first, then run:
 

@@ -9,6 +9,12 @@
     <SkillsDir>$(MSBuildProjectDirectory)\..\skills</SkillsDir>
     <GeneratedSkillsWxs>$(MSBuildProjectDirectory)\obj\Skills.generated.wxs</GeneratedSkillsWxs>
     <DefineConstants>PayloadDir=$(PayloadDir);ProductVersion=$(ProductVersion)</DefineConstants>
+    <!-- The helper exe is a *versioned* file, and Windows Installer never
+         replaces a file with one of the same or lower version. It was always
+         1.0.0.0, so every upgrade since 2026-09-26 kept the old helper (and ran
+         its stale code). Stamp a file version that rises with each build and
+         stays above that 1.0.0.0: 1.0.<build>.0 for product 0.1.<build>. -->
+    <HelperFileVersion>1.0.$(ProductVersion.Split('.')[2]).0</HelperFileVersion>
   </PropertyGroup>
 
   <Target Name="BuildPayload" BeforeTargets="CoreCompile">
@@ -20,7 +26,7 @@
 
     <Copy SourceFiles="$(RuntimeZip)" DestinationFiles="$(PayloadDir)\waterfree-runtime.zip" />
 
-    <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish&quot;" />
+    <Exec Command="dotnet publish &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\WaterFreeInstallerHelper.csproj&quot; -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:FileVersion=$(HelperFileVersion) -p:InformationalVersion=$(ProductVersion) -o &quot;$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish&quot;" />
     <Copy SourceFiles="$(MSBuildProjectDirectory)\WaterFreeInstallerHelper\publish\waterfree-installer-helper.exe" DestinationFiles="$(PayloadDir)\waterfree-installer-helper.exe" />
 
     <Copy SourceFiles="$(VsixPath)" DestinationFiles="$(PayloadDir)\waterfree.vsix" />

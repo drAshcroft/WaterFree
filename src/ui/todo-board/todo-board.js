@@ -4,6 +4,10 @@ const savedState = vscode.getState() || {};
 const PRIORITIES = ["P0", "P1", "P2", "P3", "spike"];
 const STATUSES = ["pending", "annotating", "negotiating", "executing", "complete", "skipped"];
 const DEP_TYPES = ["blocks", "informs", "shares-file"];
+const BLOCKER_FILTERS = ["all", "blocked", "human", "external"];
+// Same wording as the sidebar's renderBlocker, so a blocker reads the same in both views.
+const BLOCKER_LABELS = { human: "Waiting on a human decision", external: "Waiting on something external" };
+const STATE_PREVIEW_LINES = 2;
 const DEFAULT_DRAFT = {
   title: "", description: "", rationale: "", phase: "", priority: "P2", status: "pending",
   taskType: "impl", timing: "one_time", ownerType: "unassigned", ownerName: "", ownerAssignedAt: "",
@@ -19,6 +23,7 @@ const state = {
   draftTask: { ...DEFAULT_DRAFT, ...(savedState.draftTask || {}) },
   searchQuery: typeof savedState.searchQuery === "string" ? savedState.searchQuery : "",
   treeMode: ["dependencies", "phase", "priority"].includes(savedState.treeMode) ? savedState.treeMode : "priority",
+  blockerFilter: BLOCKER_FILTERS.includes(savedState.blockerFilter) ? savedState.blockerFilter : "all",
   collapsedGroups: isRecord(savedState.collapsedGroups) ? savedState.collapsedGroups : {},
   collapsedTasks: isRecord(savedState.collapsedTasks) ? savedState.collapsedTasks : {},
 };
@@ -31,6 +36,7 @@ const editorEl = document.getElementById("editor");
 const treeCountEl = document.getElementById("tree-count");
 const searchInput = document.getElementById("search-input");
 const treeModeSelect = document.getElementById("tree-mode");
+const blockerFilterSelect = document.getElementById("blocker-filter");
 
 window.addEventListener("resize", applyViewportMode);
 
@@ -136,6 +142,13 @@ document.addEventListener("change", (event) => {
   if (target.id === "tree-mode") {
     state.treeMode = ["dependencies", "phase", "priority"].includes(target.value) ? target.value : "priority";
     persist();
+    renderTree();
+    return;
+  }
+  if (target.id === "blocker-filter") {
+    state.blockerFilter = BLOCKER_FILTERS.includes(target.value) ? target.value : "all";
+    persist();
+    renderSummary();
     renderTree();
     return;
   }
@@ -245,6 +258,7 @@ function render() {
   applyViewportMode();
   if (searchInput) { searchInput.value = state.searchQuery; }
   if (treeModeSelect) { treeModeSelect.value = state.treeMode; }
+  if (blockerFilterSelect) { blockerFilterSelect.value = state.blockerFilter; }
   renderSummary();
   renderTree();
   renderEditor();
@@ -254,14 +268,15 @@ function renderSummary() {
   if (!summaryEl) { return; }
   const all = orderedTasks();
   const visible = filteredTasks();
-  const blocked = all.filter((task) => task.dependsOn.length && task.status !== "complete").length;
+  const blocked = all.filter(isBlocked).length;
+  const waiting = all.filter((task) => isUnfinished(task) && task.blockedOn).length;
   const recurring = all.filter((task) => task.timing === "recurring").length;
   const active = all.filter((task) => task.status === "executing").length;
   const tracked = all.filter((task) => task.estimatedMinutes || task.actualMinutes).length;
   summaryEl.innerHTML = [
     summaryCard("Tasks", all.length, `${visible.length} visible`),
     summaryCard("Active", active, "Executing now"),
-    summaryCard("Blocked", blocked, "Depends on other work"),
+    summaryCard("Blocked", blocked, `${waiting} waiting on human/external`),
     summaryCard("Recurring", recurring, "Cycles back into backlog"),
     summaryCard("Tracked", tracked, "Has timing data"),
   ].join("");
@@ -270,11 +285,11 @@ function renderSummary() {
 function renderTree() {
   const visible = filteredTasks();
   const total = orderedTasks().length;
-  if (treeCountEl) { treeCountEl.textContent = state.searchQuery ? `${visible.length} of ${total} Tasks` : `${visible.length} Tasks`; }
+  if (treeCountEl) { treeCountEl.textContent = isFiltering() ? `${visible.length} of ${total} Tasks` : `${visible.length} Tasks`; }
   const groups = state.treeMode === "dependencies" ? dependencyGroups(visible)
     : state.treeMode === "phase" ? phaseGroups(visible)
     : priorityGroups(visible);
-  treeEl.innerHTML = groups.length ? groups.map(renderGroup).join("") : '<div class="empty-state">No tasks match the current search.</div>';
+  treeEl.innerHTML = groups.length ? groups.map(renderGroup).join("") : '<div class="empty-state">No tasks match the current search or blocker filter.</div>';
 }
 
 function renderEditor() {
@@ -406,7 +421,7 @@ function renderDepNode(taskId, depth, children, rendered, ancestry) {
   const next = new Set(ancestry);
   next.add(taskId);
   const childIds = children[taskId] || [];
-  const open = state.searchQuery ? true : taskOpen(taskId);
+  const open = isFiltering() ? true : taskOpen(taskId);
   const extra = childIds.length ? `${childIds.length} child${childIds.length === 1 ? "" : "ren"}` : depLabel(task);
   const twistie = childIds.length
     ? `<button type="button" class="tree-twistie" data-action="toggleTask" data-task-id="${esc(taskId)}" title="${open ? "Collapse" : "Expand"}">${open ? "v" : ">"}</button>`
@@ -428,7 +443,7 @@ function markRendered(taskId, children, rendered, ancestry) {
 }
 
 function renderGroup(group) {
-  const open = state.searchQuery ? true : groupOpen(group.id);
+  const open = isFiltering() ? true : groupOpen(group.id);
   return [
     '<section class="tree-group">',
     `<button type="button" class="tree-group-header" data-action="toggleGroup" data-group-id="${esc(group.id)}">`,
@@ -448,6 +463,7 @@ function renderTreeTask(task, depth, extra, twistie) {
   if (task.estimatedMinutes) { meta.push(`${task.estimatedMinutes}m est`); }
   if (extra) { meta.unshift(extra); }
   const draggable = state.treeMode === "priority" || state.treeMode === "phase";
+  const preview = statePreview(task.state);
   return [
     `<div class="tree-task depth-${Math.min(depth, 4)}${draggable ? " draggable" : ""}" data-task-id="${esc(task.id)}"${draggable ? ' draggable="true"' : ""}>`,
     '<div class="tree-task-line">',
@@ -458,8 +474,10 @@ function renderTreeTask(task, depth, extra, twistie) {
     `<span class="tree-task-title">${esc(task.title || "Untitled task")}</span>`,
     `<span class="tree-task-meta">${esc(meta.filter(Boolean).join(" . "))}</span>`,
     '</div>',
+    preview ? `<div class="tree-task-state" title="${esc(task.state)}">${esc(preview)}</div>` : "",
     '</div>',
     '<div class="tree-task-badges">',
+    renderBlockerBadge(task),
     `<span class="tree-priority priority-${esc(task.priority)}">${esc(task.priority)}</span>`,
     `<span class="tree-status-dot ${esc(task.status)}" title="${esc(labelize(task.status))}"></span>`,
     '</div>',
@@ -468,6 +486,26 @@ function renderTreeTask(task, depth, extra, twistie) {
     '</div>',
     '</div>',
   ].join("");
+}
+
+// A typed blocker (blockedOn: human | external) says who the task waits for.
+// The badge names the type; the tooltip carries the sidebar's full wording and
+// the blockedReason. An unrecognized value still shows as blocked rather than
+// vanishing, matching the backend's read path.
+function renderBlockerBadge(task) {
+  if (!task.blockedOn) { return ""; }
+  const known = Object.prototype.hasOwnProperty.call(BLOCKER_LABELS, task.blockedOn);
+  const label = known ? BLOCKER_LABELS[task.blockedOn] : `Blocked (${task.blockedOn})`;
+  const tooltip = task.blockedReason ? `${label}: ${task.blockedReason}` : label;
+  return `<span class="tree-blocker${known ? ` blocker-${task.blockedOn}` : ""}" title="${esc(tooltip)}">${esc(`Blocked: ${labelize(task.blockedOn)}`)}</span>`;
+}
+
+// First lines of the task's `state` summary (its current verdict), so a card
+// says where the work stands without opening it. The full text is the tooltip.
+function statePreview(value) {
+  const lines = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const head = lines.slice(0, STATE_PREVIEW_LINES).join("\n");
+  return lines.length > STATE_PREVIEW_LINES ? `${head} ...` : head;
 }
 
 // Inline per-row controls so a human can set status / close a task without
@@ -704,6 +742,8 @@ function normalizeTask(raw) {
     taskType: String(raw.taskType || "impl"),
     timing: String(raw.timing || "one_time"),
     blockedReason: String(raw.blockedReason || ""),
+    blockedOn: String(raw.blockedOn || ""),
+    state: String(raw.state || ""),
     owner: { type: String(owner.type || "unassigned"), name: String(owner.name || ""), assignedAt: String(owner.assignedAt || "") },
     targetCoord: {
       file: String(coord.file || ""),
@@ -742,12 +782,41 @@ function taskForm(task) {
 
 function filteredTasks() {
   const query = state.searchQuery.trim().toLowerCase();
-  if (!query) { return orderedTasks(); }
-  return orderedTasks().filter((task) => [
-    task.id, task.title, task.description, task.rationale, task.phase, task.blockedReason, task.owner.name, task.owner.type,
-    task.taskType, task.timing, task.humanNotes, task.aiNotes, task.trigger, task.acceptanceCriteria,
-    task.targetCoord.file, task.targetCoord.class, task.targetCoord.method,
+  const tasks = orderedTasks().filter(matchesBlockerFilter);
+  if (!query) { return tasks; }
+  return tasks.filter((task) => [
+    task.id, task.title, task.description, task.rationale, task.phase, task.blockedReason, task.blockedOn, task.state,
+    task.owner.name, task.owner.type, task.taskType, task.timing, task.humanNotes, task.aiNotes, task.trigger,
+    task.acceptanceCriteria, task.targetCoord.file, task.targetCoord.class, task.targetCoord.method,
   ].filter(Boolean).join("\n").toLowerCase().includes(query));
+}
+
+function isFiltering() {
+  return Boolean(state.searchQuery) || state.blockerFilter !== "all";
+}
+
+// Mirrors `waterfree todos list --blocked` / `--blocked-on`: finished work is
+// neither ready nor blocked.
+function matchesBlockerFilter(task) {
+  if (state.blockerFilter === "all") { return true; }
+  if (state.blockerFilter === "blocked") { return isBlocked(task); }
+  return isUnfinished(task) && task.blockedOn === state.blockerFilter;
+}
+
+// Blocked = held by an incomplete (or missing) `blocks` dependency, or by a
+// typed blocker. Same rule the backend uses to keep a task out of get-next.
+function isBlocked(task) {
+  if (!isUnfinished(task)) { return false; }
+  if (task.blockedOn) { return true; }
+  return task.dependsOn.some((dep) => {
+    if (dep.type !== "blocks") { return false; }
+    const blocker = state.board.tasksById[dep.taskId];
+    return !blocker || blocker.status !== "complete";
+  });
+}
+
+function isUnfinished(task) {
+  return task.status !== "complete" && task.status !== "skipped";
 }
 
 function orderedTasks() {
@@ -777,7 +846,9 @@ function compactCoord(coord) {
 }
 
 function depLabel(task) {
-  return task.dependsOn.length ? `${task.dependsOn.length} dep${task.dependsOn.length === 1 ? "" : "s"}` : "Ready";
+  if (task.dependsOn.length) { return `${task.dependsOn.length} dep${task.dependsOn.length === 1 ? "" : "s"}`; }
+  // A typed blocker with no dependencies is not "Ready": get-next skips it.
+  return task.blockedOn && isUnfinished(task) ? "Blocked" : "Ready";
 }
 
 function labelize(value) {
@@ -812,6 +883,7 @@ function persist() {
     draftTask: state.draftTask,
     searchQuery: state.searchQuery,
     treeMode: state.treeMode,
+    blockerFilter: state.blockerFilter,
     collapsedGroups: state.collapsedGroups,
     collapsedTasks: state.collapsedTasks,
   });

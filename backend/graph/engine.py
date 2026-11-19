@@ -315,10 +315,12 @@ class GraphEngine:
         offset: int = 0,
         file_pattern: str = "",
         project: str = "",
+        include_worktrees: bool = False,
     ) -> dict:
         project = self._resolve(project)
         root = self._root(project) or "."
-        return self._query.search_code(root, pattern, regex, case_sensitive, max_results, offset, file_pattern)
+        return self._query.search_code(root, pattern, regex, case_sensitive, max_results, offset, file_pattern,
+                                       include_worktrees=include_worktrees)
 
     def find_qualified_name(self, short_name: str, project: str = "") -> str | None:
         project = self._resolve(project)

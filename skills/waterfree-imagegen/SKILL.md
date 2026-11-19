@@ -21,8 +21,9 @@ All commands emit JSON to stdout; the images land on disk.
 ## First run
 
 ```bash
-waterfree imagegen status     # is the backend usable?
+waterfree imagegen status     # is the backend usable, and is the preset installed?
 waterfree imagegen models     # presets, disk cost, and what fits this GPU
+waterfree imagegen install    # the workspace's preset; or: install sdxl-turbo, install all
 ```
 
 `status` exits **4** with the fix if something is missing. Requirements:
@@ -30,9 +31,19 @@ waterfree imagegen models     # presets, disk cost, and what fits this GPU
 PyTorch. CPU generation is deliberately not supported — it is minutes per image.
 LoRA loading also requires `peft` in that same Python environment.
 
-**Weights download on first use** (7–24 GB depending on preset) into the
-Hugging Face cache, not the workspace. SD3.5 and FLUX are *gated*: accept the
-licence on the model's HF page and set `$HF_TOKEN`, or the download 401s.
+If `status` reports `shadowing`, or an import fails with an error from some
+unrelated script, a loose `.py` file is standing in for a real package (a
+scratch `h2.py` once broke `transformers`). **Never write one-off scripts into
+the shared venv root `C:\Projects\.local`**: on Windows that folder is on
+`sys.path` for every process using the venv. Use a temp dir or
+`C:\Projects\.local\scratch\` instead, and move any reported file away.
+
+**`make` never downloads.** Weights (7–24 GB depending on preset) arrive
+through `imagegen install`, into the Hugging Face cache, not the workspace;
+`install` fetches only what the pipeline loads and skips anything already
+cached. An uninstalled preset makes `make` exit 4 naming the install command.
+SD3.5 and FLUX are *gated*: accept the licence on the model's HF page and set
+`$HF_TOKEN` before installing, or the download 401s.
 
 ## Presets
 
@@ -40,15 +51,27 @@ A preset is a known-good set of six coupled settings — weights, steps, guidanc
 resolution, dtype, offload. Getting one wrong on a 12 GB card means an OOM or a
 washed-out image.
 
-| Preset         | Disk   | VRAM   | Defaults          | Use it for |
-|----------------|--------|--------|-------------------|------------|
-| `sd35-medium`  | ~11 GB | ~9.5GB | 28 steps, cfg 4.5, 1024² | **Default.** Best prompt adherence and legible in-image text that fits 12 GB |
-| `sdxl`         | ~7 GB  | ~8 GB  | 30 steps, cfg 7.0, 1024² | Lighter and faster; weaker at text |
-| `sdxl-turbo`   | ~7 GB  | ~6.5GB | 2 steps, cfg 0, 512²     | Sub-second drafts while iterating on a prompt |
-| `flux-schnell` | ~24 GB | ~22 GB | 4 steps, cfg 0, 1024²    | Highest quality — needs `--offload sequential` on a 12 GB card and is slow |
+| Preset         | Disk   | Defaults          | Use it for |
+|----------------|--------|-------------------|------------|
+| `sd35-medium`  | ~11 GB | 28 steps, cfg 4.5, 1024² | **Default.** Best prompt adherence and legible in-image text that fits 12 GB |
+| `sdxl`         | ~7 GB  | 30 steps, cfg 7.0, 1024² | Lighter and faster; weaker at text |
+| `sdxl-turbo`   | ~7 GB  | 2 steps, cfg 0, 512²     | Sub-second drafts while iterating on a prompt |
+| `flux-schnell` | ~24 GB | 4 steps, cfg 0, 1024²    | Highest quality — needs `--offload sequential` on a 12 GB card and is slow |
 
-`fitsGpu` in `imagegen models` is advisory, not a gate: offloading trades speed
-for headroom and can rescue a preset that "doesn't fit".
+Free VRAM each needs, **measured** on an RTX 3060 12 GB (one image at the
+preset's size; the preflight uses these numbers):
+
+| Preset | `--offload none` | `model` (default) | `sequential` |
+|--------|------------------|-------------------|--------------|
+| `sd35-medium` | does not fit (crashed) | 10.3 GB — the whole card | 3.3 GB, ~1.7× slower |
+| `sdxl` | does not fit (spilled 3 GB into RAM) | 7.9 GB | 3.4 GB, ~3.4× slower |
+| `sdxl-turbo` | 9.2 GB | 5.6 GB | 1.0 GB |
+| `flux-schnell` | ~22 GB (not measured) | ~22 GB | ~3 GB |
+
+`sd35-medium` with the default model offload uses everything a 12 GB card has
+free next to the desktop: close GPU-heavy programs first, or use `sdxl`.
+`fitsGpu` in `imagegen models` is advisory, not a gate. If a run outgrows the
+card anyway, the result's `vramSpill` says so (the job ran slowly in system RAM).
 
 **Distilled presets (`sdxl-turbo`, `flux-schnell`) run at guidance 0** and have
 no unconditional branch, so `--negative-prompt` is ignored for them. Passing a
@@ -82,6 +105,10 @@ seed**; the rest record `null` rather than a seed that would not reproduce them.
 Per-invocation overrides: `--preset --steps --guidance --width --height
 --negative-prompt --seed --offload --count --output-dir --hf-token`.
 
+Each `make` is its own process: it loads the pipeline (~30-70 s), generates,
+and frees the GPU when it exits. Ask for several images in one call (`-n 4`)
+rather than four calls.
+
 ### Configure a workspace
 ```bash
 waterfree imagegen init      # writes .waterfree/imagegen.json with every setting
@@ -90,12 +117,25 @@ Settings resolve in three layers, later winning: **preset defaults →
 `.waterfree/imagegen.json` → CLI flags**. A malformed config falls back to
 defaults rather than erroring.
 
-### Free the GPU
-```bash
-waterfree imagegen unload
-```
-The pipeline is cached in-process, so a second `make` skips the ~30 s load. That
-cache also holds ~10 GB of VRAM.
+## The GPU is shared
+
+`make` takes the machine-wide **exclusive GPU lease**. If another job
+(meshgen, audiogen, another agent's imagegen) holds it, `make` waits in a FIFO
+queue, printing the holder and your position on stderr. Once it has the GPU it
+unloads resident Ollama models (they otherwise hold 6-9 GB for up to 30 min
+after a vision/qa call) and checks free VRAM against the preset's need.
+
+| Flag | Use |
+|------|-----|
+| `--no-wait` | fail at once (exit 4, holder in the JSON) instead of queueing |
+| `--wait-timeout S` | queue for at most S seconds (default 1800) |
+| `--skip-vram-check` | start anyway; on Windows an over-budget run spills into system RAM and crawls |
+
+`waterfree gpu status` shows who holds the GPU and who is waiting.
+`waterfree imagegen unload` (= `waterfree gpu evict`) makes room by unloading
+Ollama models. With the ComfyUI backend, `--comfy-free` (or `comfyFreeAfter`
+in imagegen.json) asks a ComfyUI on this machine to unload its models after the
+job; ComfyUI keeps them loaded otherwise, starving the next GPU job.
 
 ## When you run out of VRAM
 
@@ -105,7 +145,8 @@ The error names the ladder; work down it:
 2. `--width 768 --height 768` — VRAM scales with area
 3. `--preset sdxl-turbo` — lightest preset
 
-A resident Ollama model holds several GB. Free it first: `ollama stop <model>`.
+If the preflight refuses with "too little free VRAM", the error lists the other
+programs using the GPU (browsers, games, other AI tools); close the heavy ones.
 
 ## Reviewing what you generated
 
@@ -151,4 +192,9 @@ JSON. Set `WATERFREE_IMAGEGEN_PROGRESS=0` to disable progress and
 |------|---------|
 | 0    | Images written |
 | 2    | Usage error (empty prompt, batch over 8, unknown preset) |
-| 4    | Backend unavailable, download failed, gated repo, or out of VRAM |
+| 4    | Backend unavailable, preset not installed, gated repo, GPU busy past the wait, or too little VRAM |
+
+## Next step: 3D
+
+An image of one object on a plain background can become a textured 3D model:
+see the `waterfree-meshgen` skill.

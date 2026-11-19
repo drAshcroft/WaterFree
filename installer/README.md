@@ -33,6 +33,20 @@ user PATH and installs CLI-oriented skill packages for Codex and Claude:
 During install/uninstall it also removes legacy WaterFree MCP entries from
 Claude/Codex config files so stale registrations do not keep launching.
 
+### VS Code extension
+
+The helper installs the bundled `waterfree.vsix` with the VS Code CLI. A
+failure there does not roll back the MSI, so the helper records the outcome in
+`%LocalAppData%\WaterFree\logs\installer\vscode-extension-status.json`
+(`installed`, `reload-required`, `restart-required`, `failed` or `skipped`,
+with what to do next) and logs a `[WARN] VS Code extension ...` line to
+`%TEMP%\WaterFreeInstaller-helper.log`. `build_installer.ps1 -Deploy` prints
+that status and repeats it at the end of the build.
+
+The VSIX is packaged with the MSI's ProductVersion (`build_installer.ps1`
+passes it to `vsce package --no-update-package-json`), so each build is a real
+extension upgrade. `package.json` keeps its checked-in base version.
+
 ## Build prerequisites
 
 The MSI build expects these artifacts to exist:

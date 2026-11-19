@@ -1,6 +1,6 @@
 ---
 name: waterfree-vision
-description: Use the `waterfree vision` CLI to look at screenshots and images with a local vision model — describe a rendered page, critique its UI, read its text, infer what it does, or compare two versions. Runs on the local GPU via Ollama; no image ever leaves the machine.
+description: Use the `waterfree vision` CLI to look at screenshots and images with a local vision model — describe a rendered page, critique its UI, read its text, infer what it does, compare two versions, or classify a render/sprite/photo against a fixed label list as checkable JSON. Runs on the local GPU via Ollama; no image ever leaves the machine.
 requiresOllama: true
 ---
 
@@ -19,6 +19,8 @@ Each invocation is a short shell command — run it in whatever shell you have
 - Work out what an unfamiliar page is for — `--purpose function`
 - Read text out of a screenshot — `--purpose text`
 - Compare a before/after — `--purpose compare`
+- Blind identity check of a render, sprite or photo ("does this read as a Greek
+  island or as Japan?") — `--purpose classify --labels a,b,c`
 
 **Give it a file path.** This skill does not take screenshots for you: capture
 the image first (any screenshot tool, or Playwright, which is available at
@@ -37,6 +39,7 @@ The purpose picks both the model tier and the framing of the question. Run
 | `function` | large | What the page is for and what a user can do on it |
 | `text`     | large | Verbatim transcription of on-screen text |
 | `compare`  | large | Concrete differences between two or more images |
+| `classify` | large | One label from `--labels`, as JSON `{label, evidence, confidence}` — any image, not just web pages |
 
 ## Models
 
@@ -77,20 +80,80 @@ waterfree vision look screenshot.png --purpose ui
 {
   "purpose": "ui",
   "model": "qwen2.5vl:7b",
+  "tier": "large",
+  "tierReason": "default for purpose 'ui'",
   "question": "Review this interface. Cover: visual hierarchy, ...",
   "answer": "...",
+  "advisory": true,
+  "warnings": [],
   "images": [
     { "path": "...", "sent": "1280x720", "original": "2560x1440", "downscaled": true }
   ]
 }
 ```
+`tierReason` says why that model answered. `warnings` is always present; each
+entry has a `code` and a `message` — read them before trusting the answer.
+`advisory: true` (compare, triage, ui, classify) means the answer is one 7B
+model's judgement: inspect the image yourself before accepting it.
 
 ### Ask something specific
 ```bash
 waterfree vision look shot.png --purpose ui -q "Is the primary action obvious?"
 ```
-`-q` replaces the purpose's default question but keeps its system framing and
-model tier.
+`-q` replaces the purpose's default question but keeps its system framing. It
+also moves `describe` from the small to the large tier, because the small tier
+agrees with whatever a question names. `--tier small` or `--model` override that.
+
+### Ask neutrally — leading questions get a warning
+A model asked "is any medieval item visible (trestle table, goblet...)?" tends
+to find a trestle table and a goblet: moondream did exactly that for renders
+containing neither. When the answer gates a review, that is a false pass. A
+question that names candidates — a parenthesised list, "such as", "e.g.",
+"X or Y or Z", "A, B or C", "is there a ...", "can you see a ..." — still gets
+answered, but carries a `leading-question` warning.
+
+| Leading (warned) | Neutral |
+|---|---|
+| `Is there a goblet on the table?` | `Describe each object on the table.` |
+| `Is it Greek, Japanese or Norse?` | `--purpose classify --labels Greek,Japanese,Norse` |
+| `Is any medieval item visible (trestle table, goblet...)?` | `Describe the floor, each piece of furniture and the lamps.` |
+
+Then check the answer for the item yourself. One "or" ("floating or on the
+floor?") is not flagged, and neither are lists of aspects to describe
+("describe the roof, walls or doors").
+
+### Classify against fixed labels
+```bash
+waterfree vision look render.png --purpose classify --labels "South of France,Greek island,Scandinavia,Japan,England"
+```
+```json
+{
+  "purpose": "classify",
+  "labels": ["South of France", "Greek island", "Scandinavia", "Japan", "England", "none", "uncertain"],
+  "labelOrder": ["Japan", "England", "Greek island", "South of France", "Scandinavia", "none", "uncertain"],
+  "label": "Greek island",
+  "evidence": "Whitewashed cubic houses with flat roofs and blue doors on a rocky slope.",
+  "confidence": "high",
+  "attempts": 1,
+  "answer": "{...the model's raw reply...}",
+  "advisory": true,
+  "warnings": []
+}
+```
+- `--labels` is required: 2–20 comma-separated labels. `none` and `uncertain`
+  are always added — a model with no way out picks the nearest label, and a
+  gate reads that as a pass. Treat both as "not a match".
+- The order is shuffled on every call (recorded in `labelOrder`) so a batch of
+  renders is not biased toward whichever label is listed first.
+- The reply is constrained to that JSON shape and validated. A label outside
+  the list gets one stricter retry; if that also fails, `label` is
+  `uncertain`, `answer` holds the raw reply and a `classify-unusable-answer`
+  warning says why.
+- `-q` sets the question ("Which region's village architecture does this
+  resemble?"); keep the candidates in `--labels`, not in the question.
+- One image per call. For a robust read, classify several views (overview,
+  near, street) and read the `evidence` — it names the cue that misled the
+  model, which is usually exactly what to change.
 
 ### Compare versions
 ```bash
@@ -114,6 +177,28 @@ Tunable via environment: `WATERFREE_VISION_MAX_EDGE` (default 1280),
 `WATERFREE_VISION_KEEP_ALIVE` (15m — keeps the model resident so the second
 image is fast).
 
+## Busy host
+
+When many agents, test suites or game engines share the machine, Ollama can be
+slow to answer. Vision degrades rather than failing:
+
+- `--timeout SECONDS` (look and web; default 300, or `$WATERFREE_VISION_TIMEOUT`)
+  bounds each attempt at the model. Raise it on a busy host — and give your own
+  shell command a matching timeout.
+- A timed-out attempt, or Ollama's 503 "server busy", is retried with backoff
+  (`$WATERFREE_VISION_RETRIES`, default 1 retry, at most 3). So the worst case
+  is about `(retries + 1) × --timeout`.
+- The "is the model downloaded?" check waits at most
+  `$WATERFREE_VISION_LIST_TIMEOUT` (10 s). If Ollama is too busy to answer it,
+  the request goes ahead anyway with a `model-check-skipped` warning; a missing
+  model is still reported, by the generation call.
+- `--model <id>` skips that check entirely.
+- If every attempt times out, the error says so — `Ollama did not answer in N s
+  (...); the host may be under load ...` — and names `--timeout`. That is a
+  load problem, not a missing model: wait, raise `--timeout`, or free the GPU.
+- `waterfree vision models` reports `installed: null` (unknown), not `false`,
+  when Ollama cannot be asked — do not pull a model just because of that.
+
 ## VRAM
 
 The large tier and a 14B text model do not both fit comfortably on a 12 GB card,
@@ -135,8 +220,8 @@ use focused crops when details are too small to establish overlap confidently.
 | Code | Meaning |
 |------|---------|
 | 0    | Analysis returned |
-| 2    | Usage error (unknown purpose, too many images) |
-| 4    | Model not downloaded, image unreadable, or Ollama unreachable |
+| 2    | Usage error (unknown purpose, too many images, classify without `--labels`, bad `--timeout`) |
+| 4    | Model not downloaded, image unreadable, Ollama unreachable, or Ollama did not answer in time |
 
 ## Websites
 
@@ -152,5 +237,8 @@ Desktop analysis uses a 1280x800 viewport. `--mobile` adds an independent
 pages are not mistaken for a single screen. `--output-dir` selects a destination.
 Navigation waits for DOM readiness, fonts, and 750ms settling; use
 `--ready-selector` for a SPA's meaningful ready state and `--wait-ms` to change
-settling time. `--timeout-ms` defaults to 30000. Capture requires Playwright
-and Chromium; image analysis still runs locally through Ollama.
+settling time. `--timeout-ms` (page loading) defaults to 30000; the model call
+is bounded separately by `--timeout` (seconds). `web` takes the same
+`--purpose`, `-q`, `--model`, `--tier` and `--labels` as `look`. Capture
+requires Playwright and Chromium; image analysis still runs locally through
+Ollama.

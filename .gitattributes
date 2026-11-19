@@ -1,0 +1,4 @@
+# Vendored files pinned by SHA-256 must reach the working tree byte-for-byte:
+# with core.autocrlf=true, git would rewrite their line endings on checkout and
+# the hash check in backend/meshgen/preview.py would refuse the file.
+backend/meshgen/viewer/model-viewer.min.js -text

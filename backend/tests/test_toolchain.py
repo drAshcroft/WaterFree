@@ -10,6 +10,7 @@ an argv again.
 
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -98,23 +99,46 @@ class FilterArgTests(unittest.TestCase):
 
 
 class RunToolTests(unittest.TestCase):
+    # run_tool goes through backend.testing.bounded.run_bounded (Popen-based),
+    # so these drive real processes rather than mocking subprocess.run.
+
     def test_translates_spawn_failure_into_toolchain_error(self) -> None:
         with mock.patch.object(
-            toolchain.subprocess, "run",
+            toolchain, "run_bounded",
             side_effect=FileNotFoundError(2, "The system cannot find the file specified"),
         ):
             with self.assertRaises(ToolchainError) as ctx:
                 toolchain.run_tool(["npx", "vitest"], workspace_path=".", timeout=5)
         self.assertIn("Could not launch", str(ctx.exception))
 
+    def test_a_missing_executable_is_a_toolchain_error_not_a_traceback(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "no-such-tool.exe")
+            with self.assertRaises(ToolchainError):
+                toolchain.run_tool([missing], workspace_path=tmp, timeout=5)
+
     def test_timeout_is_not_swallowed(self) -> None:
         """Callers distinguish a slow suite from a broken toolchain."""
-        with mock.patch.object(
-            toolchain.subprocess, "run",
-            side_effect=subprocess.TimeoutExpired(cmd="x", timeout=5),
-        ):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                toolchain.run_tool(["x"], workspace_path=".", timeout=5)
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(subprocess.TimeoutExpired) as ctx:
+                toolchain.run_tool(
+                    [sys.executable, "-c", "import sys,time; print('started', flush=True); time.sleep(30)"],
+                    workspace_path=tmp,
+                    timeout=1,
+                )
+        # Partial output survives the kill, as subprocess.run's did.
+        self.assertIn("started", ctx.exception.stdout or "")
+
+    def test_returns_completed_process_text(self) -> None:
+        with TemporaryDirectory() as tmp:
+            proc = toolchain.run_tool(
+                [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"],
+                workspace_path=tmp,
+                timeout=30,
+            )
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(proc.stdout.strip(), "out")
+        self.assertEqual(proc.stderr.strip(), "err")
 
 
 if __name__ == "__main__":
